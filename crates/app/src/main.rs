@@ -3021,9 +3021,9 @@ mod dialog_tests {
         esc(&|| window.set_files(FilesView { sending: true, ..Default::default() }), "files hide");
     }
 
-    /// A click beside a dialog closes it only when nothing typed in it would be lost.
+    /// A click beside a dialog closes it as Esc does, also with something typed in it.
     #[test]
-    fn a_click_beside_a_dialog_never_loses_what_was_typed() {
+    fn a_click_beside_a_dialog_closes_it() {
         let (window, log) = dialogs();
         let taken = || log.borrow_mut().drain(..).collect::<Vec<_>>();
 
@@ -3044,21 +3044,19 @@ mod dialog_tests {
         join_hints(&window);
         window.set_join_open(true);
         press(&window, "x");
-        click_beside(&window);
-        assert!(window.get_join_open());
         assert_eq!(window.get_join_password(), "x");
+        click_beside(&window);
+        assert_eq!(taken(), ["join-cancelled"]);
         window.set_join_open(false);
 
         window.set_hostname_open(true);
         click_beside(&window);
-        assert!(window.get_hostname_open());
+        assert_eq!(taken(), ["hostname-cancelled"]);
         window.set_hostname_open(false);
 
         window.set_bt_rename_open(true);
         click_beside(&window);
-        assert!(window.get_bt_rename_open());
-        window.set_bt_rename_open(false);
-        assert_eq!(taken(), Vec::<String>::new());
+        assert_eq!(taken(), ["bt rename-cancel"]);
     }
 
     /// Enter in the field of a one-field dialog accepts it.
