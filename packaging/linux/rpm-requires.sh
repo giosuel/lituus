@@ -14,7 +14,10 @@ reqs+=("\"libc.so.6($glibc)(64bit)\" = \"*\"")
 while read -r lib; do
   case "$lib" in
     ld-linux*|libc.so.6) ;; # the loader comes with glibc
-    *) reqs+=("\"$lib()(64bit)\" = \"*\"") ;;
+    *)
+      req="\"$lib()(64bit)\" = \"*\""
+      # A library it also loads at runtime (xkbcommon) is already listed: TOML refuses a key twice.
+      [[ " ${reqs[*]} " == *" $req"* ]] || reqs+=("$req") ;;
   esac
 done < <(objdump -p "$binary" | awk '$1 == "NEEDED" { print $2 }' | sort -u)
 printf '{ %s }\n' "$(IFS=,; echo "${reqs[*]}" | sed 's/,/, /g')"
