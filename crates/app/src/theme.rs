@@ -100,13 +100,14 @@ const ROLES: [&str; 15] = [
 
 /// The built-in themes as Material roles, so they go through the same mapping as matugen's.
 /// Made with a tonal palette per hue (CIELCh, tone = L*), as matugen does; Blue dark is the
-/// owner's ML4W palette from the mockups.
+/// owner's ML4W palette from the mockups. Teal dark has the neutral greys of the website's hero
+/// image instead, with its accent (the owner, 2026-11-18).
 const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "teal-dark",
         [
-            "#0c1513", "#05100d", "#161d1b", "#1a211f", "#242c29", "#2e3634", "#dae5e2", "#b7cbc5", "#82958f",
-            "#394a45", "#64dabf", "#00382d", "#005142", "#284d44", "#ffb4ab",
+            "#141619", "#1f2226", "#111315", "#1b1e21", "#23272b", "#2f343a", "#e8eaed", "#a0a7af", "#8b929a",
+            "#353a40", "#5cc8b0", "#0c1513", "#2c4a42", "#1f2a27", "#f08a7a",
         ],
     ),
     (
