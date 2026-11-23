@@ -13,6 +13,8 @@ pub struct Config {
     pub sound: SoundConfig,
     pub bluetooth: BluetoothConfig,
     pub wallpaper: WallpaperConfig,
+    /// The System page's update commands the user changed, by package manager ("pacman").
+    pub updates: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -250,6 +252,17 @@ pub fn set(path: &Path, table: &str, key: &str, value: impl Into<toml_edit::Valu
     std::fs::write(path, text)
 }
 
+/// Removes one key, keeping the rest of the file (and the table, even when it's empty).
+pub fn unset(path: &Path, table: &str, key: &str) -> std::io::Result<()> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(t) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
+        t.remove(key);
+    }
+    std::fs::write(path, doc.to_string())
+}
+
 /// Sets one key to a list of strings, keeping the rest of the file.
 pub fn set_list(path: &Path, table: &str, key: &str, values: &[String]) -> std::io::Result<()> {
     let array: toml_edit::Array = values.iter().map(String::as_str).collect();
@@ -294,6 +307,19 @@ mod tests {
         assert_eq!(paths, ["~/.config/lituus/colors.json", "~/.config/ml4w/colors/colors.json"]);
         assert_eq!((config.theme.builtin, config.theme.mode), (Builtin::Teal, Mode::Auto));
         assert!(config.theme.follow_wallpaper && config.theme.gradient);
+    }
+
+    #[test]
+    fn update_commands() {
+        let c = parse("[updates]\npacman = \"sudo pacman -Syu --noconfirm\"\n").unwrap();
+        assert_eq!(c.updates.get("pacman").map(String::as_str), Some("sudo pacman -Syu --noconfirm"));
+        let dir = std::env::temp_dir().join(format!("lituus-config-updates-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        set(&path, "updates", "aur", "yay -Sua --devel").unwrap();
+        set(&path, "updates", "pacman", "sudo pacman -Syu").unwrap();
+        unset(&path, "updates", "aur").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[updates]\npacman = \"sudo pacman -Syu\"\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

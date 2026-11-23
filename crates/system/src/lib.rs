@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod terminal;
+pub mod updates;
+
 /// The operating system.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Os {
@@ -15,6 +18,16 @@ pub struct Os {
     /// The logo's icon name ("archlinux-logo"), and its file if one is installed.
     pub logo: String,
     pub logo_file: Option<PathBuf>,
+    /// os-release's ID ("endeavouros") and ID_LIKE ("arch"), and VARIANT ("Workstation Edition").
+    pub id: String,
+    pub id_like: Vec<String>,
+    pub variant: String,
+    /// The day its support ends, "2026-12-09" (SUPPORT_END).
+    pub support_end: String,
+    /// BUILD_ID unless it's "rolling": the installer's or image's date.
+    pub build: String,
+    /// A rolling release (no VERSION_ID, or BUILD_ID "rolling").
+    pub rolling: bool,
 }
 
 /// The device: who made it and what it is.
@@ -144,7 +157,41 @@ pub fn os(root: &Path) -> Os {
             ["svg", "png"].iter().map(|ext| root.join(format!("usr/share/pixmaps/{logo}.{ext}"))).find(|p| p.is_file())
         })
         .flatten();
-    Os { name, version, logo, logo_file }
+    let build_id = key_value(&text, "BUILD_ID").unwrap_or_default();
+    let rolling = build_id == "rolling" || key_value(&text, "VERSION_ID").is_none();
+    Os {
+        name,
+        version,
+        logo,
+        logo_file,
+        id: key_value(&text, "ID").unwrap_or_default(),
+        id_like: key_value(&text, "ID_LIKE").unwrap_or_default().split_whitespace().map(str::to_owned).collect(),
+        variant: key_value(&text, "VARIANT").unwrap_or_default(),
+        support_end: key_value(&text, "SUPPORT_END").unwrap_or_default(),
+        build: if build_id == "rolling" { String::new() } else { build_id },
+        rolling,
+    }
+}
+
+/// A distribution's name for os-release's ID ("arch" → "Arch Linux"), for "Based on".
+pub fn distro_name(id: &str) -> String {
+    match id {
+        "arch" => "Arch Linux",
+        "debian" => "Debian",
+        "ubuntu" => "Ubuntu",
+        "fedora" => "Fedora Linux",
+        "rhel" => "Red Hat Enterprise Linux",
+        "centos" => "CentOS",
+        "suse" | "opensuse" => "openSUSE",
+        "gentoo" => "Gentoo",
+        "slackware" => "Slackware",
+        "void" => "Void Linux",
+        "nixos" => "NixOS",
+        "alpine" => "Alpine Linux",
+        "mandriva" => "Mandriva",
+        other => other,
+    }
+    .to_owned()
 }
 
 /// How long since the computer started, in seconds.
@@ -536,6 +583,7 @@ mod tests {
         std::fs::create_dir_all(r.join("sys/firmware/efi")).unwrap();
         let os = os(&r);
         assert_eq!((os.name.as_str(), os.version.as_str()), ("Arch Linux", "rolling"));
+        assert!(os.rolling && os.build.is_empty());
         assert_eq!(os.logo_file, Some(r.join("usr/share/pixmaps/archlinux-logo.svg")));
         assert_eq!(uptime(&r), Some(93784));
         assert_eq!(
@@ -628,6 +676,25 @@ mod tests {
                 status: "Discharging".into()
             }]
         );
+        std::fs::remove_dir_all(&r).unwrap();
+    }
+
+    #[test]
+    fn a_fedora_release() {
+        let r = root(
+            "fedora",
+            &[(
+                "usr/lib/os-release",
+                "NAME=\"Fedora Linux\"\nVERSION=\"43 (Workstation Edition)\"\nID=fedora\nVERSION_ID=43\nVARIANT=\"Workstation Edition\"\nSUPPORT_END=2026-12-09\n",
+            )],
+        );
+        let os = os(&r);
+        assert_eq!(
+            (os.id.as_str(), os.variant.as_str(), os.support_end.as_str()),
+            ("fedora", "Workstation Edition", "2026-12-09")
+        );
+        assert!(!os.rolling);
+        assert_eq!(distro_name("arch"), "Arch Linux");
         std::fs::remove_dir_all(&r).unwrap();
     }
 

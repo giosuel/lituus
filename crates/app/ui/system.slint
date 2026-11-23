@@ -1,20 +1,27 @@
-// System › System, following the "System" mockups: the computer's names and what it is in the
-// hero, its hardware and drives on the left, the software Lituus's pages use and a copy of it all
-// for bug reports on the right. What it shows comes from Rust (src/system.rs).
+// System › System, following the "System v2" mockups (2026-11-09/10): the computer's names and
+// what it is in the hero, with an edit button after the name and a bug button top right that
+// copies the page for a bug report; its hardware and drives on the left; Software the full
+// height on the right: the distribution, updates per package manager with Update buttons that run
+// in the default terminal, what runs, and what Lituus's pages use. What it shows comes from Rust
+// (src/system.rs).
 import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, CardTitle, SectionLabel, Focusable } from "controls.slint";
-import { Hero, Card, ScrollCard } from "shell.slint";
+import { Button, IconButton, CardTitle, SectionLabel } from "controls.slint";
+import { Hero, Card, ScrollCard, Tooltip } from "shell.slint";
 
-/// A fact about the hardware: what it is (label), its name (title) and a line under it. link: it
-/// opens its page (Displays).
+/// A fact about the hardware: what it is (label), its name (title) and a line under it. link: an
+/// Open Displays button beside it.
 export struct SystemFact { icon: string, label: string, title: string, detail: string, link: bool }
 /// A file system on a drive: where it's mounted, its kind, how full (0–1), and that in words.
 export struct SystemFs { mounts: string, kind: string, used: float, text: string, warn: bool }
 export struct SystemDrive { name: string, meta: string, filesystems: [SystemFs] }
-export struct SystemSoftware { name: string, version: string, note: string }
+/// A row of names and values: "Kernel  7.2.14-arch1-1", mono for versions.
+export struct SystemSoftware { name: string, version: string, note: string, mono: bool }
+/// A package manager's updates. state: "checking", "count", "none", "error" or "running"; text:
+/// "23 updates", "Up to date", why it couldn't check, "Updating in kitty…".
+export struct SystemUpdate { key: string, name: string, source: string, state: string, text: string }
 /// state: "list" or "loading". name: the pretty name if there is one (`pretty`), else the
-/// hostname. report: the page as plain text, for Copy system info.
+/// hostname. report: the page as plain text, for the bug button.
 export struct SystemView {
     state: string,
     sub: string,
@@ -28,11 +35,17 @@ export struct SystemView {
     unknown: string,
     drives: [SystemDrive],
     drive-count: string,
+    distro-name: string,
+    distro-detail: string,
+    distro: [SystemSoftware],
+    updates-title: string,
+    checked: string,
+    checking: bool,
+    update-all: bool,
+    updates: [SystemUpdate],
+    updates-note: string,
     software: [SystemSoftware],
     uses: [SystemSoftware],
-    battery: bool,
-    battery-title: string,
-    battery-detail: string,
     report: string,
     copied: bool,
 }
@@ -58,21 +71,66 @@ component Fact inherits Rectangle {
             Text { text: root.fact.title; color: Theme.text; font-size: 14px; font-weight: 500; overflow: elide; }
             Text { text: root.fact.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
         }
-        if root.fact.link: Icon { name: "chevron"; tint: Theme.muted; size: 16px; y: (parent.height - 16px) / 2; transform-rotation: -90deg; }
+        if root.fact.link: VerticalLayout {
+            alignment: center;
+            Button { label: "Open Displays"; button-height: 30px; horizontal-stretch: 0; clicked => { root.opened(); } }
+        }
     }
-    if root.fact.link: TouchArea { mouse-cursor: pointer; clicked => { root.opened(); } }
 }
 
+/// A name, its value and a note on the right; a line above it unless it's the first.
 component SoftwareRow inherits Rectangle {
     in property <SystemSoftware> entry;
     in property <bool> first;
-    height: 44px;
+    in property <bool> narrow;
+    height: 40px;
     if !root.first: Rectangle { y: 0; height: 1px; background: Theme.border; }
     HorizontalLayout {
         spacing: 12px;
-        Text { text: root.entry.name; color: Theme.text; font-size: 13px; vertical-alignment: center; width: 150px; overflow: elide; }
-        Text { text: root.entry.version; color: root.entry.version == "Not installed" || root.entry.version == "Not running" ? Theme.faint : Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.entry.name; color: Theme.muted; font-size: 13px; vertical-alignment: center; width: root.narrow ? 110px : 150px; overflow: elide; }
+        Text {
+            text: root.entry.version;
+            color: root.entry.version == "Not installed" || root.entry.version == "Not running" ? Theme.faint : Theme.text;
+            font-size: 13px;
+            font-family: root.entry.mono ? "JetBrains Mono" : "Inter";
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
         Text { text: root.entry.note; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+    }
+}
+
+component UpdateRow inherits Rectangle {
+    in property <SystemUpdate> entry;
+    in property <bool> first;
+    in property <bool> narrow;
+    callback update();
+    height: 46px;
+    if !root.first: Rectangle { y: 0; height: 1px; background: Theme.border; }
+    HorizontalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            width: root.narrow ? 110px : 150px;
+            spacing: 8px;
+            Icon { name: "package"; tint: Theme.muted; size: 15px; y: (parent.height - 15px) / 2; }
+            Text { text: root.entry.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        }
+        Text { text: root.entry.source; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        if root.entry.state == "none": Icon { name: "check"; tint: Theme.muted; size: 13px; y: (parent.height - 13px) / 2; }
+        Text {
+            text: root.entry.text;
+            color: root.entry.state == "count" ? Theme.accent : root.entry.state == "error" ? Theme.warn-text : Theme.muted;
+            font-size: 13px;
+            font-weight: root.entry.state == "count" ? 600 : 400;
+            vertical-alignment: center;
+            max-width: root.narrow ? 160px : 260px;
+            overflow: elide;
+        }
+        if root.entry.state == "count": VerticalLayout {
+            alignment: center;
+            Button { label: "Update"; button-height: 28px; horizontal-stretch: 0; clicked => { root.update(); } }
+        }
     }
 }
 
@@ -84,6 +142,8 @@ export component SystemPage inherits VerticalLayout {
     callback rename();
     callback copied();
     callback open-displays();
+    /// "check", "update" (a package manager's key), "update-all".
+    callback act(string, string);
     spacing: 14px;
 
     Hero {
@@ -91,6 +151,7 @@ export component SystemPage inherits VerticalLayout {
         sub: root.view.sub;
         hero-height: root.compact ? 136px : 206px;
         compact: root.compact;
+        aside: bug.width + 18px;
         if root.view.state == "list": HorizontalLayout {
             x: 24px;
             y: parent.height - self.height - (root.compact ? 16px : 22px);
@@ -110,7 +171,16 @@ export component SystemPage inherits VerticalLayout {
             VerticalLayout {
                 alignment: center;
                 spacing: 4px;
-                Text { text: root.view.name; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                // The name, and right after it the button that renames the computer (F2 too).
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Text { text: root.view.name; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton { icon: "pencil"; label: "Rename this computer"; size: 28px; icon-size: 15px; flat: true; clicked => { root.rename(); } }
+                    }
+                }
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
@@ -119,10 +189,23 @@ export component SystemPage inherits VerticalLayout {
                 }
                 if !root.compact: Text { text: root.view.line; color: Theme.muted; font-size: 13px; overflow: elide; }
             }
-            VerticalLayout {
-                alignment: center;
-                Button { label: "Rename…"; horizontal-stretch: 0; clicked => { root.rename(); } }
-            }
+        }
+        // The page as plain text for a bug report; a check for two seconds after.
+        bug := IconButton {
+            x: parent.width - self.width - 18px;
+            y: 18px;
+            size: root.view.state == "list" ? 34px : 0;
+            icon: root.view.copied ? "check" : "bug";
+            label: "Copy system info for a bug report";
+            clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
+        }
+        copy-field := TextInput { visible: false; width: 0; height: 0; text: root.view.report; read-only: true; }
+        if bug.has-hover || root.view.copied: Tooltip {
+            x: parent.width - self.width - 18px;
+            y: bug.y + bug.height + 8px;
+            width: 290px;
+            text: root.view.copied ? "Copied · paste it into an issue or a forum post"
+                : "Copy system info for a bug report\nThis page as plain text, without the computer's names and serial numbers";
         }
     }
     if root.view.state == "list": HorizontalLayout {
@@ -203,64 +286,61 @@ export component SystemPage inherits VerticalLayout {
                 }
             }
         }
-        // The software, the battery, and the copy for bug reports, which reaches the bottom.
-        VerticalLayout {
-            width: root.narrow ? 360px : 560px;
-            spacing: 14px;
-            Card {
-                vertical-stretch: 0;
-                VerticalLayout {
-                    padding: 18px;
-                    padding-top: 14px;
-                    spacing: 0;
-                    CardTitle { text: "Software"; height: 34px; }
-                    for r[i] in root.view.software: SoftwareRow { entry: r; first: i == 0; }
-                    SectionLabel { text: "WHAT LITUUS'S PAGES USE"; height: 40px; vertical-alignment: center; }
-                    for r[i] in root.view.uses: SoftwareRow { entry: r; first: i == 0; }
-                }
-            }
-            if root.view.battery: Card {
-                vertical-stretch: 0;
-                VerticalLayout {
-                    padding: 18px;
-                    padding-top: 14px;
-                    spacing: 4px;
-                    CardTitle { text: "Battery"; height: 30px; }
-                    Text { text: root.view.battery-title; color: Theme.text; font-size: 14px; font-weight: 500; }
-                    Text { text: root.view.battery-detail; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
-                }
-            }
-            ScrollCard {
-                VerticalLayout {
-                    padding: 18px;
-                    padding-top: 14px;
-                    spacing: 8px;
-                    CardTitle { text: "For bug reports"; height: 30px; }
-                    Text {
-                        text: "This page as plain text, for an issue or a forum post. It leaves out the computer's names and serial numbers.";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                        // Two lines at least: in the scrolling card its height came out as one.
-                        min-height: 36px;
-                    }
+        // Software, the whole height: the distribution, updates, what runs, what the pages use.
+        ScrollCard {
+            width: root.narrow ? 380px : 560px;
+            VerticalLayout {
+                padding: 18px;
+                padding-top: 14px;
+                spacing: 0;
+                CardTitle { text: "Software"; height: 34px; }
+                SectionLabel { text: "DISTRIBUTION"; height: 26px; vertical-alignment: center; }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 12px;
+                    Text { text: "Name"; color: Theme.muted; font-size: 13px; vertical-alignment: center; width: root.narrow ? 110px : 150px; }
                     HorizontalLayout {
-                        alignment: start;
-                        padding-top: 4px;
-                        // The text to copy, kept out of the layout beside the button.
-                        Rectangle {
-                            width: 170px;
-                            height: copy.preferred-height;
-                            copy-field := TextInput { visible: false; text: root.view.report; read-only: true; }
-                            copy := Button {
-                                width: parent.width;
-                                // The same width either way, so it doesn't jump.
-                                label: root.view.copied ? "Copied" : "Copy system info";
-                                clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
-                            }
-                        }
+                        spacing: 8px;
+                        horizontal-stretch: 1;
+                        Image { width: 16px; height: 16px; y: 12px; source: root.view.logo; image-fit: contain; }
+                        Text { text: root.view.distro-name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    }
+                    Text { text: root.view.distro-detail; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                }
+                for r in root.view.distro: SoftwareRow { entry: r; narrow: root.narrow; }
+                HorizontalLayout {
+                    height: 44px;
+                    padding-top: 10px;
+                    spacing: 8px;
+                    SectionLabel { text: root.view.updates-title; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: root.view.checked; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton { icon: "rescan"; label: "Check again"; size: 26px; icon-size: 14px; flat: true; enabled: !root.view.checking; clicked => { root.act("check", ""); } }
+                    }
+                    if root.view.update-all: VerticalLayout {
+                        alignment: center;
+                        Button { label: "Update all"; kind: "primary"; button-height: 28px; horizontal-stretch: 0; clicked => { root.act("update-all", ""); } }
                     }
                 }
+                for u[i] in root.view.updates: UpdateRow {
+                    entry: u;
+                    first: i == 0;
+                    narrow: root.narrow;
+                    update => { root.act("update", u.key); }
+                }
+                if root.view.updates-note != "": Text {
+                    text: root.view.updates-note;
+                    color: Theme.faint;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    min-height: 26px;
+                    vertical-alignment: bottom;
+                }
+                SectionLabel { text: "THIS COMPUTER RUNS"; height: 44px; vertical-alignment: bottom; }
+                for r[i] in root.view.software: SoftwareRow { entry: r; first: i == 0; narrow: root.narrow; }
+                SectionLabel { text: "WHAT LITUUS'S PAGES USE"; height: 44px; vertical-alignment: bottom; }
+                for r[i] in root.view.uses: SoftwareRow { entry: r; first: i == 0; narrow: root.narrow; }
             }
         }
     }
