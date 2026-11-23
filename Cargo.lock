@@ -2684,6 +2684,7 @@ dependencies = [
  "lituus-sound",
  "lituus-system",
  "lituus-wallpaper",
+ "lituus-xdg",
  "pulseaudio",
  "qrcodegen",
  "resvg",
@@ -2773,6 +2774,10 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "lituus-xdg"
+version = "0.0.0-dev"
 
 [[package]]
 name = "lock_api"
