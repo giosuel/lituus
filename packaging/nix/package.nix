@@ -73,7 +73,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Settings for Hyprland and other desktops without them: network, Bluetooth, sound and displays";
-    homepage = "https://lituus.giosuel.ch/";
+    homepage = "https://lituus.giosuel.io/";
     license = lib.licenses.agpl3Plus;
     mainProgram = "lituus";
     platforms = lib.platforms.linux;
