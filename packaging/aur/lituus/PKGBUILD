@@ -17,6 +17,9 @@ optdepends=('networkmanager-openvpn: OpenVPN connections'
             'xdg-desktop-portal: file dialogs (certificates, VPN files, files to send)'
             'gnome-keyring: passwords kept "for me only" (or KWallet)')
 makedepends=('cargo')
+# The window tests lay out text: without a font, fontconfig matches nothing and they fail (a
+# clean chroot has none).
+checkdepends=('ttf-dejavu')
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
