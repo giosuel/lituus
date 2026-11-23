@@ -255,8 +255,8 @@ fn kind_row(state: &mut State, kind: &Kind) -> KindRow {
         (Some(_), [(mime, Some(other))]) => (
             format!(
                 "{} of {} file types · {} opens in {}",
-                st.types.len() - 1,
-                st.types.len(),
+                st.opened - 1,
+                st.opened,
                 short_name(d, mime),
                 app_name(d, other)
             ),
@@ -265,8 +265,8 @@ fn kind_row(state: &mut State, kind: &Kind) -> KindRow {
         (Some(_), [_, ..]) => (
             format!(
                 "{} of {} file types · {} open in other apps",
-                st.types.len() - st.others.len(),
-                st.types.len(),
+                st.opened - st.others.len(),
+                st.opened,
                 st.others.len()
             ),
             format!("Use {app_name_} for all"),

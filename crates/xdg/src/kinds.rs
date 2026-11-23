@@ -201,7 +201,9 @@ pub struct KindState {
     pub types: Vec<String>,
     /// The app most of them open in.
     pub app: Option<String>,
-    /// The ones that open in another app (or in none), with it.
+    /// How many of them an app opens.
+    pub opened: usize,
+    /// The ones that open in another app, with it.
     pub others: Vec<(String, Option<String>)>,
     /// Where the kind's app comes from, if one file names it for all of them; `None` when no
     /// file does (the first app that opens them).
@@ -233,11 +235,12 @@ pub fn state(kind: &Kind, files: &[ListFile], apps: &[App], db: &MimeDb) -> Kind
     let app =
         resolved.iter().filter_map(|r| r.app.as_deref()).find(|a| counts.get(a) == Some(&best)).map(str::to_owned);
     let others =
-        types.iter().zip(&resolved).filter(|(_, r)| r.app != app).map(|(t, r)| (t.clone(), r.app.clone())).collect();
+        types.iter().zip(&resolved).filter(|(_, r)| r.app.is_some() && r.app != app).map(|(t, r)| (t.clone(), r.app.clone())).collect();
+    let opened = resolved.iter().filter(|r| r.app.is_some()).count();
     let of_app: Vec<&mimeapps::Resolved> = resolved.iter().filter(|r| r.app == app).collect();
     let from = of_app.first().and_then(|r| r.from).filter(|f| of_app.iter().all(|r| r.from == Some(*f)));
     let set_somewhere = resolved.iter().any(|r| r.from.is_some());
-    KindState { types, app, others, from, set_somewhere }
+    KindState { types, app, opened, others, from, set_somewhere }
 }
 
 /// The apps to offer for a kind: those that open its first type (or any of them), the kind's
