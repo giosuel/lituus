@@ -99,9 +99,10 @@ const ROLES: [&str; 15] = [
 ];
 
 /// The built-in themes as Material roles, so they go through the same mapping as matugen's.
-/// Made with a tonal palette per hue (CIELCh, tone = L*), as matugen does; Blue dark is the
-/// owner's ML4W palette from the mockups. Teal dark has the neutral greys of the website's hero
-/// image instead, with its accent (the owner, 2026-11-18).
+/// Made with a tonal palette per hue (CIELCh, tone = L*), as matugen does. Every dark theme has
+/// the neutral greys of the website's hero image (Teal first, the owner, 2026-11-18; the others
+/// too, 2026-11-23), each with its own accent; its containers are the accent mixed into the
+/// surface, 30 % and 12 %, as Teal's are.
 const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "teal-dark",
@@ -120,8 +121,8 @@ const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "blue-dark",
         [
-            "#101418", "#0b0e12", "#191c20", "#1d2024", "#272a2f", "#32353a", "#e0e2e8", "#c2c7cf", "#8c9199",
-            "#42474e", "#9ecafc", "#003256", "#164974", "#3b4857", "#ffb4ab",
+            "#141619", "#1f2226", "#111315", "#1b1e21", "#23272b", "#2f343a", "#e8eaed", "#a0a7af", "#8b929a",
+            "#353a40", "#9ecafc", "#003256", "#3d4c5d", "#252c34", "#ffb4ab",
         ],
     ),
     (
@@ -134,8 +135,8 @@ const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "lavender-dark",
         [
-            "#151218", "#100d14", "#1d1b20", "#211f24", "#2b292f", "#363439", "#e4e1e9", "#cac4d3", "#948e9c",
-            "#494551", "#d2bbff", "#352661", "#4e3c7a", "#4b435b", "#ffb4ab",
+            "#141619", "#1f2226", "#111315", "#1b1e21", "#23272b", "#2f343a", "#e8eaed", "#a0a7af", "#8b929a",
+            "#353a40", "#d2bbff", "#352661", "#4d485e", "#2b2a35", "#ffb4ab",
         ],
     ),
     (
@@ -148,8 +149,8 @@ const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "coral-dark",
         [
-            "#1a1110", "#160c09", "#211a18", "#251e1c", "#302827", "#3b3331", "#ebe0de", "#d6c2be", "#a08c89",
-            "#544340", "#ffb4a7", "#6a0002", "#8e1213", "#5f3f39", "#ffb4ab",
+            "#141619", "#1f2226", "#111315", "#1b1e21", "#23272b", "#2f343a", "#e8eaed", "#a0a7af", "#8b929a",
+            "#353a40", "#ffb4a7", "#6a0002", "#5a4544", "#30292a", "#ffb4ab",
         ],
     ),
     (
@@ -162,8 +163,8 @@ const BUILTIN_ROLES: [(&str, [&str; 15]); 10] = [
     (
         "mono-dark",
         [
-            "#131313", "#0e0e0e", "#1b1b1b", "#1f1f1f", "#2a2a2a", "#353535", "#e2e2e2", "#c6c6c6", "#919191",
-            "#474747", "#e2e2e2", "#1b1b1b", "#474747", "#424242", "#ffb4ab",
+            "#141619", "#1f2226", "#111315", "#1b1e21", "#23272b", "#2f343a", "#e8eaed", "#a0a7af", "#8b929a",
+            "#353a40", "#e2e2e2", "#1b1b1b", "#525355", "#2d2e31", "#ffb4ab",
         ],
     ),
     (
@@ -370,8 +371,17 @@ mod tests {
                 assert_eq!(p.bg.luminance() < 0.2, dark, "{builtin:?} dark={dark}");
             }
         }
-        // Blue in the dark is the owner's own palette.
-        assert_eq!(Palette::builtin(Builtin::Blue, true), Palette::from_material(&blue()).unwrap());
+        // Every dark theme has Teal's neutral greys, and its own accent.
+        let teal = Palette::builtin(Builtin::Teal, true);
+        for builtin in Builtin::ALL {
+            let p = Palette::builtin(builtin, true);
+            assert_eq!(
+                (p.bg, p.surface, p.text, p.muted),
+                (teal.bg, teal.surface, teal.text, teal.muted),
+                "{builtin:?}"
+            );
+            assert!(builtin == Builtin::Teal || p.accent != teal.accent, "{builtin:?}");
+        }
     }
 
     #[test]
