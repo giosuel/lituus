@@ -176,6 +176,40 @@ impl Bind {
         Some(format!("hl.bind({}, {action}{opts})", lua_string(&self.keys())))
     }
 
+    /// The bind as hyprlang writes it: `bindl = SUPER, Q, killactive,`; none when its action
+    /// can't be written, or it's a chord.
+    pub fn to_conf(&self) -> Option<String> {
+        if self.key.contains('+') && self.key.trim() != "+" {
+            return None;
+        }
+        let (dispatcher, arg) = self.action.to_conf()?;
+        let f = &self.flags;
+        let mut letters = String::new();
+        for (on, l) in [
+            (f.locked, 'l'),
+            (f.repeating, 'e'),
+            (f.release, 'r'),
+            (f.long_press, 'o'),
+            (f.mouse, 'm'),
+            (f.non_consuming, 'n'),
+            (!self.description.is_empty(), 'd'),
+        ] {
+            if on {
+                letters.push(l);
+            }
+        }
+        let desc = if self.description.is_empty() {
+            String::new()
+        } else {
+            format!("{}, ", self.description.replace(',', " "))
+        };
+        Some(
+            format!("bind{letters} = {}, {}, {desc}{dispatcher}, {arg}", self.mods.join(" "), self.key)
+                .trim_end()
+                .to_owned(),
+        )
+    }
+
     /// The modifiers as `hyprctl binds` reports them.
     pub fn modmask(&self) -> u32 {
         self.mods.iter().filter_map(|m| modifier_bit(m)).fold(0, |mask, bit| mask | bit)
@@ -302,6 +336,69 @@ impl Action {
             Action::Dispatcher { name, args } => Some(Value::Dispatcher(name.clone(), args.clone()).to_lua()),
             Action::Unread => None,
         }
+    }
+}
+
+impl Action {
+    /// The dispatcher and its argument as hyprlang writes them (`killactive`, `exec` "kitty");
+    /// none for what Lituus can't write.
+    pub fn to_conf(&self) -> Option<(String, String)> {
+        let Action::Dispatcher { name, args } = self else { return None };
+        let text = || self.text().unwrap_or_default().to_owned();
+        let field = |k: &str| self.field(k).map(value_text);
+        let short = |d: String| match d.as_str() {
+            "left" => "l".to_owned(),
+            "right" => "r".to_owned(),
+            "up" => "u".to_owned(),
+            "down" => "d".to_owned(),
+            _ => d,
+        };
+        let (d, a): (&str, String) = match name.as_str() {
+            "exec_cmd" => ("exec", text()),
+            "exec_raw" => ("execr", text()),
+            "window.close" => ("killactive", String::new()),
+            "window.kill" => ("forcekillactive", String::new()),
+            "window.float" => ("togglefloating", String::new()),
+            "window.fullscreen" => {
+                ("fullscreen", if field("mode").as_deref() == Some("maximized") { "1".into() } else { String::new() })
+            }
+            "window.pseudo" => ("pseudo", String::new()),
+            "window.pin" => ("pin", String::new()),
+            "window.center" => ("centerwindow", String::new()),
+            "window.drag" => ("movewindow", String::new()),
+            "window.resize" => ("resizewindow", String::new()),
+            "window.move" => match (field("workspace"), field("direction")) {
+                (Some(w), _) if field("follow").as_deref() == Some("false") => ("movetoworkspacesilent", w),
+                (Some(w), _) => ("movetoworkspace", w),
+                (None, Some(dir)) => ("movewindow", short(dir)),
+                _ => return None,
+            },
+            "focus" => match (field("workspace"), field("direction"), field("monitor")) {
+                (Some(w), _, _) => ("workspace", w),
+                (_, Some(dir), _) => ("movefocus", short(dir)),
+                (_, _, Some(m)) => ("focusmonitor", m),
+                _ => return None,
+            },
+            "workspace.toggle_special" => ("togglespecialworkspace", text()),
+            "layout" if text() == "togglesplit" => ("togglesplit", String::new()),
+            "layout" => ("layoutmsg", text()),
+            "group.toggle" => ("togglegroup", String::new()),
+            "reload_config" => ("exec", "hyprctl reload".into()),
+            "exit" => ("exit", String::new()),
+            other if !other.contains('.') && args.len() <= 1 => (other, text()),
+            _ => return None,
+        };
+        Some((d.to_owned(), a))
+    }
+}
+
+fn value_text(v: &Value) -> String {
+    match v {
+        Value::Text(t) => t.clone(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        other => other.to_lua(),
     }
 }
 
@@ -1106,7 +1203,14 @@ fn conf_action(dispatcher: &str, arg: &str, mouse: bool) -> Action {
         "workspace" => ("focus", table("workspace", number_or_text(arg))),
         "movefocus" => ("focus", table("direction", direction(arg))),
         "focusmonitor" => ("focus", table("monitor", Value::Text(arg.trim().into()))),
-        "movetoworkspace" | "movetoworkspacesilent" => ("window.move", table("workspace", number_or_text(arg))),
+        "movetoworkspace" => ("window.move", table("workspace", number_or_text(arg))),
+        "movetoworkspacesilent" => (
+            "window.move",
+            vec![Value::Table(vec![
+                (Some("workspace".to_owned()), number_or_text(arg)),
+                (Some("follow".to_owned()), Value::Bool(false)),
+            ])],
+        ),
         "movewindow" if mouse => ("window.drag", Vec::new()),
         "resizewindow" if mouse => ("window.resize", Vec::new()),
         "movewindow" => ("window.move", table("direction", direction(arg))),
@@ -1179,38 +1283,75 @@ fn read_conf(path: &Path, vars: &mut HashMap<String, String>, binds: &mut Vec<Bi
                 read_conf(&target, vars, binds, seen);
             }
             "submap" => submap = if value == "reset" { String::new() } else { value.clone() },
-            _ if name.starts_with("bind") && name[4..].chars().all(|c| c.is_ascii_lowercase()) => {
-                let letters = &name[4..];
-                let described = letters.contains('d');
-                let mut fields = value.splitn(if described { 5 } else { 4 }, ',').map(str::trim);
-                let mods = split_conf_mods(fields.next().unwrap_or_default());
-                let key = fields.next().unwrap_or_default().to_owned();
-                let description = if described { fields.next().unwrap_or_default().to_owned() } else { String::new() };
-                let dispatcher = fields.next().unwrap_or_default();
-                let arg = fields.next().unwrap_or_default();
-                let mouse = letters.contains('m');
-                binds.push(Bind {
-                    mods,
-                    key,
-                    action: conf_action(dispatcher, arg, mouse),
-                    flags: Flags {
-                        repeating: letters.contains('e'),
-                        locked: letters.contains('l'),
-                        release: letters.contains('r'),
-                        long_press: letters.contains('o'),
-                        mouse,
-                        non_consuming: letters.contains('n'),
-                    },
-                    description,
-                    file: path.to_path_buf(),
-                    line: i + 1,
-                    end_line: i + 1,
-                    submap: submap.clone(),
-                });
+            _ => {
+                if let Some(b) = conf_bind(name, &value, path, i + 1, &submap) {
+                    binds.push(b);
+                }
             }
-            _ => {}
         }
     }
+}
+
+/// A `bind… = MODS, KEY, dispatcher, arg` line (`bindd` with a description before the
+/// dispatcher), as a bind.
+fn conf_bind(name: &str, value: &str, path: &Path, line: usize, submap: &str) -> Option<Bind> {
+    let letters = name.strip_prefix("bind")?;
+    if !letters.chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    let described = letters.contains('d');
+    let mut fields = value.splitn(if described { 5 } else { 4 }, ',').map(str::trim);
+    let mods = split_conf_mods(fields.next().unwrap_or_default());
+    let key = fields.next().unwrap_or_default().to_owned();
+    let description = if described { fields.next().unwrap_or_default().to_owned() } else { String::new() };
+    let dispatcher = fields.next().unwrap_or_default();
+    let arg = fields.next().unwrap_or_default();
+    let mouse = letters.contains('m');
+    Some(Bind {
+        mods,
+        key,
+        action: conf_action(dispatcher, arg, mouse),
+        flags: Flags {
+            repeating: letters.contains('e'),
+            locked: letters.contains('l'),
+            release: letters.contains('r'),
+            long_press: letters.contains('o'),
+            mouse,
+            non_consuming: letters.contains('n'),
+        },
+        description,
+        file: path.to_path_buf(),
+        line,
+        end_line: line,
+        submap: submap.to_owned(),
+    })
+}
+
+/// The binds and unbinds in hyprlang `text` (a part of Lituus's file), as if it were `file`; its
+/// `source`s and variables aren't followed. Unbinds' keys are written as Lua writes them.
+pub fn parse_conf(text: &str, file: &Path) -> Config {
+    let mut config = Config::default();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or_default();
+        let Some((name, value)) = line.split_once('=') else { continue };
+        let (name, value) = (name.trim(), value.trim());
+        if name == "unbind" {
+            let mut fields = value.splitn(2, ',').map(str::trim);
+            let mods = split_conf_mods(fields.next().unwrap_or_default());
+            let key = fields.next().unwrap_or_default();
+            let keys = mods.iter().map(String::as_str).chain(std::iter::once(key)).collect::<Vec<_>>().join(" + ");
+            config.unbinds.push(Unbind { keys, file: file.to_path_buf(), line: i + 1 });
+        } else if let Some(b) = conf_bind(name, value, file, i + 1, "") {
+            config.binds.push(b);
+        }
+    }
+    config
+}
+
+/// Lua's keys ("SUPER + SHIFT + Q") as hyprlang's `MODS, KEY`: "SUPER SHIFT, Q".
+pub fn conf_keys(keys: &str) -> String {
+    let (mods, key) = split_lua_keys(keys);
+    format!("{}, {key}", mods.join(" "))
 }
 
 // ---- Hyprland now ------------------------------------------------------------------------------
@@ -1329,6 +1470,34 @@ end)
         assert!(binds[3].flags.repeating);
         assert_eq!(binds[0].modmask(), 8);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn writes_hyprlang_and_reads_it_back() {
+        let lua = "hl.bind(\"SUPER + Q\", hl.dsp.window.close(), { locked = true })\n\
+                   hl.bind(\"SUPER + SHIFT + 3\", hl.dsp.window.move({ workspace = 3, follow = false }))\n\
+                   hl.bind(\"SUPER + B\", hl.dsp.exec_cmd(\"firefox --new-window\"), { description = \"Browser\" })\n\
+                   hl.bind(\"SUPER + left\", hl.dsp.focus({ direction = \"left\" }))\n";
+        let binds = parse_lua(lua, Path::new("x.lua")).binds;
+        let conf: Vec<String> = binds.iter().map(|b| b.to_conf().unwrap()).collect();
+        assert_eq!(
+            conf,
+            [
+                "bindl = SUPER, Q, killactive,",
+                "bind = SUPER SHIFT, 3, movetoworkspacesilent, 3",
+                "bindd = SUPER, B, Browser, exec, firefox --new-window",
+                "bind = SUPER, left, movefocus, l",
+            ]
+        );
+        let text = format!("unbind = SUPER, J\n{}\n", conf.join("\n"));
+        let back = parse_conf(&text, Path::new("lituus.conf"));
+        assert_eq!(back.unbinds[0].keys, "SUPER + J");
+        assert_eq!(
+            back.binds.iter().map(|b| b.action.clone()).collect::<Vec<_>>(),
+            binds.iter().map(|b| b.action.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(back.binds[2].description, "Browser");
+        assert_eq!(conf_keys("SUPER + SHIFT + Q"), "SUPER SHIFT, Q");
     }
 
     #[test]

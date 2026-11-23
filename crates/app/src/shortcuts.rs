@@ -52,13 +52,18 @@ impl State {
         self.hypr_dir.clone().unwrap_or_else(config_dir)
     }
 
-    fn file(&self) -> ConfigFile {
-        ConfigFile::new(self.dir(), true)
+    /// The config is Lua (Hyprland 0.55 and later); else hyprlang.
+    fn lua(&self) -> bool {
+        self.dir().join("hyprland.lua").exists()
     }
 
-    /// The config is Lua, which Lituus can add its part to (hyprlang is read only, for now).
+    fn file(&self) -> ConfigFile {
+        ConfigFile::new(self.dir(), self.lua())
+    }
+
+    /// There's a config Lituus can add its part to: Lua's, or hyprlang's (lituus.conf).
     fn editable(&self) -> bool {
-        self.dir().join("hyprland.lua").exists()
+        self.lua() || self.dir().join("hyprland.conf").exists()
     }
 
     /// What Lituus's part does to the config's bind `b`.
@@ -153,7 +158,7 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
 
 fn read(dir: &Path) -> Read {
     let h = Hyprland::from_env()?;
-    let section = ConfigFile::new(dir, true).read_section(SECTION);
+    let section = ConfigFile::new(dir, dir.join("hyprland.lua").exists()).read_section(SECTION);
     Ok((read_binds(dir), section, h.binds().ok(), h))
 }
 
@@ -165,8 +170,22 @@ pub fn loaded(state: &mut State, read: Read) {
             let own = state.file().path();
             config.binds.retain(|b| b.file != own);
             config.unbinds.retain(|u| u.file != own);
-            state.loads = config.requires.iter().find(|(name, _, _)| name == "lituus").map(|(_, f, l)| (f.clone(), *l));
-            state.mine = section.map(|t| shortcut_edit::parse(&t, &own)).unwrap_or_default();
+            let lua = state.lua();
+            state.loads = if lua {
+                config.requires.iter().find(|(name, _, _)| name == "lituus").map(|(_, f, l)| (f.clone(), *l))
+            } else {
+                // hyprland.conf's `source = …/lituus.conf`.
+                let main = state.file().main_path();
+                std::fs::read_to_string(&main).ok().and_then(|t| {
+                    t.lines()
+                        .position(|l| {
+                            let l = l.split('#').next().unwrap_or_default().trim();
+                            l.starts_with("source") && l.ends_with("lituus.conf")
+                        })
+                        .map(|i| (main.clone(), i + 1))
+                })
+            };
+            state.mine = section.map(|t| shortcut_edit::parse(&t, &own, lua)).unwrap_or_default();
             state.config = config;
             state.live = live;
             state.hypr = Some(hypr);
@@ -183,7 +202,8 @@ pub fn loaded(state: &mut State, read: Read) {
 fn change(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mine: Vec<Mine>, lua: Option<String>) {
     state.mine = mine;
     state.message = None;
-    let text = shortcut_edit::text(&state.mine);
+    let lua_config = state.lua();
+    let text = shortcut_edit::text(&state.mine, lua_config);
     let file = state.file();
     let hypr = state.hypr.clone();
     let Some(weak) = weak.cloned() else {
@@ -198,9 +218,10 @@ fn change(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mine: Vec<M
         let done =
             file.write_section(SECTION, &text).map_err(|e| format!("Couldn't save the change: {e}.")).and_then(|()| {
                 let Some(h) = hypr else { return Ok(()) };
+                // hyprlang: Hyprland reads its config again, with lituus.conf.
                 match &lua {
-                    Some(lua) => h.eval(lua),
-                    None => h.request("reload").map(|_| ()),
+                    Some(lua) if lua_config => h.eval(lua),
+                    _ => h.request("reload").map(|_| ()),
                 }
                 .map_err(|e| format!("Saved, but Hyprland didn't take it: {e}."))
             });
@@ -1296,9 +1317,15 @@ fn pause(state: &mut State, on: bool) {
         return;
     }
     state.paused = on;
+    let lua = state.lua();
     if let Some(h) = &state.hypr {
-        let lua = if on { shortcut_edit::PAUSE } else { shortcut_edit::RESUME };
-        if let Err(e) = h.eval(lua) {
+        let done = match (lua, on) {
+            (true, true) => h.eval(shortcut_edit::PAUSE),
+            (true, false) => h.eval(shortcut_edit::RESUME),
+            (false, true) => h.request(shortcut_edit::PAUSE_CONF).map(|_| ()),
+            (false, false) => h.request(shortcut_edit::RESUME_CONF).map(|_| ()),
+        };
+        if let Err(e) = done {
             state.message = Some(format!("Hyprland's shortcuts couldn't be paused: {e}."));
         }
     }
@@ -1684,6 +1711,35 @@ mod tests {
         act_with(None, &mut state, "d-save", "");
         reread(&mut state, &d);
         assert!(!row(&view(&state), "Switch split direction").on);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A hyprlang config (Hyprland before 0.55): Lituus's part goes to lituus.conf, sourced at the
+    /// end, as `unbind`/`bind` lines, and reads back the same.
+    #[test]
+    fn a_hyprlang_config() {
+        let d = dir("hyprlang");
+        std::fs::write(
+            d.join("hyprland.conf"),
+            "$mainMod = SUPER\nbind = $mainMod, J, togglesplit,\nbind = $mainMod, Q, exec, kitty\nsource = ./lituus.conf\n",
+        )
+        .unwrap();
+        let mut state = State { hypr_dir: Some(d.clone()), ..Default::default() };
+        reread(&mut state, &d);
+        assert!(state.editable());
+        let id = row(&view(&state), "Switch split direction").id.to_string();
+        act_with(None, &mut state, "toggle", &id);
+        reread(&mut state, &d);
+        let written = std::fs::read_to_string(d.join("lituus.conf")).unwrap();
+        assert!(
+            written.contains("# Written by Lituus (Shortcuts)") && written.contains("unbind = SUPER, J\n"),
+            "{written}"
+        );
+        let v = view(&state);
+        assert_eq!(row(&v, "Switch split direction").from, "Turned off in Lituus");
+        // Loaded on line 4, after the binds: nothing to warn about.
+        assert_eq!(state.loads, Some((d.join("hyprland.conf"), 4)));
+        assert_eq!(v.banner_title, "");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
