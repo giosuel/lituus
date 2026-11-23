@@ -11,6 +11,7 @@ mod airplane;
 mod audio;
 mod bluetooth;
 mod config;
+mod defaultapps;
 mod displays;
 mod editing;
 mod editor;
@@ -196,6 +197,8 @@ struct App {
     wallpapers: wallpaper::State,
     /// System › System.
     system: system::State,
+    /// Desktop › Default apps.
+    default_apps: defaultapps::State,
     /// Airplane mode, from when it's turned on until it ends.
     airplane: Option<airplane::Airplane>,
     /// The sidebar's search.
@@ -706,6 +709,10 @@ fn connect_callbacks(window: &MainWindow) {
         if APP.with(|app| app.borrow().ui.page == view::Page::System) {
             system::refresh(&weak);
         }
+        // Apps and their files may have changed since.
+        if APP.with(|app| app.borrow().ui.page == view::Page::DefaultApps) {
+            defaultapps::open(&weak);
+        }
         // Settings lists the package managers' commands: find them once.
         if APP.with(|app| {
             let app = app.borrow();
@@ -755,7 +762,7 @@ fn connect_callbacks(window: &MainWindow) {
                 view::Page::Bluetooth => return bluetooth::move_selection(&mut app.bt, delta),
                 view::Page::Keyboard => return input::move_layout_selection(&mut app.input, delta),
                 view::Page::Mouse => return input::move_selection(&mut app.input, delta),
-                view::Page::Shortcuts | view::Page::Wallpaper | view::Page::System => return,
+                view::Page::Shortcuts | view::Page::Wallpaper | view::Page::DefaultApps | view::Page::System => return,
                 _ => {}
             }
             let ids = &app.row_ids;
@@ -777,6 +784,7 @@ fn connect_callbacks(window: &MainWindow) {
             | view::Page::Mouse
             | view::Page::Shortcuts
             | view::Page::Wallpaper
+            | view::Page::DefaultApps
             | view::Page::System => {}
             _ => act(app, "connect"),
         })
@@ -875,6 +883,11 @@ fn connect_callbacks(window: &MainWindow) {
     window.on_system_copied(move || system::copied(&weak));
     let weak = window.as_weak();
     window.on_system_act(move |verb, arg| system::act(&weak, &verb, &arg));
+    let weak = window.as_weak();
+    window.on_default_apps_act(move |verb, arg| {
+        let w = weak.clone();
+        update(&weak, |app| defaultapps::act(&w, &mut app.default_apps, &verb, &arg))
+    });
     let weak = window.as_weak();
     window.on_update_command(move |key, command| {
         let command = command.trim().to_owned();
@@ -1603,6 +1616,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "default-apps",
+            label: "Default apps",
+            icon: "app",
+            group: "DESKTOP",
+            keywords: "default apps applications open with browser web email mail files file manager terminal text editor \
+                       images pictures photos videos music pdf archives mime mimeapps xdg-open file types",
+            status: defaultapps::status(&app.default_apps),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "system",
             label: "System",
             icon: "computer",
@@ -1777,6 +1801,7 @@ fn render(window: &MainWindow) {
             state.system.nm_version = snap.version.clone();
         }
         system::render(window, &app.system);
+        defaultapps::render(window, &mut app.default_apps);
         if window.get_page() == "settings" {
             window.set_update_commands(model(system::command_rows(&app.system)));
             window.set_update_terminal(system::terminal_text(&app.system).into());
