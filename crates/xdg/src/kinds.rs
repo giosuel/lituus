@@ -234,8 +234,12 @@ pub fn state(kind: &Kind, files: &[ListFile], apps: &[App], db: &MimeDb) -> Kind
     let best = counts.values().copied().max().unwrap_or(0);
     let app =
         resolved.iter().filter_map(|r| r.app.as_deref()).find(|a| counts.get(a) == Some(&best)).map(str::to_owned);
-    let others =
-        types.iter().zip(&resolved).filter(|(_, r)| r.app.is_some() && r.app != app).map(|(t, r)| (t.clone(), r.app.clone())).collect();
+    let others = types
+        .iter()
+        .zip(&resolved)
+        .filter(|(_, r)| r.app.is_some() && r.app != app)
+        .map(|(t, r)| (t.clone(), r.app.clone()))
+        .collect();
     let opened = resolved.iter().filter(|r| r.app.is_some()).count();
     let of_app: Vec<&mimeapps::Resolved> = resolved.iter().filter(|r| r.app == app).collect();
     let from = of_app.first().and_then(|r| r.from).filter(|f| of_app.iter().all(|r| r.from == Some(*f)));

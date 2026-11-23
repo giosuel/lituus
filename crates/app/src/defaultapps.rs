@@ -32,6 +32,8 @@ pub struct Data {
     pub terminal: Option<String>,
     pub terminal_list: PathBuf,
     pub terminal_exec: bool,
+    /// The terminal Lituus's Update buttons use when the list names none ("xterm").
+    pub fallback: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +65,11 @@ fn read() -> Data {
     let icons = apps.iter().filter_map(|a| Some((a.id.clone(), desktop::icon_file(&dirs, &theme, &a.icon)?))).collect();
     let env = lituus_system::updates::Env::from_env();
     let tdirs = lituus_system::terminal::Dirs::from_env(&env.home);
+    let fallback = lituus_system::terminal::default_terminal(&env, &tdirs, std::env::var("TERMINAL").ok().as_deref())
+        .map(|t| t.name)
+        .unwrap_or_default();
     Data {
+        fallback,
         terminal: lituus_system::terminal::listed_terminal(&tdirs),
         terminal_list: lituus_system::terminal::list_to_save(&tdirs),
         terminal_exec: env.which("xdg-terminal-exec").is_some(),
@@ -234,8 +240,25 @@ fn type_name(d: &Data, mime: &str) -> String {
 fn kind_row(state: &mut State, kind: &Kind) -> KindRow {
     let Some(d) = &state.data else { return KindRow::default() };
     if kind.key == "terminal" {
-        let terminal = d.terminal.clone();
-        let note = if d.terminal_exec { "for xdg-terminal-exec" } else { "xdg-terminal-exec isn't installed" };
+        // Not chosen: the one Lituus falls back to, if an app is it.
+        let fallback = (!d.fallback.is_empty())
+            .then(|| {
+                d.apps
+                    .iter()
+                    .find(|a| a.categories.iter().any(|c| c == "TerminalEmulator") && a.id.contains(&d.fallback))
+            })
+            .flatten()
+            .map(|a| a.id.clone());
+        let terminal = d.terminal.clone().or(fallback);
+        let note = match (&d.terminal, d.terminal_exec) {
+            (Some(_), true) => "for xdg-terminal-exec".to_owned(),
+            (Some(_), false) => "xdg-terminal-exec isn't installed".to_owned(),
+            (None, true) => "Not set: xdg-terminal-exec picks one".to_owned(),
+            (None, false) if !d.fallback.is_empty() => {
+                format!("Not set: Lituus uses {}, xdg-terminal-exec isn't installed", d.fallback)
+            }
+            (None, false) => "No terminal found".to_owned(),
+        };
         let hint = kind.hint.to_owned();
         let app = choice(state, terminal.as_deref(), false);
         return KindRow {
@@ -527,6 +550,7 @@ mod tests {
             terminal: Some("kitty.desktop".into()),
             terminal_list: root.join("home/.config/xdg-terminals.list"),
             terminal_exec: true,
+            fallback: String::new(),
             apps,
             dirs,
         }
