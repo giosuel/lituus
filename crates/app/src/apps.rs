@@ -956,8 +956,11 @@ pub fn view(state: &mut State) -> AppsView {
     v.hero_title =
         s(if shown == 1 { "1 app in your launcher".to_owned() } else { format!("{shown} apps in your launcher") });
     let mut line = vec![format!("{hidden} hidden")];
-    if changed + added > 0 {
-        line.push(format!("{changed} changed and {added} added by you"));
+    match (changed, added) {
+        (0, 0) => {}
+        (c, 0) => line.push(format!("{c} changed by you")),
+        (0, a) => line.push(format!("{a} added by you")),
+        (c, a) => line.push(format!("{c} changed and {a} added by you")),
     }
     v.hero_line = s(line.join(" · "));
     v.hero_problems = s(match problems.len() {
@@ -1058,6 +1061,7 @@ pub fn view(state: &mut State) -> AppsView {
         });
         return v;
     };
+    v.app = choice(state, &a);
     let d = state.data.as_ref().expect("loaded");
     v.has_app = true;
     v.id = s(&a.id);
@@ -1112,8 +1116,16 @@ pub fn view(state: &mut State) -> AppsView {
                 .into_iter()
                 .map(|(k, old, new)| {
                     let label = labels.iter().find(|(key, _)| *key == k).map_or(k.clone(), |(_, l)| (*l).to_owned());
-                    let (old, new) =
-                        if k == "Actions" { (format!("{old} actions"), format!("{new} actions")) } else { (old, new) };
+                    let onoff = |v: String| match v.as_str() {
+                        "true" => "On".to_owned(),
+                        "" | "false" => "Off".to_owned(),
+                        _ => v,
+                    };
+                    let (old, new) = match k.as_str() {
+                        "Actions" => (format!("{old} actions"), format!("{new} actions")),
+                        "Terminal" | "NoDisplay" | "PrefersNonDefaultGPU" => (onoff(old), onoff(new)),
+                        _ => (old, new),
+                    };
                     AppChange { label: s(label), old: s(old), new: s(new) }
                 })
                 .collect(),
