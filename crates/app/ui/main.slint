@@ -19,6 +19,7 @@ import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.s
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
+import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
 import { SystemPage, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, SystemUpdate } from "system.slint";
 import { WallpaperPage, WallpaperView, WallpaperTile, WallpaperMonitor, WallpaperTakeoverDialog } from "wallpaper.slint";
 import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEditDialog, ShortcutDeleteDialog } from "shortcuts.slint";
@@ -153,6 +154,9 @@ export component MainWindow inherits Window {
     in property <SystemView> system;
     callback system-copied();
     callback system-act(string, string);
+    in property <DefaultAppsView> default-apps;
+    in-out property <string> default-apps-query;
+    callback default-apps-act(string, string);
     /// Settings › Updates: each package manager's command (default: the default when it was
     /// changed), and the terminal they run in.
     in property <[UpdateCommand]> update-commands;
@@ -753,6 +757,14 @@ export component MainWindow inherits Window {
                         view: root.mouse;
                         act(verb, arg, value) => { root.input-act(verb, arg, value); }
                     }
+                    if root.page == "default-apps": DefaultAppsPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        narrow: root.window-width < 1600px;
+                        view: root.default-apps;
+                        query <=> root.default-apps-query;
+                        act(verb, arg) => { root.default-apps-act(verb, arg); }
+                    }
                     if root.page == "system": SystemPage {
                         vertical-stretch: 1;
                         compact: root.compact;
@@ -872,7 +884,17 @@ export component MainWindow inherits Window {
                                         label: "Terminal";
                                         description: "The default terminal, as xdg-terminal-exec opens it";
                                         first: root.update-commands.length == 0;
-                                        Text { text: root.update-terminal; color: Theme.text; font-size: 13px; horizontal-alignment: right; }
+                                        HorizontalLayout {
+                                            spacing: 14px;
+                                            Text { text: root.update-terminal; color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                                            change-terminal := Text {
+                                                text: "Change in Default apps";
+                                                color: change-area.has-hover ? Theme.text : Theme.accent;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                                change-area := TouchArea { mouse-cursor: pointer; clicked => { root.navigate("default-apps"); } }
+                                            }
+                                        }
                                     }
                                     Text {
                                         text: "Others (DNF, APT, zypper, Snap…) show up here when they're installed.";
@@ -932,7 +954,8 @@ export component MainWindow inherits Window {
         || (root.page == "displays" && (root.displays.keep-open || root.displays.config-open))
         || (root.page == "keyboard" && root.keyboard.add-open) || (root.page == "mouse" && root.mouse.own-open)
         || (root.page == "shortcuts" && (root.shortcuts.dialog.open || root.shortcuts.deleting != ""))
-        || (root.page == "wallpaper" && root.wallpaper.takeover);
+        || (root.page == "wallpaper" && root.wallpaper.takeover)
+        || (root.page == "default-apps" && (root.default-apps.picker-open || root.default-apps.sources-open));
     changed modal-open => { if !self.modal-open { keys.focus(); Focus.give-back(); } }
 
     // The control with the focus can go away (a dialog closes, a button isn't offered any more),
@@ -1221,6 +1244,14 @@ export component MainWindow inherits Window {
         x: 214px;
         y: sidebar.tip-y - 4px;
         text: sidebar.tip;
+    }
+    if root.page == "default-apps" && root.default-apps.picker-open: AppPickerDialog {
+        view: root.default-apps;
+        act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
+    }
+    if root.page == "default-apps" && root.default-apps.sources-open: SourcesDialog {
+        view: root.default-apps;
+        act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
     }
     if root.page == "wallpaper" && root.wallpaper.takeover: WallpaperTakeoverDialog {
         act(verb, arg, value) => { root.wallpaper-act(verb, arg, value); }

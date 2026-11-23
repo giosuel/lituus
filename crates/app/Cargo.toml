@@ -32,6 +32,7 @@ lituus-keyring.workspace = true
 lituus-nm.workspace = true
 lituus-sound.workspace = true
 lituus-system.workspace = true
+lituus-xdg.workspace = true
 lituus-wallpaper.workspace = true
 image.workspace = true
 xkbcommon.workspace = true

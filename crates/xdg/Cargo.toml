@@ -1,0 +1,14 @@
+[package]
+name = "lituus-xdg"
+description = "Desktop files, the XDG MIME Applications spec (which app opens a file type) and shared-mime-info's file types, read and written as apps read them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

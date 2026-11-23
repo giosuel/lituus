@@ -1,0 +1,265 @@
+//! The XDG MIME Applications spec: which app opens a file type. Apps read every mimeapps.list in
+//! this order (per desktop first, in each folder):
+//!
+//! 1. $XDG_CONFIG_HOME/$desktop-mimeapps.list, mimeapps.list (the user's)
+//! 2. $XDG_CONFIG_DIRS/… (the system's)
+//! 3. $XDG_DATA_HOME/applications/… (the user's, deprecated)
+//! 4. $XDG_DATA_DIRS/applications/… (the distribution's)
+//!
+//! The first file whose [Default Applications] names an installed app for a type wins. Without
+//! one, the type opens in the first app that says it opens it: [Added Associations], then the
+//! desktop files' MimeType, minus [Removed Associations]. Lituus reads them the same way, so
+//! what it shows is what really opens, and saves to the user's first own file that exists
+//! (hyprland-mimeapps.list before mimeapps.list), else ~/.config/mimeapps.list.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use crate::Dirs;
+use crate::desktop::App;
+
+/// A mimeapps.list: where it is, whether it's the user's own, and what it says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListFile {
+    pub path: PathBuf,
+    /// In the user's config or data folder.
+    pub own: bool,
+    /// The desktop's ("hyprland"), for a $desktop-mimeapps.list.
+    pub desktop: String,
+    pub exists: bool,
+    pub defaults: Vec<(String, Vec<String>)>,
+    pub added: Vec<(String, Vec<String>)>,
+    pub removed: Vec<(String, Vec<String>)>,
+}
+
+impl ListFile {
+    fn get<'a>(section: &'a [(String, Vec<String>)], mime: &str) -> &'a [String] {
+        section.iter().find(|(m, _)| m == mime).map(|(_, ids)| ids.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn default_for(&self, mime: &str) -> &[String] {
+        Self::get(&self.defaults, mime)
+    }
+}
+
+/// Every file the spec names, in its order, read or not there.
+pub fn files(dirs: &Dirs) -> Vec<ListFile> {
+    let mut out = Vec::new();
+    let mut add = |dir: &Path, own: bool| {
+        for d in &dirs.desktops {
+            out.push(read(dir.join(format!("{d}-mimeapps.list")), own, d));
+        }
+        out.push(read(dir.join("mimeapps.list"), own, ""));
+    };
+    add(&dirs.config_home, true);
+    for d in &dirs.config_dirs {
+        add(d, false);
+    }
+    add(&dirs.data_home.join("applications"), true);
+    for d in &dirs.data_dirs {
+        add(&d.join("applications"), false);
+    }
+    out
+}
+
+fn read(path: PathBuf, own: bool, desktop: &str) -> ListFile {
+    let text = std::fs::read_to_string(&path);
+    let mut f = ListFile { path, own, desktop: desktop.into(), exists: text.is_ok(), ..Default::default() };
+    let mut section = "";
+    for line in text.unwrap_or_default().lines().map(str::trim) {
+        if line.starts_with('[') {
+            section = match line {
+                "[Default Applications]" => "default",
+                "[Added Associations]" => "added",
+                "[Removed Associations]" => "removed",
+                _ => "",
+            };
+            continue;
+        }
+        let Some((mime, ids)) = line.split_once('=') else { continue };
+        let ids: Vec<String> = ids.split(';').map(str::trim).filter(|i| !i.is_empty()).map(str::to_owned).collect();
+        let entry = (mime.trim().to_owned(), ids);
+        match section {
+            "default" => f.defaults.push(entry),
+            "added" => f.added.push(entry),
+            "removed" => f.removed.push(entry),
+            _ => {}
+        }
+    }
+    f
+}
+
+/// Where Lituus saves: the user's first own file that exists, else ~/.config/mimeapps.list.
+pub fn save_target(files: &[ListFile], dirs: &Dirs) -> PathBuf {
+    files
+        .iter()
+        .find(|f| f.own && f.exists && f.path.starts_with(&dirs.config_home))
+        .map(|f| f.path.clone())
+        .unwrap_or_else(|| dirs.config_home.join("mimeapps.list"))
+}
+
+/// What opens a file type, and where that comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    /// The app's desktop file id; `None` when no app opens it.
+    pub app: Option<String>,
+    /// The file (an index into `files`) that names it; `None`: the first app that opens it.
+    pub from: Option<usize>,
+}
+
+/// What really opens `mime`, as apps work it out.
+pub fn resolve(files: &[ListFile], apps: &[App], mime: &str) -> Resolved {
+    let installed = |id: &str| apps.iter().any(|a| a.id == id);
+    for (i, f) in files.iter().enumerate() {
+        if let Some(id) = f.default_for(mime).iter().find(|id| installed(id)) {
+            return Resolved { app: Some(id.clone()), from: Some(i) };
+        }
+    }
+    Resolved { app: candidates(files, apps, mime).into_iter().next(), from: None }
+}
+
+/// The apps that open `mime`, in the order apps would try them: added associations (file by
+/// file), then the desktop files that say so; minus the removed ones.
+pub fn candidates(files: &[ListFile], apps: &[App], mime: &str) -> Vec<String> {
+    let installed = |id: &str| apps.iter().any(|a| a.id == id);
+    let mut removed: HashSet<&str> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for f in files {
+        for id in ListFile::get(&f.added, mime) {
+            if installed(id) && !removed.contains(id.as_str()) && !out.contains(id) {
+                out.push(id.clone());
+            }
+        }
+        removed.extend(ListFile::get(&f.removed, mime).iter().map(String::as_str));
+    }
+    for a in apps {
+        if a.opens(mime) && !removed.contains(a.id.as_str()) && !out.contains(&a.id) {
+            out.push(a.id.clone());
+        }
+    }
+    out
+}
+
+/// Makes `app` the default for each of `mimes` in the file at `path`, keeping the rest of it.
+pub fn set_defaults(path: &Path, mimes: &[String], app: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = with_defaults(&text, mimes, app);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text)
+}
+
+fn with_defaults(text: &str, mimes: &[String], app: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let start = lines.iter().position(|l| l.trim() == "[Default Applications]");
+    let start = match start {
+        Some(s) => s,
+        None => {
+            if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push("[Default Applications]".into());
+            lines.len() - 1
+        }
+    };
+    let end =
+        lines.iter().skip(start + 1).position(|l| l.trim().starts_with('[')).map_or(lines.len(), |p| start + 1 + p);
+    let mut insert_at = end;
+    // Before the blank lines that end the section.
+    while insert_at > start + 1 && lines[insert_at - 1].trim().is_empty() {
+        insert_at -= 1;
+    }
+    let mut new = Vec::new();
+    for mime in mimes {
+        let line = format!("{mime}={app};");
+        match (start + 1..end).find(|&i| lines[i].split_once('=').is_some_and(|(m, _)| m.trim() == mime)) {
+            Some(i) => lines[i] = line,
+            None => new.push(line),
+        }
+    }
+    for (n, line) in new.into_iter().enumerate() {
+        lines.insert(insert_at + n, line);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{desktop, test_dir};
+
+    fn app(id: &str, mimes: &[&str]) -> App {
+        App {
+            id: id.into(),
+            name: id.into(),
+            mime_types: mimes.iter().map(|m| (*m).into()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_first_file_that_names_an_installed_app_wins() {
+        let root = test_dir::with(
+            "mimeapps",
+            &[
+                (
+                    "home/.config/hyprland-mimeapps.list",
+                    "[Default Applications]\nimage/png=gone.desktop;imv.desktop;\n",
+                ),
+                (
+                    "home/.config/mimeapps.list",
+                    "[Default Applications]\nimage/png=gimp.desktop\ntext/html=firefox.desktop\n",
+                ),
+                (
+                    "usr/share/applications/mimeapps.list",
+                    "[Default Applications]\napplication/pdf=papers.desktop\n[Removed Associations]\nimage/gif=gimp.desktop\n",
+                ),
+            ],
+        );
+        let dirs = test_dir::dirs(&root);
+        let files = files(&dirs);
+        let apps = vec![
+            app("imv.desktop", &["image/png", "image/gif"]),
+            app("gimp.desktop", &["image/png", "image/gif"]),
+            app("firefox.desktop", &["text/html", "image/gif"]),
+            app("papers.desktop", &["application/pdf"]),
+        ];
+        let where_ =
+            |r: Resolved| (r.app, r.from.map(|i| files[i].path.strip_prefix(&root).unwrap().display().to_string()));
+        assert_eq!(
+            where_(resolve(&files, &apps, "image/png")),
+            (Some("imv.desktop".into()), Some("home/.config/hyprland-mimeapps.list".into()))
+        );
+        assert_eq!(
+            where_(resolve(&files, &apps, "application/pdf")),
+            (Some("papers.desktop".into()), Some("usr/share/applications/mimeapps.list".into()))
+        );
+        // Not set anywhere: the first app that opens it, without the removed one.
+        assert_eq!(candidates(&files, &apps, "image/gif"), ["imv.desktop", "firefox.desktop"]);
+        assert_eq!(resolve(&files, &apps, "image/gif"), Resolved { app: Some("imv.desktop".into()), from: None });
+        assert_eq!(save_target(&files, &dirs), root.join("home/.config/hyprland-mimeapps.list"));
+        let _ = desktop::all(&dirs);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn saving_keeps_the_rest() {
+        let text = "# mine\n[Added Associations]\ntext/plain=nvim.desktop;\n\n[Default Applications]\nimage/png=gimp.desktop;\n\n[Removed Associations]\n";
+        let out = with_defaults(text, &["image/png".into(), "image/jpeg".into()], "imv.desktop");
+        assert_eq!(
+            out,
+            "# mine\n[Added Associations]\ntext/plain=nvim.desktop;\n\n[Default Applications]\nimage/png=imv.desktop;\nimage/jpeg=imv.desktop;\n\n[Removed Associations]\n"
+        );
+        assert_eq!(
+            with_defaults("", &["text/html".into()], "firefox.desktop"),
+            "[Default Applications]\ntext/html=firefox.desktop;\n"
+        );
+        assert_eq!(
+            with_defaults("[Added Associations]\na/b=c.desktop;\n", &["text/html".into()], "f.desktop"),
+            "[Added Associations]\na/b=c.desktop;\n\n[Default Applications]\ntext/html=f.desktop;\n"
+        );
+    }
+}

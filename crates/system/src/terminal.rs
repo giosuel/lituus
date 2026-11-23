@@ -103,6 +103,27 @@ pub fn listed_terminal(dirs: &Dirs) -> Option<String> {
     None
 }
 
+/// The list Lituus saves the terminal to: the user's per-desktop one if there is one (it's read
+/// first), else ~/.config/xdg-terminals.list.
+pub fn list_to_save(dirs: &Dirs) -> PathBuf {
+    dirs.desktops
+        .iter()
+        .map(|d| dirs.config_home.join(format!("{d}-xdg-terminals.list")))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| dirs.config_home.join("xdg-terminals.list"))
+}
+
+/// Makes `id` the first terminal in the list at `path`, keeping the others after it.
+pub fn set_terminal(path: &Path, id: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let rest = text.lines().filter(|l| l.trim().trim_start_matches('-').split(':').next() != Some(id));
+    let out: Vec<&str> = std::iter::once(id).chain(rest).collect();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, out.join("\n") + "\n")
+}
+
 /// A desktop file's Name, found by its id in the application folders.
 pub fn desktop_name(dirs: &Dirs, id: &str) -> Option<String> {
     dirs.applications().into_iter().find_map(|dir| {
@@ -197,6 +218,13 @@ mod tests {
         let d = dirs(&root);
         assert_eq!(listed_terminal(&d).as_deref(), Some("kitty.desktop"));
         assert_eq!(desktop_name(&d, "kitty.desktop").as_deref(), Some("kitty"));
+        assert_eq!(list_to_save(&d), root.join("home/.config/hyprland-xdg-terminals.list"));
+        set_terminal(&list_to_save(&d), "foot.desktop").unwrap();
+        assert_eq!(listed_terminal(&d).as_deref(), Some("foot.desktop"));
+        assert_eq!(
+            std::fs::read_to_string(list_to_save(&d)).unwrap(),
+            "foot.desktop\n# mine\nkitty.desktop:new-window\n"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
