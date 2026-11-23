@@ -243,9 +243,14 @@ fn kind_row(state: &mut State, kind: &Kind) -> KindRow {
         // Not chosen: the one Lituus falls back to, if an app is it.
         let fallback = (!d.fallback.is_empty())
             .then(|| {
-                d.apps
-                    .iter()
-                    .find(|a| a.categories.iter().any(|c| c == "TerminalEmulator") && a.id.contains(&d.fallback))
+                d.apps.iter().find(|a| {
+                    // Its own desktop file ("debian-xterm.desktop"), not a relative's ("…-uxterm").
+                    let stem = a.id.trim_end_matches(".desktop");
+                    a.categories.iter().any(|c| c == "TerminalEmulator")
+                        && (stem == d.fallback
+                            || stem.ends_with(&format!("-{}", d.fallback))
+                            || stem.ends_with(&format!(".{}", d.fallback)))
+                })
             })
             .flatten()
             .map(|a| a.id.clone());
