@@ -453,6 +453,22 @@ pub fn held(flags: &str) -> Vec<String> {
         .collect()
 }
 
+/// The modifiers of a recorded shortcut: those Slint says are held (`flags`), and AltGr (MOD5),
+/// which Slint's flags don't have, when its key was pressed (`pressed`: the modifier keys pressed
+/// while listening). AltGr comes with Slint's Alt flag on some systems; then Alt counts only if
+/// its own key was pressed too.
+pub fn recorded(flags: &str, pressed: &[String]) -> Vec<String> {
+    let altgr = pressed.iter().any(|p| p == "MOD5");
+    let mut mods = held(flags);
+    if altgr && !pressed.iter().any(|p| p == "ALT") {
+        mods.retain(|m| m != "ALT");
+    }
+    if altgr {
+        mods.push("MOD5".to_owned());
+    }
+    mods
+}
+
 /// Lua that pauses Hyprland's own shortcuts while Lituus listens for keys: a submap whose one bind,
 /// Esc, leaves it. The keys pressed reach Lituus and run nothing; Esc reaches Lituus too (the bind
 /// doesn't consume it), and brings Hyprland's shortcuts back even if Lituus went away meanwhile.
@@ -539,6 +555,12 @@ mod tests {
         assert_eq!(modifier(&slint::SharedString::from(slint::platform::Key::Meta)), Some("SUPER"));
         assert_eq!(modifier("q"), None);
         assert_eq!(held("SMC"), ["SUPER", "CTRL", "SHIFT"]);
+        // AltGr (it comes with Alt's flag on some systems) is MOD5, and Alt only with its own key.
+        let mods = |p: &[&str]| p.iter().map(|m| (*m).to_owned()).collect::<Vec<_>>();
+        assert_eq!(recorded("MA", &mods(&["SUPER", "MOD5"])), ["SUPER", "MOD5"]);
+        assert_eq!(recorded("M", &mods(&["SUPER", "MOD5"])), ["SUPER", "MOD5"]);
+        assert_eq!(recorded("MA", &mods(&["SUPER", "ALT", "MOD5"])), ["SUPER", "ALT", "MOD5"]);
+        assert_eq!(recorded("MA", &mods(&["SUPER", "ALT"])), ["SUPER", "ALT"]);
     }
 
     #[test]

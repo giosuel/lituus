@@ -1435,7 +1435,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             }
             match key {
                 Some(key) => {
-                    d.keys = Some((shortcut_edit::held(flags), key));
+                    d.keys = Some((shortcut_edit::recorded(flags, &d.held), key));
                     d.listening = false;
                     d.held.clear();
                     d.replace = false;
@@ -1728,6 +1728,12 @@ mod tests {
         act_with(None, &mut state, "d-listen", "");
         act_with(None, &mut state, "d-key", "z\tM");
         assert_eq!(keys(&state).unwrap().1, "Z");
+        // Super + AltGr + 2 types "@" there: AltGr is MOD5 (it came with Alt's flag), the key is 2.
+        act_with(None, &mut state, "d-listen", "");
+        let altgr = SharedString::from(slint::platform::Key::AltGr);
+        act_with(None, &mut state, "d-key", &format!("{altgr}\tMA"));
+        act_with(None, &mut state, "d-key", "@\tMA");
+        assert_eq!(keys(&state), Some((vec!["SUPER".to_owned(), "MOD5".to_owned()], "2".to_owned())));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
