@@ -17,7 +17,7 @@
 [![Wayland native](https://img.shields.io/badge/Wayland-native-e5484d?style=flat-square&logo=wayland&logoColor=white)](#)
 [![Hyprland ready](https://img.shields.io/badge/Hyprland-ready-58e1ff?style=flat-square&logo=hyprland&logoColor=white)](#-hyprland)
 
-[**Website**](https://lituus.giosuel.ch/) · [**Install**](#-install) · [**Hyprland setup**](#-hyprland) · [**Shortcuts**](#%EF%B8%8F-shortcuts)
+[**Website**](https://lituus.giosuel.io/) · [**Install**](#-install) · [**Hyprland setup**](#-hyprland) · [**Shortcuts**](#%EF%B8%8F-shortcuts)
 
 </div>
 
