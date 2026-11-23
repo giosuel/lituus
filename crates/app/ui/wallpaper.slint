@@ -10,7 +10,8 @@ import { Slider } from "sound.slint";
 
 /// A tile of the grid: a folder (its first pictures) or a picture. id: the file or folder.
 /// sub: its size, or the monitors it's on (`accent`).
-export struct WallpaperTile { id: string, folder: bool, name: string, sub: string, accent: bool, picture: image, pictures: [image], gif: bool }
+/// off: the program can't show it (a GIF with hyprpaper): greyed, with why on hover.
+export struct WallpaperTile { id: string, folder: bool, name: string, sub: string, accent: bool, picture: image, pictures: [image], gif: bool, off: bool }
 /// A monitor in the hero: where it is in the layout (fractions of it), and its picture. target:
 /// a click sets it.
 export struct WallpaperMonitor { name: string, model: string, file: string, x: float, y: float, w: float, h: float, picture: image, target: bool }
@@ -58,6 +59,9 @@ export struct WallpaperView {
     every: int,
     orders: [string],
     order: int,
+    /// hyprpaper is the program: its splash switch (Hyprland's text over the picture).
+    hyprpaper: bool,
+    splash: bool,
     /// The command run after a change.
     after: string,
     after-note: string,
@@ -180,7 +184,8 @@ component Tile inherits Focusable {
             background: #000000b0;
             Text { text: "GIF"; color: #ffffff; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
         }
-        // On hover, what a click does.
+        if root.tile.off: Rectangle { background: Theme.surface; opacity: 0.62; }
+        // On hover, what a click does (or why it can't).
         if !root.tile.folder && root.has-hover: Rectangle {
             x: (parent.width - self.width) / 2;
             y: parent.height - self.height - 10px;
@@ -188,7 +193,7 @@ component Tile inherits Focusable {
             height: 26px;
             border-radius: 13px;
             background: #000000b8;
-            hint := Text { text: root.set-label; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            hint := Text { text: root.tile.off ? "Moves only with awww" : root.set-label; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
     VerticalLayout {
@@ -459,6 +464,11 @@ export component WallpaperPage inherits VerticalLayout {
                         selected: root.view.program;
                         chosen(i) => { root.act("program", "", i); }
                     }
+                }
+                if root.view.hyprpaper: SettingRow {
+                    label: "Hyprland's splash text";
+                    description: "Drawn over the picture";
+                    Switch { on: root.view.splash; label: "Hyprland's splash text"; toggled => { root.act("splash", "", 0); } }
                 }
                 // The command fills the card's width, under its name.
                 Rectangle { height: 1px; background: Theme.border; }

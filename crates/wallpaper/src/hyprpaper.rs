@@ -82,6 +82,41 @@ fn blocks(text: &str) -> Vec<(usize, usize, Entry)> {
     out
 }
 
+/// Whether hyprpaper draws Hyprland's splash text over the picture (`splash`, off unless set).
+pub fn splash(text: &str) -> bool {
+    top_level(text)
+        .find_map(|(_, k, v)| (k == "splash").then_some(matches!(v.as_str(), "1" | "true" | "yes" | "on")))
+        .unwrap_or(false)
+}
+
+/// The file with `splash` set, the rest as it was (a new line goes at the top).
+pub fn with_splash(text: &str, on: bool) -> String {
+    let line = format!("splash = {on}");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    match top_level(text).find(|(_, k, _)| k == "splash") {
+        Some((i, _, _)) => lines[i] = line,
+        None => lines.insert(0, line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The `key = value` lines outside the blocks: (line, key, value).
+fn top_level(text: &str) -> impl Iterator<Item = (usize, String, String)> + '_ {
+    let mut depth = 0i32;
+    text.lines().enumerate().filter_map(move |(i, l)| {
+        let l = l.split('#').next().unwrap_or_default();
+        let outside = depth == 0;
+        depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+        if !outside || l.contains('{') {
+            return None;
+        }
+        let (k, v) = l.split_once('=')?;
+        Some((i, k.trim().to_owned(), v.trim().to_owned()))
+    })
+}
+
 /// The `wallpaper` blocks in hyprpaper.conf's text.
 pub fn entries(text: &str) -> Vec<Entry> {
     blocks(text).into_iter().map(|(_, _, e)| e).collect()
@@ -136,6 +171,16 @@ pub fn conf_text(text: &str, set: &[Entry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_splash_line() {
+        let text = "# mine\nwallpaper {\n    monitor = DP-1\n    splash = true\n}\n";
+        assert!(!splash(text));
+        let on = with_splash(text, true);
+        assert_eq!(on, "splash = true\n# mine\nwallpaper {\n    monitor = DP-1\n    splash = true\n}\n");
+        assert!(splash(&on));
+        assert_eq!(with_splash(&on, false), on.replacen("splash = true", "splash = false", 1));
+    }
 
     #[test]
     fn keeps_the_rest_of_the_file() {
