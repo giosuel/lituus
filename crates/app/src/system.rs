@@ -2,13 +2,22 @@
 //! what it is in the hero (renamed with the hostname dialog), its hardware, drives and battery, the
 //! software Lituus's pages use, and the whole page as plain text for a bug report, without the
 //! names or serial numbers. What it shows is read once a page visit, on a thread (lituus-system).
+//! Software also counts the package updates (when the page opens, then every 30 minutes while it's
+//! open) and runs a package manager's update command in the default terminal.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use lituus_system::terminal::{self, Terminal};
+use lituus_system::updates::{self, Found, Manager};
 use lituus_system::{Battery, Cpu, Device, Drive, Firmware, Gpu, Memory, Os};
 use slint::{Image, ModelRc, SharedString, VecModel};
 
-use crate::{MainWindow, SystemDrive, SystemFact, SystemFs, SystemSoftware, SystemView, update};
+use crate::{MainWindow, SystemDrive, SystemFact, SystemFs, SystemSoftware, SystemUpdate, SystemView, update};
+
+/// How often the counts are checked again while the page is open.
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 
 /// What the page reads.
 #[derive(Clone, Debug, Default)]
@@ -48,6 +57,32 @@ pub struct State {
     /// The hostname and NetworkManager's version, from NetworkManager.
     pub hostname: String,
     pub nm_version: String,
+    pub updates: Updates,
+    /// The update commands the user changed, by package manager (config.toml's `[updates]`).
+    pub commands: BTreeMap<String, String>,
+}
+
+/// The package managers and their updates.
+#[derive(Default)]
+pub struct Updates {
+    /// Found once (`None` before).
+    pub found: Option<Vec<Found>>,
+    pub terminal: Option<Terminal>,
+    /// A count, or why it couldn't check; missing while it checks.
+    pub results: HashMap<Manager, Result<u32, String>>,
+    pub checking: bool,
+    pub checked_at: Option<Instant>,
+    /// The ones being updated in the terminal now.
+    pub running: Vec<Manager>,
+    /// The terminal couldn't be started.
+    pub error: String,
+}
+
+impl Updates {
+    pub fn command(&self, commands: &BTreeMap<String, String>, m: Manager) -> String {
+        let default = self.found.iter().flatten().find(|f| f.manager == m).map(|f| f.default_command.clone());
+        commands.get(m.key()).filter(|c| !c.trim().is_empty()).cloned().or(default).unwrap_or_default()
+    }
 }
 
 fn read_root(root: &Path) -> Info {
@@ -105,12 +140,163 @@ fn read_root(root: &Path) -> Info {
     }
 }
 
-/// Reads the computer, on a thread.
+/// Reads the computer, on a thread, and counts the updates again unless they were counted a
+/// moment ago.
 pub fn refresh(weak: &slint::Weak<MainWindow>) {
-    let weak = weak.clone();
+    let w = weak.clone();
     std::thread::spawn(move || {
         let info = read_root(Path::new("/"));
-        let _ = weak.clone().upgrade_in_event_loop(move |_| update(&weak, move |app| app.system.info = Some(info)));
+        let _ = w.clone().upgrade_in_event_loop(move |_| update(&w, move |app| app.system.info = Some(info)));
+    });
+    let recent = crate::APP
+        .with(|app| app.borrow().system.updates.checked_at.is_some_and(|t| t.elapsed() < Duration::from_secs(60)));
+    if !recent {
+        check(weak);
+    }
+}
+
+/// Counts the updates of every package manager, each on its own thread, showing each count as it
+/// comes. Not while it already checks or a terminal updates.
+pub fn check(weak: &slint::Weak<MainWindow>) {
+    let busy = crate::APP.with(|app| {
+        let u = &app.borrow().system.updates;
+        u.checking || !u.running.is_empty()
+    });
+    if busy {
+        return;
+    }
+    update(weak, |app| {
+        app.system.updates.checking = true;
+        app.system.updates.results.clear();
+    });
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        let env = updates::Env::from_env();
+        let found = updates::found(&env, &lituus_system::os(Path::new("/")).id);
+        let dirs = terminal::Dirs::from_env(&env.home);
+        let term = terminal::default_terminal(&env, &dirs, std::env::var("TERMINAL").ok().as_deref());
+        let w = weak.clone();
+        let list = found.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, move |app| {
+                app.system.updates.found = Some(list);
+                app.system.updates.terminal = term;
+            })
+        });
+        std::thread::scope(|scope| {
+            for f in &found {
+                let (env, weak) = (&env, weak.clone());
+                scope.spawn(move || {
+                    let result = updates::count(env, f);
+                    let m = f.manager;
+                    let w = weak.clone();
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        update(&w, move |app| {
+                            app.system.updates.results.insert(m, result);
+                        })
+                    });
+                });
+            }
+        });
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, |app| {
+                app.system.updates.checking = false;
+                app.system.updates.checked_at = Some(Instant::now());
+            })
+        });
+    });
+}
+
+/// Every minute while the page is open: "Checked 4 min ago" moves on, and after 30 minutes it
+/// checks again.
+pub fn spawn_timer(weak: &slint::Weak<MainWindow>) {
+    let weak = weak.clone();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, Duration::from_secs(60), move || {
+        let Some(window) = weak.upgrade() else { return };
+        if window.get_page() != "system" {
+            return;
+        }
+        let due =
+            crate::APP.with(|app| app.borrow().system.updates.checked_at.is_none_or(|t| t.elapsed() >= CHECK_EVERY));
+        if due {
+            check(&weak);
+        } else {
+            update(&weak, |_| {});
+        }
+    });
+    // Kept for as long as the app runs.
+    std::mem::forget(timer);
+}
+
+/// The page's buttons: "check", "update" (a package manager's key) and "update-all".
+pub fn act(weak: &slint::Weak<MainWindow>, verb: &str, arg: &str) {
+    match verb {
+        "check" => check(weak),
+        "update" => {
+            if let Some(m) = Manager::from_key(arg) {
+                run(weak, vec![m]);
+            }
+        }
+        "update-all" => {
+            let all = crate::APP.with(|app| {
+                let u = &app.borrow().system.updates;
+                u.found
+                    .iter()
+                    .flatten()
+                    .map(|f| f.manager)
+                    .filter(|m| matches!(u.results.get(m), Some(Ok(n)) if *n > 0))
+                    .collect()
+            });
+            run(weak, all);
+        }
+        _ => {}
+    }
+}
+
+/// Runs the package managers' update commands one after another in the default terminal; when
+/// the terminal closes, counts again.
+fn run(weak: &slint::Weak<MainWindow>, managers: Vec<Manager>) {
+    if managers.is_empty() {
+        return;
+    }
+    let (term, script) = crate::APP.with(|app| {
+        let app = app.borrow();
+        let u = &app.system.updates;
+        let commands: Vec<(String, String)> =
+            managers.iter().map(|m| (m.label().to_owned(), u.command(&app.system.commands, *m))).collect();
+        (u.terminal.clone(), terminal::script(&commands))
+    });
+    let Some(term) = term else {
+        update(weak, |app| {
+            app.system.updates.error =
+                "No terminal found: install xdg-terminal-exec, or set $TERMINAL to your terminal.".into()
+        });
+        return;
+    };
+    let child =
+        std::process::Command::new(&term.argv[0]).args(&term.argv[1..]).arg("sh").arg("-c").arg(&script).spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let error = format!("Couldn't start {}: {e}", term.argv[0]);
+            update(weak, move |app| app.system.updates.error = error);
+            return;
+        }
+    };
+    update(weak, |app| {
+        app.system.updates.error.clear();
+        app.system.updates.running = managers;
+    });
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, |app| app.system.updates.running.clear());
+            check(&w);
+        });
     });
 }
 
@@ -280,6 +466,22 @@ fn facts(info: &Info) -> (Vec<SystemFact>, Vec<String>) {
                 } else {
                     "Legacy BIOS".to_owned()
                 },
+            ]),
+        ));
+    }
+    if let Some(b) = info.batteries.first() {
+        facts.push(fact(
+            "battery",
+            "Battery",
+            format!(
+                "{} %{}",
+                b.charge,
+                if b.status.is_empty() { String::new() } else { format!(" · {}", b.status.to_lowercase()) }
+            ),
+            join([
+                b.health.map(|h| format!("{h} % of its new capacity")).unwrap_or_default(),
+                b.cycles.map(|c| format!("{c} charge cycles")).unwrap_or_default(),
+                b.name.clone(),
             ]),
         ));
     }
@@ -462,44 +664,177 @@ pub fn view(state: &State) -> SystemView {
         1 => "1 drive".to_owned(),
         n => format!("{n} drives"),
     });
-    let row =
-        |name: &str, version: &str, note: &str| SystemSoftware { name: s(name), version: s(version), note: s(note) };
-    let desktop = if info.hyprland.is_empty() {
-        row(
-            "Desktop",
-            if info.desktop.is_empty() { "Unknown" } else { &info.desktop },
-            &capital(&format!("{} session", info.session)),
-        )
-    } else {
-        row("Desktop", &format!("Hyprland {}", info.hyprland), &capital(&format!("{} session", info.session)))
+    let row = |name: &str, version: &str, note: &str, mono: bool| SystemSoftware {
+        name: s(name),
+        version: s(version),
+        note: s(note),
+        mono,
     };
-    v.software = model(vec![row("Kernel", &info.kernel, ""), desktop, row("Lituus", env!("APP_VERSION"), "")]);
+    // The distribution, from os-release.
+    let os = &info.os;
+    v.distro_name = s(if os.rolling || os.version.is_empty() {
+        os.name.clone()
+    } else {
+        format!("{} {}", os.name, version_number(os))
+    });
+    v.distro_detail = s(if os.rolling {
+        "Rolling release".to_owned()
+    } else if !os.variant.is_empty() {
+        os.variant.clone()
+    } else {
+        os.version.trim_start_matches(&version_number(os)).trim().trim_matches(['(', ')']).to_owned()
+    });
+    let mut distro = Vec::new();
+    if let Some(like) = os.id_like.first() {
+        distro.push(row("Based on", &lituus_system::distro_name(like), "", false));
+    }
+    if !os.support_end.is_empty() {
+        distro.push(row("Supported until", &day_text(&os.support_end), "", false));
+    }
+    if !os.build.is_empty() {
+        distro.push(row("Build", &os.build, "", true));
+    }
+    v.distro = model(distro);
+    updates_view(state, &mut v);
+    let session = capital(&format!("{} session", info.session));
+    let desktop = if info.hyprland.is_empty() {
+        row("Desktop", if info.desktop.is_empty() { "Unknown" } else { &info.desktop }, &session, false)
+    } else {
+        row("Desktop", &format!("Hyprland {}", info.hyprland), &session, false)
+    };
+    v.software =
+        model(vec![row("Kernel", &info.kernel, "", true), desktop, row("Lituus", env!("APP_VERSION"), "", true)]);
     let or = |v: &str, missing: &str| if v.is_empty() { missing.to_owned() } else { v.to_owned() };
     let mut uses = vec![
-        row("NetworkManager", &or(&state.nm_version, "Not running"), "Network"),
-        row("BlueZ", &or(&info.bluez, "Not installed"), "Bluetooth"),
-        row("PipeWire", &or(&info.pipewire, "Not installed"), "Sound"),
+        row("NetworkManager", &or(&state.nm_version, "Not running"), "Network", true),
+        row("BlueZ", &or(&info.bluez, "Not installed"), "Bluetooth", true),
+        row("PipeWire", &or(&info.pipewire, "Not installed"), "Sound", true),
     ];
     if let Some((name, version)) = &info.wallpaper {
-        uses.push(row(name, version, "Wallpaper"));
+        uses.push(row(name, version, "Wallpaper", true));
     }
     v.uses = model(uses);
-    if let Some(b) = info.batteries.first() {
-        v.battery = true;
-        v.battery_title = s(format!(
-            "{} %{}",
-            b.charge,
-            if b.status.is_empty() { String::new() } else { format!(" · {}", b.status.to_lowercase()) }
-        ));
-        v.battery_detail = s(join([
-            b.health.map(|h| format!("{h} % of its new capacity")).unwrap_or_default(),
-            b.cycles.map(|c| format!("{c} charge cycles")).unwrap_or_default(),
-            b.name.clone(),
-        ]));
-    }
     v.report = s(report(state, info));
     v.copied = state.copied;
     v
+}
+
+/// "43" from VERSION_ID-like text: the version's first word ("43 (Workstation Edition)" → "43").
+fn version_number(os: &Os) -> String {
+    os.version.split_whitespace().next().unwrap_or_default().to_owned()
+}
+
+/// "2026-12-09" → "9 Dec 2026".
+fn day_text(date: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let parts: Vec<&str> = date.split('-').collect();
+    match parts[..] {
+        [y, m, d] => match m.parse::<usize>() {
+            Ok(m) if (1..=12).contains(&m) => format!("{} {} {y}", d.trim_start_matches('0'), MONTHS[m - 1]),
+            _ => date.to_owned(),
+        },
+        _ => date.to_owned(),
+    }
+}
+
+/// "just now", "4 min ago", "1 h ago".
+fn ago(elapsed: Duration) -> String {
+    match elapsed.as_secs() / 60 {
+        0 => "just now".into(),
+        m if m < 60 => format!("{m} min ago"),
+        m => format!("{} h ago", m / 60),
+    }
+}
+
+/// The updates part of Software.
+fn updates_view(state: &State, v: &mut SystemView) {
+    let u = &state.updates;
+    let terminal_name = u.terminal.as_ref().map(|t| t.name.clone()).filter(|n| !n.is_empty());
+    let in_terminal = terminal_name.clone().map(|n| format!("in {n}")).unwrap_or_else(|| "in your terminal".into());
+    let found = u.found.clone().unwrap_or_default();
+    let mut total = 0;
+    let rows: Vec<SystemUpdate> = found
+        .iter()
+        .map(|f| {
+            let (state_, text) = if u.running.contains(&f.manager) {
+                ("running", format!("Updating {in_terminal}…"))
+            } else {
+                match u.results.get(&f.manager) {
+                    None => ("checking", "Checking…".to_owned()),
+                    Some(Ok(0)) => ("none", "Up to date".to_owned()),
+                    Some(Ok(n)) => {
+                        total += n;
+                        ("count", format!("{n} update{}", if *n == 1 { "" } else { "s" }))
+                    }
+                    Some(Err(e)) => ("error", format!("Couldn't check: {e}")),
+                }
+            };
+            SystemUpdate {
+                key: s(f.manager.key()),
+                name: s(f.manager.label()),
+                source: s(&f.source),
+                state: s(state_),
+                text: s(text),
+            }
+        })
+        .collect();
+    v.updates_title = s(if total > 0 { format!("UPDATES · {total}") } else { "UPDATES".to_owned() });
+    v.checking = u.checking;
+    v.checked = s(if u.checking {
+        "Checking…".to_owned()
+    } else {
+        u.checked_at.map(|t| format!("Checked {}", ago(t.elapsed()))).unwrap_or_default()
+    });
+    let counted = rows.iter().filter(|r| r.state == "count").count();
+    v.update_all = counted > 1 && u.running.is_empty();
+    v.updates_note = s(if !u.error.is_empty() {
+        u.error.clone()
+    } else if u.found.is_some() && found.is_empty() {
+        "Lituus didn't find a package manager it can count updates for.".to_owned()
+    } else if !u.running.is_empty() {
+        format!(
+            "{} runs it; when it closes, Lituus checks again.",
+            capital(terminal_name.as_deref().unwrap_or("Your terminal"))
+        )
+    } else if counted > 0 {
+        format!("Update runs it {in_terminal}. The commands are in Settings.")
+    } else {
+        String::new()
+    });
+    v.updates = model(rows);
+}
+
+/// Settings › Updates: each package manager's command, and the terminal.
+pub fn command_rows(state: &State) -> Vec<crate::UpdateCommand> {
+    let u = &state.updates;
+    u.found
+        .iter()
+        .flatten()
+        .map(|f| {
+            let changed =
+                state.commands.get(f.manager.key()).filter(|c| !c.trim().is_empty() && **c != f.default_command);
+            crate::UpdateCommand {
+                key: s(f.manager.key()),
+                name: s(if f.manager == Manager::Aur {
+                    format!("AUR ({})", f.program)
+                } else {
+                    f.manager.label().to_owned()
+                }),
+                source: s(&f.source),
+                command: s(u.command(&state.commands, f.manager)),
+                default: s(if changed.is_some() { f.default_command.as_str() } else { "" }),
+            }
+        })
+        .collect()
+}
+
+/// The terminal's name for Settings: "kitty", or how it's found.
+pub fn terminal_text(state: &State) -> String {
+    match &state.updates.terminal {
+        Some(t) if !t.name.is_empty() => t.name.clone(),
+        Some(_) => "The one xdg-terminal-exec picks".into(),
+        None => "None found: install xdg-terminal-exec".into(),
+    }
 }
 
 pub fn render(window: &MainWindow, state: &State) {
@@ -602,6 +937,54 @@ mod tests {
         // The report: no names.
         assert!(!v.report.contains("orbis") && !v.report.contains("Giosuel"), "{}", v.report);
         assert!(v.report.contains("CPU:       AMD Ryzen 7 7800X3D, 8 cores, 16 threads"), "{}", v.report);
+    }
+
+    #[test]
+    fn updates_in_words() {
+        use slint::Model;
+        let found = |m: Manager, program: &str, source: &str, command: &str| Found {
+            manager: m,
+            program: program.into(),
+            source: source.into(),
+            default_command: command.into(),
+        };
+        let mut state = State { info: Some(info()), ..Default::default() };
+        state.updates.found = Some(vec![
+            found(Manager::Pacman, "pacman", "core, extra", "sudo pacman -Syu"),
+            found(Manager::Aur, "yay", "Through yay", "yay -Sua"),
+            found(Manager::Flatpak, "flatpak", "Flathub", "flatpak update"),
+        ]);
+        state.updates.terminal = Some(Terminal { name: "kitty".into(), argv: vec!["xdg-terminal-exec".into()] });
+        state.updates.results.insert(Manager::Pacman, Ok(23));
+        state.updates.results.insert(Manager::Aur, Ok(4));
+        state.updates.checked_at = Some(Instant::now());
+        let v = view(&state);
+        let rows: Vec<(String, String)> = v.updates.iter().map(|u| (u.state.to_string(), u.text.to_string())).collect();
+        assert_eq!(
+            rows,
+            [
+                ("count".into(), "23 updates".into()),
+                ("count".into(), "4 updates".into()),
+                ("checking".into(), "Checking…".into())
+            ]
+        );
+        assert_eq!((v.updates_title.as_str(), v.checked.as_str()), ("UPDATES · 27", "Checked just now"));
+        assert!(v.update_all);
+        assert_eq!(v.updates_note, "Update runs it in kitty. The commands are in Settings.");
+        // While pacman updates in kitty.
+        state.updates.running = vec![Manager::Pacman];
+        let v = view(&state);
+        assert_eq!(v.updates.row_data(0).unwrap().text, "Updating in kitty…");
+        assert!(!v.update_all);
+        // A changed command shows its default in Settings.
+        state.commands.insert("pacman".into(), "sudo pacman -Syu --noconfirm".into());
+        let c = command_rows(&state);
+        assert_eq!(
+            (c[0].command.as_str(), c[0].default.as_str()),
+            ("sudo pacman -Syu --noconfirm", "sudo pacman -Syu")
+        );
+        assert_eq!((c[1].name.as_str(), c[1].default.as_str()), ("AUR (yay)", ""));
+        assert_eq!(day_text("2026-12-09"), "9 Dec 2026");
     }
 
     #[test]

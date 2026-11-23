@@ -19,7 +19,7 @@ import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.s
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
-import { SystemPage, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware } from "system.slint";
+import { SystemPage, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, SystemUpdate } from "system.slint";
 import { WallpaperPage, WallpaperView, WallpaperTile, WallpaperMonitor, WallpaperTakeoverDialog } from "wallpaper.slint";
 import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEditDialog, ShortcutDeleteDialog } from "shortcuts.slint";
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
@@ -85,6 +85,9 @@ component ListRow inherits Focusable {
     }
 }
 
+/// A package manager's update command, for Settings.
+export struct UpdateCommand { key: string, name: string, source: string, command: string, default: string }
+
 export component MainWindow inherits Window {
     in property <string> version;
     in property <[NavGroup]> nav-groups;
@@ -149,6 +152,12 @@ export component MainWindow inherits Window {
     callback input-act(string, string, float);
     in property <SystemView> system;
     callback system-copied();
+    callback system-act(string, string);
+    /// Settings › Updates: each package manager's command (default: the default when it was
+    /// changed), and the terminal they run in.
+    in property <[UpdateCommand]> update-commands;
+    in property <string> update-terminal;
+    callback update-command(string, string);
     in property <WallpaperView> wallpaper;
     callback wallpaper-act(string, string, float);
     property <int> wallpaper-search-requests;
@@ -752,6 +761,7 @@ export component MainWindow inherits Window {
                         rename => { root.hostname-clicked(); }
                         copied => { root.system-copied(); }
                         open-displays => { root.navigate("displays"); }
+                        act(verb, arg) => { root.system-act(verb, arg); }
                     }
                     if root.page == "wallpaper": WallpaperPage {
                         vertical-stretch: 1;
@@ -828,6 +838,49 @@ export component MainWindow inherits Window {
                                         description: o.sub;
                                         first: i == 0;
                                         Switch { on: o.on; label: o.label; focus-key: "option:" + o.id; toggled => { root.option-toggled(o.id); } }
+                                    }
+                                    SectionLabel { text: "UPDATES"; height: 46px; vertical-alignment: bottom; }
+                                    Text {
+                                        text: "What the Update buttons on System run, in your terminal. Update all runs them one after another.";
+                                        color: Theme.muted;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                        min-height: 30px;
+                                        vertical-alignment: center;
+                                    }
+                                    for c[i] in root.update-commands: SettingRow {
+                                        label: c.name;
+                                        description: c.source;
+                                        differs: c.default != "" ? "Default: " + c.default : "";
+                                        first: i == 0;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            TextField {
+                                                width: 300px;
+                                                mono: true;
+                                                label: c.name + " update command";
+                                                text: c.command;
+                                                committed => { root.update-command(c.key, self.text); }
+                                            }
+                                            if c.default != "": VerticalLayout {
+                                                alignment: center;
+                                                Button { label: "Reset"; horizontal-stretch: 0; clicked => { root.update-command(c.key, ""); } }
+                                            }
+                                        }
+                                    }
+                                    SettingRow {
+                                        label: "Terminal";
+                                        description: "The default terminal, as xdg-terminal-exec opens it";
+                                        first: root.update-commands.length == 0;
+                                        Text { text: root.update-terminal; color: Theme.text; font-size: 13px; horizontal-alignment: right; }
+                                    }
+                                    Text {
+                                        text: "Others (DNF, APT, zypper, Snap…) show up here when they're installed.";
+                                        color: Theme.faint;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                        min-height: 26px;
+                                        vertical-alignment: center;
                                     }
                                     SectionLabel { text: "PASSWORDS"; height: 46px; vertical-alignment: bottom; }
                                     // Where they're kept: something to know, not a setting.

@@ -337,6 +337,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     spawn_theme_watcher(window.as_weak());
+    system::spawn_timer(&window.as_weak());
     if cli.quick {
         toggle_quick(&window);
     } else if !background {
@@ -705,6 +706,13 @@ fn connect_callbacks(window: &MainWindow) {
         if APP.with(|app| app.borrow().ui.page == view::Page::System) {
             system::refresh(&weak);
         }
+        // Settings lists the package managers' commands: find them once.
+        if APP.with(|app| {
+            let app = app.borrow();
+            app.ui.page == view::Page::Settings && app.system.updates.found.is_none()
+        }) {
+            system::check(&weak);
+        }
         // The folder's pictures may have changed, and the program.
         if APP.with(|app| app.borrow().ui.page == view::Page::Wallpaper) {
             let w = weak.clone();
@@ -865,6 +873,33 @@ fn connect_callbacks(window: &MainWindow) {
     });
     let weak = window.as_weak();
     window.on_system_copied(move || system::copied(&weak));
+    let weak = window.as_weak();
+    window.on_system_act(move |verb, arg| system::act(&weak, &verb, &arg));
+    let weak = window.as_weak();
+    window.on_update_command(move |key, command| {
+        let command = command.trim().to_owned();
+        let default = APP.with(|app| {
+            let app = app.borrow();
+            let m = lituus_system::updates::Manager::from_key(&key);
+            app.system.updates.found.iter().flatten().find(|f| Some(f.manager) == m).map(|f| f.default_command.clone())
+        });
+        // Empty or the default: the key goes, so a later default applies.
+        let result = if command.is_empty() || Some(&command) == default.as_ref() {
+            config::unset(&config::path(), "updates", &key)
+        } else {
+            config::set(&config::path(), "updates", &key, command.as_str())
+        };
+        update(&weak, |app| {
+            if command.is_empty() || Some(&command) == default.as_ref() {
+                app.system.commands.remove(key.as_str());
+            } else {
+                app.system.commands.insert(key.to_string(), command.clone());
+            }
+            if let Err(error) = result {
+                app.message = Some((format!("Couldn't save the update command: {error}."), "danger"));
+            }
+        });
+    });
     let weak = window.as_weak();
     window.on_wallpaper_act(move |verb, arg, value| {
         let w = weak.clone();
@@ -1742,6 +1777,10 @@ fn render(window: &MainWindow) {
             state.system.nm_version = snap.version.clone();
         }
         system::render(window, &app.system);
+        if window.get_page() == "settings" {
+            window.set_update_commands(model(system::command_rows(&app.system)));
+            window.set_update_terminal(system::terminal_text(&app.system).into());
+        }
         files::render(window, &app.files);
         // The keys that work on this page now, after the pages above worked out their lists.
         let mut hints = vec![Hint::new("Ctrl K", "Find a setting"), Hint::new("F6", "Sidebar or page")];
@@ -2742,6 +2781,7 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
                 let rows = source_rows(&config, &statuses, follow);
                 let (builtin, mode, gradient) = (config.theme.builtin, config.theme.mode, config.theme.gradient);
                 let overamplify = config.sound.overamplify;
+                let commands = config.updates.clone();
                 let settings = Settings::from(&config);
                 let config_path = path.display().to_string();
                 let _ = weak.upgrade_in_event_loop(move |window| {
@@ -2754,6 +2794,7 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
                         app.follow_wallpaper = follow;
                         app.gradient = gradient;
                         app.sound.overamplify = overamplify;
+                        app.system.commands = commands;
                     });
                     apply_theme(&window);
                     apply_settings(&window, settings);
