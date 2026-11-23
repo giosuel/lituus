@@ -700,7 +700,14 @@ fn connect_focus(window: &MainWindow) {
 fn connect_callbacks(window: &MainWindow) {
     let weak = window.as_weak();
     window.on_navigate(move |id| {
-        update(&weak, |app| go(app, &id));
+        update(&weak, |app| {
+            let before = app.ui.page;
+            go(app, &id);
+            // Revert is for the page just used: leaving it keeps the change.
+            if before != app.ui.page && matches!(before, view::Page::Keyboard | view::Page::Mouse) {
+                input::left(&mut app.input);
+            }
+        });
         // Devices come and go without Hyprland saying so: read them again.
         if APP.with(|app| matches!(app.borrow().ui.page, view::Page::Keyboard | view::Page::Mouse)) {
             input::refresh(&weak);

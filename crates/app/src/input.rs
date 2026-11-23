@@ -261,6 +261,8 @@ pub struct State {
     registry: Option<Registry>,
     /// The last change: what it did ("Repeat delay applied"), and the settings before it.
     last: Option<(String, InputSettings)>,
+    /// When the last change (or Revert) was made: the hero says it for a few seconds.
+    changed_at: Option<std::time::Instant>,
     /// The last change was applied and saved.
     applied: bool,
     reverted: bool,
@@ -483,6 +485,25 @@ fn defaults(s: &InputSettings, touchpad: bool) -> DeviceSettings {
     }
 }
 
+/// The page was left: its last change can't be reverted any more.
+pub fn left(state: &mut State) {
+    state.last = None;
+    state.reverted = false;
+    state.changed_at = None;
+}
+
+/// How long the hero says what a change did.
+const SAYS_CHANGE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A change was made: the hero says it, and goes back to its own line a few seconds later.
+fn just_changed(weak: &slint::Weak<MainWindow>, state: &mut State) {
+    state.changed_at = Some(std::time::Instant::now());
+    let weak = weak.clone();
+    slint::Timer::single_shot(SAYS_CHANGE + std::time::Duration::from_millis(100), move || {
+        crate::update(&weak, |_| {})
+    });
+}
+
 /// Makes a change: `what` says what it did, for the bar ("Repeat delay applied"). Changes with
 /// the same `what` in a row (a dragged slider) are one change for Revert.
 fn change(weak: &slint::Weak<MainWindow>, state: &mut State, what: String, edit: impl FnOnce(&mut InputSettings)) {
@@ -498,6 +519,7 @@ fn change(weak: &slint::Weak<MainWindow>, state: &mut State, what: String, edit:
     state.last = Some((what, before));
     state.applied = false;
     state.reverted = false;
+    just_changed(weak, state);
     commit(weak, state);
 }
 
@@ -526,6 +548,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
                 state.settings = before;
                 state.applied = false;
                 state.reverted = true;
+                just_changed(weak, state);
                 commit(weak, state);
             }
         }
@@ -829,6 +852,7 @@ fn bar(state: &State) -> InputBar {
         text: s(text),
         path: s(path),
         tone: s(tone),
+        recent: state.error.is_some() || state.changed_at.is_some_and(|t| t.elapsed() < SAYS_CHANGE),
         can_revert: state.last.is_some(),
         can_save: state.last.is_none() && state.saved.as_ref().is_some_and(|t| *t != text_now),
         not_loaded: state.file.is_some() && !state.loaded,
@@ -1618,6 +1642,13 @@ B: PROP=5
         st.error = None;
         st.hypr = None;
         assert_eq!(keyboard_view(&mut st).bar.text, "Repeat delay applied and saved to");
+        // The hero says it for a few seconds; Revert stays until the page is left.
+        assert!(keyboard_view(&mut st).bar.recent);
+        st.changed_at = Some(std::time::Instant::now() - SAYS_CHANGE);
+        let v = keyboard_view(&mut st);
+        assert!(!v.bar.recent && v.bar.can_revert);
+        left(&mut st);
+        assert!(!keyboard_view(&mut st).bar.can_revert);
         act(&w, &mut st, "caps", "1", 0.0);
         assert_eq!(st.settings.keyboard.options, "grp:win_space_toggle,lv3:ralt_switch,ctrl:nocaps");
         act(&w, &mut st, "revert", "", 0.0);
