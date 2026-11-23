@@ -19,6 +19,7 @@ import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.s
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
+import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem } from "apps.slint";
 import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
 import { SystemPage, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, SystemUpdate } from "system.slint";
 import { WallpaperPage, WallpaperView, WallpaperTile, WallpaperMonitor, WallpaperTakeoverDialog } from "wallpaper.slint";
@@ -154,6 +155,9 @@ export component MainWindow inherits Window {
     in property <SystemView> system;
     callback system-copied();
     callback system-act(string, string);
+    in property <AppsView> apps;
+    in-out property <string> apps-query;
+    callback apps-act(string, string);
     in property <DefaultAppsView> default-apps;
     in-out property <string> default-apps-query;
     callback default-apps-act(string, string);
@@ -757,6 +761,14 @@ export component MainWindow inherits Window {
                         view: root.mouse;
                         act(verb, arg, value) => { root.input-act(verb, arg, value); }
                     }
+                    if root.page == "apps": AppsPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        narrow: root.window-width < 1600px;
+                        view: root.apps;
+                        query <=> root.apps-query;
+                        act(verb, arg) => { root.apps-act(verb, arg); }
+                    }
                     if root.page == "default-apps": DefaultAppsPage {
                         vertical-stretch: 1;
                         compact: root.compact;
@@ -955,7 +967,8 @@ export component MainWindow inherits Window {
         || (root.page == "keyboard" && root.keyboard.add-open) || (root.page == "mouse" && root.mouse.own-open)
         || (root.page == "shortcuts" && (root.shortcuts.dialog.open || root.shortcuts.deleting != ""))
         || (root.page == "wallpaper" && root.wallpaper.takeover)
-        || (root.page == "default-apps" && (root.default-apps.picker-open || root.default-apps.sources-open));
+        || (root.page == "default-apps" && (root.default-apps.picker-open || root.default-apps.sources-open))
+        || (root.page == "apps" && (root.apps.add-open || root.apps.icon-open));
     changed modal-open => { if !self.modal-open { keys.focus(); Focus.give-back(); } }
 
     // The control with the focus can go away (a dialog closes, a button isn't offered any more),
@@ -1244,6 +1257,14 @@ export component MainWindow inherits Window {
         x: 214px;
         y: sidebar.tip-y - 4px;
         text: sidebar.tip;
+    }
+    if root.page == "apps" && root.apps.add-open && !root.apps.icon-open: AddAppDialog {
+        view: root.apps;
+        act(verb, arg) => { root.apps-act(verb, arg); }
+    }
+    if root.page == "apps" && root.apps.icon-open: IconDialog {
+        view: root.apps;
+        act(verb, arg) => { root.apps-act(verb, arg); }
     }
     if root.page == "default-apps" && root.default-apps.picker-open: AppPickerDialog {
         view: root.default-apps;

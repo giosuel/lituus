@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod airplane;
+mod apps;
 mod audio;
 mod bluetooth;
 mod config;
@@ -199,6 +200,8 @@ struct App {
     system: system::State,
     /// Desktop › Default apps.
     default_apps: defaultapps::State,
+    /// Desktop › Apps.
+    apps: apps::State,
     /// Airplane mode, from when it's turned on until it ends.
     airplane: Option<airplane::Airplane>,
     /// The sidebar's search.
@@ -713,6 +716,9 @@ fn connect_callbacks(window: &MainWindow) {
         if APP.with(|app| app.borrow().ui.page == view::Page::DefaultApps) {
             defaultapps::open(&weak);
         }
+        if APP.with(|app| app.borrow().ui.page == view::Page::Apps) {
+            apps::open(&weak);
+        }
         // Settings lists the package managers' commands: find them once.
         if APP.with(|app| {
             let app = app.borrow();
@@ -762,7 +768,11 @@ fn connect_callbacks(window: &MainWindow) {
                 view::Page::Bluetooth => return bluetooth::move_selection(&mut app.bt, delta),
                 view::Page::Keyboard => return input::move_layout_selection(&mut app.input, delta),
                 view::Page::Mouse => return input::move_selection(&mut app.input, delta),
-                view::Page::Shortcuts | view::Page::Wallpaper | view::Page::DefaultApps | view::Page::System => return,
+                view::Page::Shortcuts
+                | view::Page::Wallpaper
+                | view::Page::Apps
+                | view::Page::DefaultApps
+                | view::Page::System => return,
                 _ => {}
             }
             let ids = &app.row_ids;
@@ -784,6 +794,7 @@ fn connect_callbacks(window: &MainWindow) {
             | view::Page::Mouse
             | view::Page::Shortcuts
             | view::Page::Wallpaper
+            | view::Page::Apps
             | view::Page::DefaultApps
             | view::Page::System => {}
             _ => act(app, "connect"),
@@ -883,6 +894,11 @@ fn connect_callbacks(window: &MainWindow) {
     window.on_system_copied(move || system::copied(&weak));
     let weak = window.as_weak();
     window.on_system_act(move |verb, arg| system::act(&weak, &verb, &arg));
+    let weak = window.as_weak();
+    window.on_apps_act(move |verb, arg| {
+        let w = weak.clone();
+        update(&weak, |app| apps::act(&w, &mut app.apps, &verb, &arg))
+    });
     let weak = window.as_weak();
     window.on_default_apps_act(move |verb, arg| {
         let w = weak.clone();
@@ -1616,6 +1632,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "apps",
+            label: "Apps",
+            icon: "app",
+            group: "DESKTOP",
+            keywords: "apps applications desktop files launcher menu rofi wofi fuzzel hide show rename icon command \
+                       electron wayland appimage website web app menulibre",
+            status: apps::status(&app.apps),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "default-apps",
             label: "Default apps",
             icon: "app",
@@ -1802,6 +1829,7 @@ fn render(window: &MainWindow) {
         }
         system::render(window, &app.system);
         defaultapps::render(window, &mut app.default_apps);
+        apps::render(window, &mut app.apps);
         if window.get_page() == "settings" {
             window.set_update_commands(model(system::command_rows(&app.system)));
             window.set_update_terminal(system::terminal_text(&app.system).into());

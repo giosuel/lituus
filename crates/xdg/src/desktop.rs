@@ -23,6 +23,17 @@ pub struct App {
     pub categories: Vec<String>,
     /// A Flatpak's app id (X-Flatpak), "app.zen_browser.zen".
     pub flatpak: String,
+    pub keywords: Vec<String>,
+    /// StartupWMClass: what Hyprland's window rules match.
+    pub wm_class: String,
+    /// PrefersNonDefaultGPU.
+    pub gpu: bool,
+    /// Quick actions: (id, name, command).
+    pub actions: Vec<(String, String, String)>,
+    /// Read from the user's folder (~/.local/share/applications).
+    pub own: bool,
+    /// The package's file with the same id, if there is one (`own` is then a changed copy).
+    pub package: Option<PathBuf>,
 }
 
 impl App {
@@ -36,10 +47,28 @@ impl App {
 pub fn parse(id: &str, path: &Path, text: &str) -> Option<App> {
     let mut app = App { id: id.into(), path: path.into(), ..Default::default() };
     let mut in_entry = false;
+    let mut action: Option<String> = None;
+    let mut action_ids: Vec<String> = Vec::new();
+    let mut found: Vec<(String, String, String)> = Vec::new();
     let mut kind = String::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
+            action = line.strip_prefix("[Desktop Action ").and_then(|l| l.strip_suffix(']')).map(str::to_owned);
+            if let Some(a) = &action {
+                found.push((a.clone(), String::new(), String::new()));
+            }
+            continue;
+        }
+        if action.is_some()
+            && let Some((key, value)) = line.split_once('=')
+            && let Some(last) = found.last_mut()
+        {
+            match key.trim() {
+                "Name" => last.1 = value.trim().to_owned(),
+                "Exec" => last.2 = value.trim().to_owned(),
+                _ => {}
+            }
             continue;
         }
         if !in_entry || line.starts_with('#') {
@@ -61,9 +90,15 @@ pub fn parse(id: &str, path: &Path, text: &str) -> Option<App> {
             "MimeType" => app.mime_types = list(),
             "Categories" => app.categories = list(),
             "X-Flatpak" => app.flatpak = value.into(),
+            "Keywords" => app.keywords = list(),
+            "StartupWMClass" => app.wm_class = value.into(),
+            "PrefersNonDefaultGPU" => app.gpu = value == "true",
+            "Actions" => action_ids = list(),
             _ => {}
         }
     }
+    // In the order Actions lists them.
+    app.actions = action_ids.iter().filter_map(|id| found.iter().find(|(a, _, _)| a == id).cloned()).collect();
     (kind == "Application" && !app.name.is_empty()).then_some(app)
 }
 
@@ -71,6 +106,7 @@ pub fn parse(id: &str, path: &Path, text: &str) -> Option<App> {
 pub fn all(dirs: &Dirs) -> Vec<App> {
     let mut out: Vec<App> = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let own_dir = dirs.data_home.join("applications");
     for dir in dirs.applications() {
         let mut files = Vec::new();
         walk(&dir, &dir, &mut files);
@@ -79,12 +115,30 @@ pub fn all(dirs: &Dirs) -> Vec<App> {
             if !seen.insert(id.clone()) {
                 continue;
             }
-            if let Some(app) = std::fs::read_to_string(&path).ok().and_then(|t| parse(&id, &path, &t)) {
+            if let Some(mut app) = std::fs::read_to_string(&path).ok().and_then(|t| parse(&id, &path, &t)) {
+                app.own = dir == own_dir;
+                if app.own {
+                    app.package = package_file(dirs, &id);
+                }
                 out.push(app);
             }
         }
     }
     out
+}
+
+/// The package's (the system's) file for an id, in the data folders after the user's.
+pub fn package_file(dirs: &Dirs, id: &str) -> Option<PathBuf> {
+    dirs.data_dirs.iter().map(|d| d.join("applications")).find_map(|dir| {
+        let direct = dir.join(id);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        // kde-dolphin.desktop is kde/dolphin.desktop.
+        let mut files = Vec::new();
+        walk(&dir, &dir, &mut files);
+        files.into_iter().find(|(i, _)| i == id).map(|(_, p)| p)
+    })
 }
 
 fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {

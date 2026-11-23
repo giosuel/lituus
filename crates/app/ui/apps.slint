@@ -1,0 +1,622 @@
+// Desktop › Apps, following the "Apps (desktop files)" mockups (approved 2026-11-23, D-38): every
+// app the launcher can show in a list by category, with filters and a search, and the selected
+// one's details beside it, saved as you go to your own copy of its desktop file. Several can be
+// hidden at once (Ctrl+click, Shift+click). What it shows comes from Rust (src/apps.rs); everything
+// done goes back through `act`.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Button, IconButton, Switch, SectionLabel, Scroll, Focusable } from "controls.slint";
+import { TextField, Modal, Segmented, CheckBox, Select } from "dialogs.slint";
+import { Hero, Card, ScrollCard, SettingRow } from "shell.slint";
+import { AppChoice, AppTile } from "defaultapps.slint";
+
+/// An app in the list. badge: "Changed", "Can't start"… (tone "accent" or "warn"); faint: hidden.
+export struct AppRow { id: string, name: string, sub: string, app: AppChoice, badge: string, badge-tone: string, selected: bool, checked: bool, faint: bool }
+export struct AppSection { title: string, rows: [AppRow] }
+export struct AppFilter { id: string, label: string, count: string, selected: bool, warn: bool }
+export struct AppAction { id: string, name: string, exec: string }
+/// What a copy changes from the package's file.
+export struct AppChange { label: string, old: string, new: string }
+/// A button that fixes a problem.
+export struct AppFix { verb: string, label: string }
+/// A problem: which app (id), what, why, and the buttons that fix it.
+export struct AppProblem { id: string, title: string, text: string, fixes: [AppFix], app: AppChoice }
+export struct AppsView {
+    state: string,
+    hero-title: string,
+    hero-apps: [AppChoice],
+    hero-line: string,
+    hero-problems: string,
+    filters: [AppFilter],
+    list-title: string,
+    sections: [AppSection],
+    list-note: string,
+    show-all: bool,
+    selecting: bool,
+    checked: int,
+    checked-apps: [AppChoice],
+    // The selected app.
+    has-app: bool,
+    id: string,
+    app: AppChoice,
+    title: string,
+    line: string,
+    path: string,
+    shown: bool,
+    shown-note: string,
+    name: string,
+    comment: string,
+    exec: string,
+    exec-note: string,
+    terminal: bool,
+    categories: [string],
+    keywords: string,
+    actions: [AppAction],
+    wm-class: string,
+    electron: bool,
+    wayland: bool,
+    gpu: bool,
+    changes: [AppChange],
+    can-restore: bool,
+    problem: AppProblem,
+    other-problems: [AppProblem],
+    footer: string,
+    message: string,
+    // Add an app.
+    add-open: bool,
+    add-website: bool,
+    add-program: string,
+    add-program-note: string,
+    add-name: string,
+    add-name-note: string,
+    add-comment: string,
+    add-categories: [string],
+    add-category: int,
+    add-terminal: bool,
+    add-address: string,
+    add-browsers: [string],
+    add-browser: int,
+    add-browser-note: string,
+    add-icon: AppChoice,
+    add-footer: string,
+    add-can-save: bool,
+    // Choosing an icon.
+    icon-open: bool,
+    icon-title: string,
+    icon-query: string,
+    icon-note: string,
+    icon-results: [AppChoice],
+}
+
+component AppItem inherits Focusable {
+    in property <AppRow> entry;
+    callback act(string, string);
+    height: 52px;
+    border-radius: 10px;
+    ring-gap: -2px;
+    background: entry.selected || entry.checked ? Theme.accent-soft-bg : self.has-hover ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: entry.name;
+    accessible-item-selected: entry.selected;
+    accessible-action-default => { root.act("select", root.entry.id); }
+    activated => { root.act("select", root.entry.id); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        if root.entry.checked || root.entry.badge == "select": Rectangle {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - 16px) / 2;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.entry.checked ? Theme.accent : Theme.ctrl-border;
+            background: root.entry.checked ? Theme.accent : transparent;
+            if root.entry.checked: Icon { name: "check"; tint: Theme.on-accent; size: 12px; }
+        }
+        AppTile { app: root.entry.app; size: 28px; y: (parent.height - 28px) / 2; opacity: root.entry.faint ? 0.5 : 1; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text { text: root.entry.name; color: root.entry.faint ? Theme.muted : Theme.text; font-size: 14px; overflow: elide; }
+            Text { text: root.entry.sub; color: Theme.faint; font-size: 12px; overflow: elide; }
+        }
+        if root.entry.badge != "" && root.entry.badge != "select": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 20px;
+                width: badge.preferred-width + 14px;
+                border-radius: 10px;
+                background: root.entry.badge-tone == "warn" ? Theme.warn-bg : Theme.accent-soft-bg;
+                badge := Text { text: root.entry.badge; color: root.entry.badge-tone == "warn" ? Theme.warn-text : Theme.accent; font-size: 11px; }
+            }
+        }
+        if root.entry.faint: Icon { name: "eye-off"; tint: Theme.faint; size: 14px; y: (parent.height - 14px) / 2; }
+    }
+    // Ctrl+click adds it to the ones to hide, Shift+click a range; a click selects it.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if event.modifiers.control { root.act("check", root.entry.id); }
+                else if event.modifiers.shift { root.act("check-range", root.entry.id); }
+                else { root.act("select", root.entry.id); }
+            }
+        }
+    }
+}
+
+/// A row of the details: its name on the left, its control on the right.
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> first;
+    spacing: 14px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    Text { text: root.label; color: Theme.muted; font-size: 13px; width: 170px; vertical-alignment: top; y: 9px; }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 4px;
+        @children
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    callback removed();
+    height: 26px;
+    width: label.preferred-width + 34px;
+    border-radius: 13px;
+    background: Theme.ctrl-bg;
+    border-width: 1px;
+    border-color: Theme.border;
+    label := Text { x: 10px; text: root.text; color: Theme.text; font-size: 12px; vertical-alignment: center; }
+    IconButton { x: parent.width - 22px; icon: "close"; label: "Remove " + root.text; flat: true; size: 18px; icon-size: 10px; clicked => { root.removed(); } }
+}
+
+component ProblemBox inherits Rectangle {
+    in property <AppProblem> problem;
+    in property <bool> big;
+    callback act(string, string);
+    border-radius: 10px;
+    border-width: root.big ? 1px : 0;
+    border-color: Theme.warn-border;
+    background: root.big ? Theme.warn-bg : transparent;
+    height: inner.preferred-height;
+    inner := HorizontalLayout {
+        padding: root.big ? 14px : 6px;
+        spacing: 12px;
+        if root.big: Icon { name: "warning"; tint: Theme.warn-text; size: 16px; y: 2px; }
+        if !root.big: AppTile { app: root.problem.app; size: 28px; }
+        VerticalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text { text: root.problem.title; color: root.big ? Theme.warn-text : Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; }
+            Text { text: root.problem.text; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for f[i] in root.problem.fixes: Button {
+                    label: f.label;
+                    kind: i == 0 ? "primary" : "secondary";
+                    button-height: 30px;
+                    horizontal-stretch: 0;
+                    clicked => { root.act("fix", root.problem.id + "\u{1f}" + f.verb); }
+                }
+            }
+        }
+    }
+}
+
+export component AppsPage inherits VerticalLayout {
+    in property <AppsView> view;
+    in property <bool> compact;
+    in property <bool> narrow;
+    in-out property <string> query;
+    callback act(string, string);
+    spacing: 14px;
+
+    Hero {
+        title: "Apps";
+        sub: "What your app launcher shows, and how each app starts";
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        aside: add-button.width + 22px;
+        if root.view.state == "list": HorizontalLayout {
+            x: 24px;
+            y: parent.height - self.height - (root.compact ? 16px : 22px);
+            width: parent.width - 48px;
+            height: root.compact ? 56px : 88px;
+            spacing: 20px;
+            alignment: start;
+            Rectangle {
+                width: root.compact ? 56px : 88px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.accent-soft-bg;
+                Icon { name: "app"; tint: Theme.accent; size: parent.width * 0.44; stroke-width: 1.3px; }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+                Text { text: root.view.hero-title; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                if !root.compact: HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
+                    Text { text: root.view.hero-line; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
+                    if root.view.hero-problems != "": Text {
+                        text: root.view.hero-problems;
+                        color: problems-area.has-hover ? Theme.text : Theme.warn-text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        problems-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", "problems"); } }
+                    }
+                }
+            }
+        }
+        add-button := Button {
+            x: parent.width - self.width - 22px;
+            y: 22px;
+            width: root.view.state == "list" ? self.preferred-width : 0;
+            visible: root.view.state == "list";
+            label: "Add an app…";
+            focus-key: "apps-add";
+            clicked => { root.act("add-open", ""); }
+        }
+    }
+    if root.view.message != "": Text { text: root.view.message; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+    if root.view.state == "list": HorizontalLayout {
+        spacing: 14px;
+        vertical-stretch: 1;
+        // The list.
+        Card {
+            width: root.narrow ? 420px : 560px;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                TextField {
+                    label: "Search apps";
+                    placeholder: "Search apps, commands or file names";
+                    text <=> root.query;
+                    edited => { root.act("search", self.text); }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for f in root.view.filters: Rectangle {
+                        height: 30px;
+                        width: chip.preferred-width + 22px;
+                        border-radius: 15px;
+                        border-width: 1px;
+                        border-color: f.selected ? Theme.accent-soft-border : Theme.border;
+                        background: f.selected ? Theme.accent-soft-bg : chip-area.has-hover ? Theme.hover : transparent;
+                        chip := Text {
+                            text: f.label + (f.count == "" ? "" : "  " + f.count);
+                            color: f.warn ? Theme.warn-text : f.selected ? Theme.text : Theme.muted;
+                            font-size: 13px;
+                        }
+                        chip-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", f.id); } }
+                    }
+                }
+                Scroll {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 0;
+                        if root.view.list-title != "": SectionLabel { text: root.view.list-title; height: 30px; vertical-alignment: center; }
+                        for sec in root.view.sections: VerticalLayout {
+                            spacing: 0;
+                            if sec.title != "": SectionLabel { text: sec.title; height: 30px; vertical-alignment: center; }
+                            for r in sec.rows: AppItem { entry: r; act(v, a) => { root.act(v, a); } }
+                        }
+                    }
+                }
+                if root.view.selecting || root.view.list-note != "" || root.view.show-all: HorizontalLayout {
+                    height: 40px;
+                    spacing: 8px;
+                    Text {
+                        text: root.view.selecting ? root.view.checked + " selected" : root.view.list-note;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    if root.view.selecting: VerticalLayout { alignment: center; Button { label: "Cancel"; button-height: 30px; horizontal-stretch: 0; clicked => { root.act("check-clear", ""); } } }
+                    if root.view.selecting: VerticalLayout { alignment: center; Button { label: "Hide " + root.view.checked; kind: "primary"; button-height: 30px; horizontal-stretch: 0; clicked => { root.act("hide-checked", ""); } } }
+                    if !root.view.selecting && root.view.show-all: VerticalLayout { alignment: center; Button { label: "Show all again"; button-height: 30px; horizontal-stretch: 0; clicked => { root.act("show-all", ""); } } }
+                }
+            }
+        }
+        // Several checked: what happens to them.
+        if root.view.selecting: Card {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    for a in root.view.checked-apps: AppTile { app: a; size: 36px; }
+                }
+                Text { text: root.view.checked + " apps selected"; color: Theme.text; font-size: 17px; font-weight: 600; horizontal-alignment: center; }
+                Text {
+                    text: "Hide them from your launcher at once. They stay installed and keep opening their files; the Hidden list shows them again.";
+                    color: Theme.muted;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Button { label: "Hide " + root.view.checked; kind: "primary"; horizontal-stretch: 0; clicked => { root.act("hide-checked", ""); } }
+                }
+            }
+        }
+        // The problems, when that filter is on and the app has one.
+        if !root.view.selecting: Card {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 16px;
+                spacing: 10px;
+                if root.view.has-app: HorizontalLayout {
+                    spacing: 14px;
+                    // Click the icon to change it.
+                    Rectangle {
+                        width: 60px;
+                        height: 60px;
+                        AppTile { app: root.view.app; size: 56px; }
+                        Rectangle {
+                            x: parent.width - 20px;
+                            y: parent.height - 20px;
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: Theme.surface;
+                            Icon { name: "pencil"; tint: Theme.muted; size: 11px; }
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-open", ""); } }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text { text: root.view.title; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                        Text { text: root.view.line; color: Theme.muted; font-size: 13px; overflow: elide; }
+                        Text { text: root.view.path; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                    }
+                    VerticalLayout { alignment: start; Button { label: "Open"; horizontal-stretch: 0; clicked => { root.act("launch", ""); } } }
+                }
+                if root.view.has-app && root.view.problem.title != "": ProblemBox { problem: root.view.problem; big: true; act(v, a) => { root.act(v, a); } }
+                if root.view.has-app && root.view.changes.length > 0: Rectangle {
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    height: diff.preferred-height;
+                    diff := VerticalLayout {
+                        padding: 14px;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            Text { text: root.view.changes.length == 1 ? "1 change from the package's file" : root.view.changes.length + " changes from the package's file"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            if root.view.can-restore: Button { label: "Restore original"; button-height: 30px; horizontal-stretch: 0; clicked => { root.act("restore", ""); } }
+                        }
+                        for c in root.view.changes: HorizontalLayout {
+                            spacing: 14px;
+                            Text { text: c.label; color: Theme.muted; font-size: 12px; width: 120px; }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text { text: c.old == "" ? "(none)" : c.old; color: Theme.danger; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                                Text { text: c.new == "" ? "(none)" : c.new; color: Theme.accent; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                            }
+                        }
+                    }
+                }
+                if root.view.has-app: Scroll {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 0;
+                        Field {
+                            label: "Show in launchers";
+                            first: true;
+                            HorizontalLayout { alignment: start; Switch { on: root.view.shown; label: "Show in launchers"; toggled => { root.act("shown", ""); } } }
+                            Text { text: root.view.shown-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                        }
+                        Field {
+                            label: "Name";
+                            TextField { text: root.view.name; label: "Name"; committed => { root.act("name", self.text); } }
+                        }
+                        Field {
+                            label: "Description";
+                            TextField { text: root.view.comment; label: "Description"; committed => { root.act("comment", self.text); } }
+                        }
+                        Field {
+                            label: "Command";
+                            TextField { text: root.view.exec; label: "Command"; mono: true; committed => { root.act("exec", self.text); } }
+                            if root.view.exec-note != "": Text { text: root.view.exec-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                        }
+                        if root.view.electron: Field {
+                            label: "Runs on Wayland";
+                            HorizontalLayout { alignment: start; Switch { on: root.view.wayland; label: "Runs on Wayland"; toggled => { root.act("wayland", ""); } } }
+                            Text { text: "An Electron app: on, it runs as a Wayland window instead of through Xwayland, so it's sharp on scaled monitors. Adds --ozone-platform-hint=auto."; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                        }
+                        Field {
+                            label: "Uses the dedicated GPU";
+                            HorizontalLayout { alignment: start; Switch { on: root.view.gpu; label: "Uses the dedicated GPU"; toggled => { root.act("gpu", ""); } } }
+                            Text { text: "For laptops with two graphics cards."; color: Theme.faint; font-size: 12px; }
+                        }
+                        Field {
+                            label: "Open in a terminal";
+                            HorizontalLayout { alignment: start; Switch { on: root.view.terminal; label: "Open in a terminal"; toggled => { root.act("terminal", ""); } } }
+                        }
+                        Field {
+                            label: "Categories";
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                for c in root.view.categories: Chip { text: c; removed => { root.act("category-remove", c); } }
+                                TextField {
+                                    width: 150px;
+                                    height: 28px;
+                                    label: "Add a category";
+                                    placeholder: "+ Add";
+                                    accepted => { root.act("category-add", self.text); self.text = ""; }
+                                }
+                            }
+                            Text { text: "Where launchers with sections put it."; color: Theme.faint; font-size: 12px; }
+                        }
+                        Field {
+                            label: "Search words";
+                            TextField { text: root.view.keywords; label: "Search words"; committed => { root.act("keywords", self.text); } }
+                        }
+                        if root.view.actions.length > 0: Field {
+                            label: "Quick actions";
+                            for a in root.view.actions: HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: a.name; color: Theme.text; font-size: 13px; width: 170px; vertical-alignment: center; overflow: elide; }
+                                TextField { text: a.exec; label: a.name; mono: true; height: 32px; committed => { root.act("action-exec", a.id + "\u{1f}" + self.text); } }
+                            }
+                            Text { text: "What a launcher offers on the app's menu."; color: Theme.faint; font-size: 12px; }
+                        }
+                        Field {
+                            label: "Window class";
+                            TextField { text: root.view.wm-class; label: "Window class"; mono: true; placeholder: "As the app sets it"; committed => { root.act("wm-class", self.text); } }
+                            Text { text: "Hyprland's window rules match this."; color: Theme.faint; font-size: 12px; }
+                        }
+                    }
+                }
+                if !root.view.has-app && root.view.other-problems.length == 0: Text { text: "Choose an app on the left."; color: Theme.faint; font-size: 13px; vertical-stretch: 1; horizontal-alignment: center; vertical-alignment: center; }
+                if !root.view.has-app && root.view.other-problems.length > 0: VerticalLayout {
+                    spacing: 6px;
+                    SectionLabel { text: "PROBLEMS"; height: 30px; vertical-alignment: center; }
+                    for p in root.view.other-problems: ProblemBox { problem: p; act(v, a) => { root.act(v, a); } }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                Rectangle { height: 1px; background: Theme.border; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Icon { name: "info"; tint: Theme.faint; size: 14px; y: 2px; }
+                    Text { text: root.view.footer; color: Theme.faint; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+    if root.view.state != "list": Card { vertical-stretch: 1; }
+}
+
+/// Add an app: a program (an AppImage, a script, a game) or a website in a window of its own.
+export component AddAppDialog inherits Modal {
+    in property <AppsView> view;
+    callback act(string, string);
+    card-width: 620px;
+    label: "Add an app";
+    dismissed => { root.act("add-close", ""); }
+    Text { text: "Add an app"; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text {
+        text: root.view.add-website ? "A website in a window of its own, with its own place in the launcher." : "For a program your package manager didn't install: an AppImage, a script, a game.";
+        color: Theme.muted;
+        font-size: 13px;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        alignment: start;
+        Segmented {
+            height: 32px;
+            label: "What to add";
+            options: ["A program", "A website"];
+            selected: root.view.add-website ? 1 : 0;
+            changed(i) => { root.act("add-mode", "" + i); }
+        }
+    }
+    if !root.view.add-website: Field {
+        label: "Program";
+        HorizontalLayout {
+            spacing: 8px;
+            TextField { text: root.view.add-program; label: "Program"; mono: true; placeholder: "~/Applications/App.AppImage"; committed => { root.act("add-program", self.text); } }
+            Button { label: "Choose…"; horizontal-stretch: 0; clicked => { root.act("add-choose", ""); } }
+        }
+        if root.view.add-program-note != "": Text { text: root.view.add-program-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+    }
+    if root.view.add-website: Field {
+        label: "Address";
+        TextField { text: root.view.add-address; label: "Address"; mono: true; placeholder: "https://app.example.com"; committed => { root.act("add-address", self.text); } }
+    }
+    Field {
+        label: "Name";
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 38px;
+                height: 38px;
+                AppTile { app: root.view.add-icon; size: 34px; x: 2px; y: 2px; }
+                TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-open", "add"); } }
+            }
+            TextField { text: root.view.add-name; label: "Name"; committed => { root.act("add-name", self.text); } }
+        }
+        if root.view.add-name-note != "": Text { text: root.view.add-name-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+    }
+    if !root.view.add-website: Field {
+        label: "Description";
+        TextField { text: root.view.add-comment; label: "Description"; committed => { root.act("add-comment", self.text); } }
+    }
+    if !root.view.add-website: Field {
+        label: "Category";
+        HorizontalLayout {
+            alignment: start;
+            Select { width: 220px; select-height: 34px; label: "Category"; options: root.view.add-categories; selected: root.view.add-category; chosen(i) => { root.act("add-category", "" + i); } }
+        }
+        CheckBox { text: "Open in a terminal"; checked: root.view.add-terminal; toggled => { root.act("add-terminal", ""); } }
+    }
+    if root.view.add-website: Field {
+        label: "Opens in";
+        HorizontalLayout {
+            alignment: start;
+            Select { width: 220px; select-height: 34px; label: "Opens in"; options: root.view.add-browsers; selected: root.view.add-browser; chosen(i) => { root.act("add-browser", "" + i); } }
+        }
+        Text { text: root.view.add-browser-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.view.add-footer; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Button { label: "Cancel"; button-height: 36px; horizontal-stretch: 0; clicked => { root.act("add-close", ""); } }
+        Button { label: "Add"; kind: "primary"; button-height: 36px; horizontal-stretch: 0; enabled: root.view.add-can-save; clicked => { root.act("add-save", ""); } }
+    }
+}
+
+/// Choosing an icon: the icon theme's, found by name, or a file.
+export component IconDialog inherits Modal {
+    in property <AppsView> view;
+    callback act(string, string);
+    card-width: 620px;
+    label: root.view.icon-title;
+    dismissed => { root.act("icon-close", ""); }
+    Text { text: root.view.icon-title; color: Theme.text; font-size: 17px; font-weight: 600; }
+    TextField { text: root.view.icon-query; label: "Search icons"; placeholder: "An icon's name"; edited => { root.act("icon-query", self.text); } }
+    Text { text: root.view.icon-note; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    icons := Rectangle {
+        property <int> columns: 6;
+        height: ceil(root.view.icon-results.length / self.columns) * 84px;
+        for r[i] in root.view.icon-results: Rectangle {
+            x: mod(i, icons.columns) * icons.width / icons.columns;
+            y: floor(i / icons.columns) * 84px;
+            width: icons.width / icons.columns - 6px;
+            height: 78px;
+            border-radius: 10px;
+            background: r.selected ? Theme.accent-soft-bg : area.has-hover ? Theme.hover : transparent;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 6px;
+                alignment: center;
+                HorizontalLayout { alignment: center; AppTile { app: r; size: 36px; } }
+                Text { text: r.name; color: Theme.muted; font-size: 10px; font-family: "JetBrains Mono"; horizontal-alignment: center; overflow: elide; }
+            }
+            area := TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-pick", r.id); } }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button { label: "Choose a file…"; horizontal-stretch: 0; button-height: 36px; clicked => { root.act("icon-file", ""); } }
+        Rectangle { horizontal-stretch: 1; }
+        Button { label: "Cancel"; button-height: 36px; horizontal-stretch: 0; clicked => { root.act("icon-close", ""); } }
+    }
+}
