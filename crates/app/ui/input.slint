@@ -1,11 +1,13 @@
 // The Input pages, following the "More: Keyboard", "More: Mouse" and "More: Touchpad" mockups:
 // Keyboard (layouts in order, the switch keys, the repeat, and keys), and Mouse & touchpad (the
 // defaults and the devices in a list, the selected one's settings beside it). A change applies
-// at once; the bar at the bottom says where it was saved, with Revert for the last change. What
+// at once; for a few seconds the hero's second line says what it did and where it was saved, and
+// Revert stays top right until the page is left (no bar at the bottom, 2026-11-09). Errors, and
+// settings that differ from Lituus's file, are banners over the cards. What
 // they show comes from Rust (src/input.rs); everything done goes back through `act`.
 import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, AddButton, Switch, CardTitle, SectionLabel, Scroll, Focusable, Focus } from "controls.slint";
+import { Button, IconButton, AddButton, Switch, CardTitle, SectionLabel, Scroll, Focusable, Focus, Banner } from "controls.slint";
 import { Segmented, Select, TextField, Modal } from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, LoadBanner, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
@@ -18,9 +20,10 @@ export struct InputSection { title: string, rows: [InputRow] }
 export struct PointerSetting { id: string, kind: string, label: string, sub: string, differs: string, value: float, minimum: float, maximum: float, step: float, text: string, on: bool, options: [string], selected: int }
 /// A keyboard layout; code: "ch" or "ch · fr".
 export struct LayoutRow { name: string, meta: string, code: string, active: bool, selected: bool }
-/// The bar under a page: `text`, then the file's `path`; tone: "accent", "faint", "warn",
-/// "danger". not-loaded: Hyprland's config doesn't load Lituus's file (load-line does).
-export struct InputBar { text: string, path: string, tone: string, can-revert: bool, can-save: bool, not-loaded: bool, load-line: string }
+/// What the last change did: `text`, then the file's `path`; tone: "accent", "faint", "warn",
+/// "danger". recent: a change a moment ago (the hero says it). not-loaded: Hyprland's config
+/// doesn't load Lituus's file (load-line does).
+export struct InputBar { text: string, path: string, tone: string, recent: bool, can-revert: bool, can-save: bool, not-loaded: bool, load-line: string }
 /// state: "list", "loading" or "not-running" (empty-* say why).
 export struct KeyboardView {
     state: string,
@@ -129,27 +132,26 @@ component SettingLine inherits SettingRow {
     }
 }
 
-/// The bar at the bottom of the pages.
-component StatusBar inherits HorizontalLayout {
+/// An error, or Hyprland's settings that differ from Lituus's file, over the cards.
+component BarBanners inherits VerticalLayout {
     in property <InputBar> bar;
     callback act(string);
-    height: 34px;
     spacing: 8px;
-    Rectangle {
-        width: 8px;
-        height: 8px;
-        y: (parent.height - 8px) / 2;
-        border-radius: 4px;
-        background: root.bar.tone == "danger" ? Theme.danger : root.bar.tone == "warn" ? Theme.warn-text : root.bar.tone == "accent" ? Theme.accent : Theme.faint;
+    if root.bar.tone == "danger": Banner { tone: "danger"; text: root.bar.text; dismissible: false; }
+    if root.bar.tone == "warn": Banner {
+        tone: "warn";
+        text: "Hyprland's settings differ from " + root.bar.path + ": something later in your config sets them too.";
+        action: root.bar.can-save ? "Save to config file" : "";
+        dismissible: false;
+        action-clicked => { root.act("save"); }
     }
-    HorizontalLayout {
-        horizontal-stretch: 1;
-        spacing: 5px;
-        Text { text: root.bar.text; color: root.bar.tone == "danger" ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: root.bar.path == "" ? 1 : 0; }
-        if root.bar.path != "": Text { text: root.bar.path; color: Theme.muted; font-size: 12px; font-family: "JetBrains Mono"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+}
+
+global ChangeLine {
+    /// The change just made, for the hero's second line, else `otherwise`.
+    public pure function text(bar: InputBar, otherwise: string) -> string {
+        return bar.recent && bar.tone == "accent" ? (bar.path == "" ? bar.text : bar.text + " " + bar.path) : otherwise;
     }
-    if root.bar.can-save: Button { label: "Save to config file"; horizontal-stretch: 0; min-width: self.preferred-width; clicked => { root.act("save"); } }
-    if root.bar.can-revert: Button { label: "Revert"; horizontal-stretch: 0; min-width: 84px; clicked => { root.act("revert"); } }
 }
 
 /// Hyprland isn't running, or is being read.
@@ -404,7 +406,8 @@ export component KeyboardPage inherits VerticalLayout {
     if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { line: root.view.bar.load-line; }
     Hero {
         title: "Keyboard";
-        sub: root.view.state == "list" ? "Every keyboard uses these layouts" : "";
+        sub: root.view.state == "list" ? ChangeLine.text(root.view.bar, "Every keyboard uses these layouts") : "";
+        aside: kb-revert.width;
         // Hyprland not running: only the title and its line; the card says the rest.
         hero-height: root.compact || root.view.state == "not-running" ? 136px : 206px;
         compact: root.compact;
@@ -426,6 +429,20 @@ export component KeyboardPage inherits VerticalLayout {
             focus-key: "switch-now";
             clicked => { root.act("switch-now", "", 0); }
         }
+        kb-revert := Button {
+            x: parent.width - self.width - 22px;
+            y: 22px;
+            width: root.view.bar.can-revert && root.view.state == "list" ? self.preferred-width : 0;
+            visible: root.view.bar.can-revert && root.view.state == "list";
+            enabled: self.visible;
+            label: "Revert";
+            focus-key: "revert";
+            clicked => { root.act("revert", "", 0); }
+        }
+    }
+    if root.view.state == "list" && (root.view.bar.tone == "danger" || root.view.bar.tone == "warn"): BarBanners {
+        bar: root.view.bar;
+        act(verb) => { root.act(verb, "", 0); }
     }
     if root.view.state == "list": body := Scroll {
         // Two columns when there's room for them, as in the mockup, and three in a wide window,
@@ -462,7 +479,6 @@ export component KeyboardPage inherits VerticalLayout {
         if !body.two-columns && !body.three-columns: TypingCard { whole: true; vertical-stretch: 0; view: root.view; act(v, a, x) => { root.act(v, a, x); } }
         if !body.two-columns && !body.three-columns: KeysCard { whole: true; view: root.view; act(v, a, x) => { root.act(v, a, x); } }
     }
-    if root.view.state == "list": StatusBar { bar: root.view.bar; act(verb) => { root.act(verb, "", 0); } }
     if root.view.state != "list": Empty { icon: "keyboard"; loading: root.view.state == "loading"; title: root.view.empty-title; text: root.view.empty-text; }
 }
 
@@ -508,7 +524,8 @@ export component MousePage inherits VerticalLayout {
     if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { line: root.view.bar.load-line; }
     Hero {
         title: "Mouse & touchpad";
-        sub: root.view.sub;
+        sub: ChangeLine.text(root.view.bar, root.view.sub);
+        aside: mouse-revert.width;
         // Hyprland not running: only the title and its line; the card says the rest.
         hero-height: root.compact || root.view.state == "not-running" ? 136px : 206px;
         compact: root.compact;
@@ -520,6 +537,20 @@ export component MousePage inherits VerticalLayout {
             compact: root.compact;
             info: root.view.hero;
         }
+        mouse-revert := Button {
+            x: parent.width - self.width - 22px;
+            y: 22px;
+            width: root.view.bar.can-revert && root.view.state == "list" ? self.preferred-width : 0;
+            visible: root.view.bar.can-revert && root.view.state == "list";
+            enabled: self.visible;
+            label: "Revert";
+            focus-key: "revert";
+            clicked => { root.act("revert", "", 0); }
+        }
+    }
+    if root.view.state == "list" && (root.view.bar.tone == "danger" || root.view.bar.tone == "warn"): BarBanners {
+        bar: root.view.bar;
+        act(verb) => { root.act(verb, "", 0); }
     }
     if root.view.state == "list": Scroll {
         vertical-stretch: 1;
@@ -596,7 +627,6 @@ export component MousePage inherits VerticalLayout {
             }
         }
     }
-    if root.view.state == "list": StatusBar { bar: root.view.bar; act(verb) => { root.act(verb, "", 0); } }
     if root.view.state != "list": Empty { icon: "mouse"; loading: root.view.state == "loading"; title: root.view.empty-title; text: root.view.empty-text; }
 }
 
