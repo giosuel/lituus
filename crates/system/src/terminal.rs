@@ -154,20 +154,28 @@ pub fn default_terminal(env: &Env, dirs: &Dirs, terminal_var: Option<&str>) -> O
         let argv = KNOWN.iter().find(|(n, _)| *n == t).map(|(_, a)| a.iter().map(|s| s.to_string()).collect());
         return Some(Terminal { name: t.into(), argv: argv.unwrap_or_else(|| vec![t.into(), "-e".into()]) });
     }
+    // The list names one (for xdg-terminal-exec, which isn't here): use it if Lituus knows it.
+    let listed = listed_terminal(dirs).unwrap_or_default().to_lowercase();
     KNOWN
         .iter()
-        .find(|(n, _)| env.which(n).is_some())
+        .filter(|(n, _)| env.which(n).is_some())
+        .find(|(n, _)| !listed.is_empty() && listed.contains(n))
+        .or_else(|| KNOWN.iter().find(|(n, _)| env.which(n).is_some()))
         .map(|(n, a)| Terminal { name: (*n).into(), argv: a.iter().map(|s| s.to_string()).collect() })
 }
 
 /// Commands to run one after another in one terminal, each with a heading, and a line at the
 /// end that keeps the window open until Enter: a shell script for `sh -c`.
 pub fn script(commands: &[(String, String)]) -> String {
-    let mut s = String::new();
+    let mut s = String::from("failed=0\n");
     for (label, command) in commands {
-        s += &format!("printf '\\033[1m:: %s\\033[0m\\n' {}\n{command}\n", quote(&format!("Updating {label}")));
+        s += &format!(
+            "printf '\\033[1m:: %s\\033[0m\\n' {}\n{{\n{command}\n}} || failed=1\n",
+            quote(&format!("Updating {label}"))
+        );
     }
-    s += "printf '\\n%s' 'Done. Press Enter to close this window.'\nread _\n";
+    s += "if [ $failed = 0 ]; then printf '\\n%s' 'Done. Press Enter to close this window.'\n";
+    s += "else printf '\\n%s' 'Something went wrong: see above. Press Enter to close this window.'; fi\nread _\n";
     s
 }
 
@@ -223,7 +231,21 @@ mod tests {
     #[test]
     fn a_script_for_the_shell() {
         let s = script(&[("pacman".into(), "sudo pacman -Syu".into()), ("AUR".into(), "yay -Sua".into())]);
-        assert!(s.starts_with("printf '\\033[1m:: %s\\033[0m\\n' 'Updating pacman'\nsudo pacman -Syu\n"), "{s}");
+        assert!(
+            s.starts_with(
+                "failed=0\nprintf '\\033[1m:: %s\\033[0m\\n' 'Updating pacman'\n{\nsudo pacman -Syu\n} || failed=1\n"
+            ),
+            "{s}"
+        );
+        // It really runs: one fails, the other still runs, and it says so.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script(&[("a".into(), "false && echo no".into()), ("b".into(), "echo ran".into())]))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.contains("ran") && !out.contains("no\n") && out.contains("Something went wrong"), "{out}");
         assert!(s.ends_with("read _\n"));
         assert_eq!(quote("it's"), r"'it'\''s'");
     }
