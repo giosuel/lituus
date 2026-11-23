@@ -8,7 +8,9 @@
 
 use std::path::Path;
 
-use lituus_hypr::{Action, Bind, Flags, LuaValue as Value, lua_string, normalized_keys, parse_lua};
+use lituus_hypr::{
+    Action, Bind, Flags, LuaValue as Value, conf_keys, lua_string, normalized_keys, parse_conf, parse_lua,
+};
 
 /// The name of Lituus's part of its file.
 pub const SECTION: &str = "Shortcuts";
@@ -33,13 +35,15 @@ impl Mine {
     }
 }
 
-/// How a turned-off bind of Lituus's own is kept: commented out, after this.
+/// How a turned-off bind of Lituus's own is kept: commented out, after this (Lua, hyprlang).
 const OFF: &str = "-- Off: ";
+const OFF_CONF: &str = "# Off: ";
 
 /// Lituus's part, read back: an unbind with a bind on the same keys after it is a change; an
 /// unbind alone turns the config's bind off; any other bind is Lituus's own.
-pub fn parse(text: &str, file: &Path) -> Vec<Mine> {
-    let config = parse_lua(text, file);
+pub fn parse(text: &str, file: &Path, lua: bool) -> Vec<Mine> {
+    let read = |t: &str| if lua { parse_lua(t, file) } else { parse_conf(t, file) };
+    let config = read(text);
     let mut binds: Vec<Option<Bind>> = config.binds.into_iter().map(Some).collect();
     let mut mine = Vec::new();
     for u in &config.unbinds {
@@ -52,15 +56,53 @@ pub fn parse(text: &str, file: &Path) -> Vec<Mine> {
     }
     mine.extend(binds.into_iter().flatten().map(|bind| Mine::Added { bind, on: true }));
     for line in text.lines() {
-        if let Some(lua) = line.trim().strip_prefix(OFF) {
-            mine.extend(parse_lua(lua, file).binds.into_iter().map(|bind| Mine::Added { bind, on: false }));
+        if let Some(off) = line.trim().strip_prefix(if lua { OFF } else { OFF_CONF }) {
+            mine.extend(read(off).binds.into_iter().map(|bind| Mine::Added { bind, on: false }));
         }
     }
     mine
 }
 
-/// The text of Lituus's part for these: the overrides first, then Lituus's own.
-pub fn text(mine: &[Mine]) -> String {
+/// The text of Lituus's part for these in hyprlang (lituus.conf, before Hyprland 0.55).
+fn conf_text(mine: &[Mine]) -> String {
+    let mut out = String::from(
+        "# Written by Lituus (Shortcuts). Change it in Lituus.\n\
+         # Your config's shortcuts that Lituus changes or turns off, then its own. They take effect\n\
+         # when this file is sourced after your shortcuts.\n",
+    );
+    for m in mine {
+        if let Mine::Over { keys, bind } = m {
+            out.push('\n');
+            out.push_str(&format!("unbind = {}\n", conf_keys(keys)));
+            if let Some(line) = bind.as_ref().and_then(Bind::to_conf) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+    }
+    let own: Vec<String> = mine
+        .iter()
+        .filter_map(|m| match m {
+            Mine::Added { bind, on } => bind.to_conf().map(|l| if *on { l } else { format!("{OFF_CONF}{l}") }),
+            Mine::Over { .. } => None,
+        })
+        .collect();
+    if !own.is_empty() {
+        out.push('\n');
+        for l in own {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The text of Lituus's part for these: the overrides first, then Lituus's own; Lua, or
+/// hyprlang before Hyprland 0.55.
+pub fn text(mine: &[Mine], lua: bool) -> String {
+    if !lua {
+        return conf_text(mine);
+    }
     let mut out = String::from(
         "-- Written by Lituus (Shortcuts). Change it in Lituus.\n\
          -- Your config's shortcuts that Lituus changes or turns off, then its own. They take effect\n\
@@ -461,6 +503,10 @@ pub const PAUSE: &str = "hl.define_submap(\"lituus-listening\", function() \
                          hl.bind(\"Escape\", hl.dsp.submap(\"reset\"), { non_consuming = true }) end) \
                          hl.dispatch(hl.dsp.submap(\"lituus-listening\"))";
 pub const RESUME: &str = "hl.dispatch(hl.dsp.submap(\"reset\"))";
+/// The same for hyprlang, as one batch of hyprctl requests.
+pub const PAUSE_CONF: &str = "[[BATCH]]keyword submap lituus-listening;keyword bindn ,Escape,submap,reset;\
+                              keyword submap reset;dispatch submap lituus-listening";
+pub const RESUME_CONF: &str = "dispatch submap reset";
 
 #[cfg(test)]
 mod tests {
@@ -484,11 +530,15 @@ mod tests {
             Mine::Added { bind: firefox.clone(), on: true },
             Mine::Added { bind: close.clone(), on: false },
         ];
-        let written = text(&mine);
+        let written = text(&mine, true);
         assert!(written.contains("hl.unbind(\"SUPER + J\")\n"), "{written}");
         assert!(written.contains("-- Off: hl.bind(\"SUPER + Q\", hl.dsp.window.close())"), "{written}");
         let file = PathBuf::from("lituus.lua");
-        let again = parse(&written, &file);
+        let again = parse(&written, &file, true);
+        // The same in hyprlang.
+        let conf = text(&mine, false);
+        assert!(conf.contains("unbind = SUPER, J\n") && conf.contains("# Off: bind = SUPER, Q, killactive,"), "{conf}");
+        let from_conf = parse(&conf, &PathBuf::from("lituus.conf"), false);
         let strip = |m: &[Mine]| -> Vec<(String, Option<Action>, bool)> {
             m.iter()
                 .map(|m| match m {
@@ -498,6 +548,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(strip(&again), strip(&mine));
+        assert_eq!(strip(&from_conf), strip(&mine));
         assert_eq!(again[0].keys(), "super+d");
     }
 
