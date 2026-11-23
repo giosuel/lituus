@@ -4,7 +4,7 @@
 // height on the right: the distribution, updates per package manager with Update buttons that run
 // in the default terminal, what runs, and what Lituus's pages use. What it shows comes from Rust
 // (src/system.rs).
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, CardTitle, SectionLabel } from "controls.slint";
 import { Hero, Card, ScrollCard, Tooltip } from "shell.slint";
@@ -67,9 +67,9 @@ component Fact inherits Rectangle {
         VerticalLayout {
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.fact.label; color: Theme.faint; font-size: 12px; }
-            Text { text: root.fact.title; color: Theme.text; font-size: 14px; font-weight: 500; overflow: elide; }
-            Text { text: root.fact.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
+            Text { text: root.fact.label; color: Theme.faint; font-size: Type.note; }
+            Text { text: root.fact.title; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+            Text { text: root.fact.detail; color: Theme.muted; font-size: Type.note; overflow: elide; }
         }
         if root.fact.link: VerticalLayout {
             alignment: center;
@@ -87,17 +87,17 @@ component SoftwareRow inherits Rectangle {
     if !root.first: Rectangle { y: 0; height: 1px; background: Theme.border; }
     HorizontalLayout {
         spacing: 12px;
-        Text { text: root.entry.name; color: Theme.muted; font-size: 13px; vertical-alignment: center; width: root.narrow ? 110px : 150px; overflow: elide; }
+        Text { text: root.entry.name; color: Theme.muted; font-size: Type.body; vertical-alignment: center; width: root.narrow ? 110px : 150px; overflow: elide; }
         Text {
             text: root.entry.version;
             color: root.entry.version == "Not installed" || root.entry.version == "Not running" ? Theme.faint : Theme.text;
-            font-size: 13px;
+            font-size: Type.body;
             font-family: root.entry.mono ? "JetBrains Mono" : "Inter";
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
         }
-        Text { text: root.entry.note; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+        Text { text: root.entry.note; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
     }
 }
 
@@ -114,14 +114,14 @@ component UpdateRow inherits Rectangle {
             width: root.narrow ? 110px : 150px;
             spacing: 8px;
             Icon { name: "package"; tint: Theme.muted; size: 15px; y: (parent.height - 15px) / 2; }
-            Text { text: root.entry.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; }
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; vertical-alignment: center; overflow: elide; }
         }
-        Text { text: root.entry.source; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.entry.source; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         if root.entry.state == "none": Icon { name: "check"; tint: Theme.muted; size: 13px; y: (parent.height - 13px) / 2; }
         Text {
             text: root.entry.text;
             color: root.entry.state == "count" ? Theme.accent : root.entry.state == "error" ? Theme.warn-text : Theme.muted;
-            font-size: 13px;
+            font-size: Type.body;
             font-weight: root.entry.state == "count" ? 600 : 400;
             vertical-alignment: center;
             max-width: root.narrow ? 160px : 260px;
@@ -175,7 +175,7 @@ export component SystemPage inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
-                    Text { text: root.view.name; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; vertical-alignment: center; }
+                    Text { text: root.view.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; vertical-alignment: center; }
                     VerticalLayout {
                         alignment: center;
                         IconButton { icon: "pencil"; label: "Rename this computer"; size: 28px; icon-size: 15px; flat: true; clicked => { root.rename(); } }
@@ -184,10 +184,10 @@ export component SystemPage inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
-                    Text { text: root.view.hostname; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; }
-                    Text { text: "on the network"; color: Theme.muted; font-size: 13px; }
+                    Text { text: root.view.hostname; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; }
+                    Text { text: "on the network"; color: Theme.muted; font-size: Type.body; }
                 }
-                if !root.compact: Text { text: root.view.line; color: Theme.muted; font-size: 13px; overflow: elide; }
+                if !root.compact: Text { text: root.view.line; color: Theme.muted; font-size: Type.body; overflow: elide; }
             }
         }
         // The page as plain text for a bug report; a check for two seconds after.
@@ -234,7 +234,7 @@ export component SystemPage inherits VerticalLayout {
                             opened => { root.open-displays(); }
                         }
                     }
-                    if root.view.unknown != "": Text { text: root.view.unknown; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                    if root.view.unknown != "": Text { text: root.view.unknown; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                 }
             }
             ScrollCard {
@@ -245,7 +245,7 @@ export component SystemPage inherits VerticalLayout {
                     HorizontalLayout {
                         height: 30px;
                         CardTitle { text: "Storage"; horizontal-stretch: 1; }
-                        Text { text: root.view.drive-count; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                        Text { text: root.view.drive-count; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                     }
                     for d in root.view.drives: VerticalLayout {
                         spacing: 6px;
@@ -254,8 +254,8 @@ export component SystemPage inherits VerticalLayout {
                             spacing: 10px;
                             height: 28px;
                             Icon { name: "drive"; tint: Theme.muted; size: 16px; y: (parent.height - 16px) / 2; }
-                            Text { text: d.name; color: Theme.text; font-size: 14px; font-weight: 500; vertical-alignment: center; overflow: elide; }
-                            Text { text: d.meta; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                            Text { text: d.name; color: Theme.text; font-size: Type.body; font-weight: 500; vertical-alignment: center; overflow: elide; }
+                            Text { text: d.meta; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; }
                         }
                         for f in d.filesystems: HorizontalLayout {
                             padding-left: 26px;
@@ -264,8 +264,8 @@ export component SystemPage inherits VerticalLayout {
                             VerticalLayout {
                                 width: root.narrow ? 110px : 180px;
                                 alignment: center;
-                                Text { text: f.mounts; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; overflow: elide; }
-                                Text { text: f.kind; color: Theme.faint; font-size: 12px; }
+                                Text { text: f.mounts; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; overflow: elide; }
+                                Text { text: f.kind; color: Theme.faint; font-size: Type.note; }
                             }
                             Rectangle {
                                 horizontal-stretch: 1;
@@ -280,7 +280,7 @@ export component SystemPage inherits VerticalLayout {
                                     background: f.warn ? Theme.warn-text : Theme.accent;
                                 }
                             }
-                            Text { text: f.text; color: Theme.muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: right; width: root.narrow ? 150px : 200px; overflow: elide; }
+                            Text { text: f.text; color: Theme.muted; font-size: Type.note; vertical-alignment: center; horizontal-alignment: right; width: root.narrow ? 150px : 200px; overflow: elide; }
                         }
                     }
                 }
@@ -298,14 +298,14 @@ export component SystemPage inherits VerticalLayout {
                 HorizontalLayout {
                     height: 40px;
                     spacing: 12px;
-                    Text { text: "Name"; color: Theme.muted; font-size: 13px; vertical-alignment: center; width: root.narrow ? 110px : 150px; }
+                    Text { text: "Name"; color: Theme.muted; font-size: Type.body; vertical-alignment: center; width: root.narrow ? 110px : 150px; }
                     HorizontalLayout {
                         spacing: 8px;
                         horizontal-stretch: 1;
                         Image { width: 16px; height: 16px; y: 12px; source: root.view.logo; image-fit: contain; }
-                        Text { text: root.view.distro-name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                        Text { text: root.view.distro-name; color: Theme.text; font-size: Type.body; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                     }
-                    Text { text: root.view.distro-detail; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.view.distro-detail; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                 }
                 for r in root.view.distro: SoftwareRow { entry: r; narrow: root.narrow; }
                 HorizontalLayout {
@@ -313,7 +313,7 @@ export component SystemPage inherits VerticalLayout {
                     padding-top: 10px;
                     spacing: 8px;
                     SectionLabel { text: root.view.updates-title; vertical-alignment: center; horizontal-stretch: 1; }
-                    Text { text: root.view.checked; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.view.checked; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                     VerticalLayout {
                         alignment: center;
                         IconButton { icon: "rescan"; label: "Check again"; size: 26px; icon-size: 14px; flat: true; enabled: !root.view.checking; clicked => { root.act("check", ""); } }
@@ -332,7 +332,7 @@ export component SystemPage inherits VerticalLayout {
                 if root.view.updates-note != "": Text {
                     text: root.view.updates-note;
                     color: Theme.faint;
-                    font-size: 12px;
+                    font-size: Type.note;
                     wrap: word-wrap;
                     min-height: 26px;
                     vertical-alignment: bottom;

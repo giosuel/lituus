@@ -28,6 +28,14 @@ export global Theme {
     in-out property <color> warn-bg: #2a2518;
     in-out property <color> warn-border: #5a4c25;
     in-out property <color> warn-text: #e9cf8f;
+    /// Over pictures and behind dialogs; the same in every theme.
+    out property <color> scrim: #05060799;
+    /// Text and marks on `overlay` (a label over a picture).
+    out property <color> on-scrim: #ffffff;
+    out property <color> overlay: #000000b0;
+    out property <color> shadow-soft: #00000040;
+    out property <color> shadow: #00000066;
+    out property <color> shadow-strong: #00000080;
     /// The accent glow behind a page's hero, and whether to draw it.
     in-out property <color> glow: #233230;
     in-out property <bool> gradient: true;
@@ -49,4 +57,37 @@ export global Theme {
         if name == "text" { return text; }
         return muted;
     }
+}
+
+/// The type scale (the One UI library, D-46): one size per role. ui_tokens.rs fails on a raw
+/// font size anywhere else.
+export global Type {
+    /// A page's title in its hero.
+    out property <length> page-title: 30px;
+    /// The hero's subject: the network, the device, the computer.
+    out property <length> subject: 22px;
+    /// Big keys and digits (a PIN, a shortcut being recorded).
+    out property <length> display: 26px;
+    out property <length> dialog-title: 17px;
+    out property <length> card-title: 15px;
+    /// A row's name, text, fields and buttons.
+    out property <length> body: 13px;
+    /// Hints, footers, a row's second line (faint).
+    out property <length> note: 12px;
+    /// Section labels (caps) and badges.
+    out property <length> label: 11px;
+}
+
+/// One size per role (D-46).
+export global Size {
+    out property <length> button: 34px;
+    /// Inside rows and notices.
+    out property <length> button-row: 28px;
+    /// Dialog footers.
+    out property <length> button-dialog: 36px;
+    out property <length> field: 34px;
+    out property <length> field-dialog: 38px;
+    out property <length> icon-button-row: 24px;
+    out property <length> icon-button: 32px;
+    out property <length> icon-button-hero: 34px;
 }

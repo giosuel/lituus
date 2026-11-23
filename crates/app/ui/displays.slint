@@ -1,7 +1,7 @@
 // The Displays page, following the "Displays (Speculum)" and "Hero" mockups: the monitors' layout
 // is the hero, the selected monitor's settings are below in tabs, and a bar at the bottom says
 // what's applied and saved. What it shows comes from Rust (src/displays.rs).
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, CardTitle, SectionLabel, FieldLabel, Scroll, Focusable } from "controls.slint";
 import { Segmented, ViewSwitcher, Tabs, Select, TextField, CheckBox, Modal } from "dialogs.slint";
@@ -268,7 +268,7 @@ component Field inherits VerticalLayout {
     @children
     // It wraps at the control's width rather than widening the column (an error appearing
     // mustn't move the fields beside it).
-    if root.hint != "": Text { text: root.hint; color: root.bad ? Theme.danger : Theme.faint; font-size: 12px; wrap: word-wrap; min-width: 0; preferred-width: 0; }
+    if root.hint != "": Text { text: root.hint; color: root.bad ? Theme.danger : Theme.faint; font-size: Type.note; wrap: word-wrap; min-width: 0; preferred-width: 0; }
 }
 
 /// A field for a value from Rust: it shows `value` and follows it when it changes (after a
@@ -340,7 +340,7 @@ export component DisplaysPage inherits VerticalLayout {
                 y: parent.height - 24px;
                 text: root.view.logical;
                 color: Theme.faint;
-                font-size: 12px;
+                font-size: Type.note;
             }
             display-tools := HorizontalLayout {
                 x: parent.width - self.width - 18px;
@@ -381,22 +381,22 @@ export component DisplaysPage inherits VerticalLayout {
                     Text {
                         text: "A workspace bound to a monitor opens there. The monitor's default is the one it shows when it turns on; one kept when empty stays even with no windows on it.";
                         color: Theme.muted;
-                        font-size: 12px;
+                        font-size: Type.note;
                         wrap: word-wrap;
                     }
                     HorizontalLayout {
                         height: 36px;
                         spacing: 14px;
-                        Text { text: "Workspace"; color: Theme.faint; font-size: 12px; width: 72px; vertical-alignment: bottom; }
-                        Text { text: "Opens on"; color: Theme.faint; font-size: 12px; width: 240px; vertical-alignment: bottom; }
-                        Text { text: "Default"; color: Theme.faint; font-size: 12px; width: 64px; vertical-alignment: bottom; }
-                        Text { text: "Kept when empty"; color: Theme.faint; font-size: 12px; width: 104px; vertical-alignment: bottom; }
+                        Text { text: "Workspace"; color: Theme.faint; font-size: Type.note; width: 72px; vertical-alignment: bottom; }
+                        Text { text: "Opens on"; color: Theme.faint; font-size: Type.note; width: 240px; vertical-alignment: bottom; }
+                        Text { text: "Default"; color: Theme.faint; font-size: Type.note; width: 64px; vertical-alignment: bottom; }
+                        Text { text: "Kept when empty"; color: Theme.faint; font-size: Type.note; width: 104px; vertical-alignment: bottom; }
                         Rectangle { horizontal-stretch: 1; }
                     }
                     for w[i] in root.view.workspaces: HorizontalLayout {
                         height: 44px;
                         spacing: 14px;
-                        Text { text: w.name; color: Theme.text; font-size: 14px; font-weight: 600; font-family: "JetBrains Mono"; width: 72px; vertical-alignment: center; }
+                        Text { text: w.name; color: Theme.text; font-size: Type.body; font-weight: 600; font-family: "JetBrains Mono"; width: 72px; vertical-alignment: center; }
                         VerticalLayout {
                             alignment: center;
                             Select {
@@ -425,7 +425,7 @@ export component DisplaysPage inherits VerticalLayout {
                                 CheckBox { checked: w.persistent; enabled: w.bound; label: "Keep workspace " + w.name + " when empty"; focus-key: "ws-persistent:" + i; toggled => { root.act("ws-persistent", "" + i, 0); } }
                             }
                         }
-                        Text { text: w.bound ? "" : "Bind it to a monitor first"; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        Text { text: w.bound ? "" : "Bind it to a monitor first"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                     }
                 }
             }
@@ -449,11 +449,11 @@ export component DisplaysPage inherits VerticalLayout {
                         CheckBox { checked: root.view.switch-hotplug; text: "Switch when monitors are plugged in or out"; toggled => { root.act("switch-hotplug", "", 0); } }
                         HorizontalLayout {
                             padding-left: 28px;
-                            Text { text: "To the profile made for exactly the monitors plugged in, if it switches by itself. Lituus must be running (in the tray, or with --background)."; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                            Text { text: "To the profile made for exactly the monitors plugged in, if it switches by itself. Lituus must be running (in the tray, or with --background)."; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                         }
                     }
                     Rectangle { height: 1px; background: Theme.border; }
-                    if root.view.profiles.length == 0: Text { text: "No profiles yet. Save the layout you have now as one."; color: Theme.faint; font-size: 13px; height: 32px; vertical-alignment: center; }
+                    if root.view.profiles.length == 0: Text { text: "No profiles yet. Save the layout you have now as one."; color: Theme.faint; font-size: Type.body; height: 32px; vertical-alignment: center; }
                     for p[i] in root.view.profiles: Rectangle {
                         height: prow.preferred-height;
                         border-radius: 10px;
@@ -467,8 +467,8 @@ export component DisplaysPage inherits VerticalLayout {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 2px;
-                                    Text { text: p.name; color: Theme.text; font-size: 14px; font-weight: 500; overflow: elide; }
-                                    Text { text: p.active ? "In use · " + p.summary : p.summary; color: p.active ? Theme.accent : Theme.muted; font-size: 12px; overflow: elide; }
+                                    Text { text: p.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+                                    Text { text: p.active ? "In use · " + p.summary : p.summary; color: p.active ? Theme.accent : Theme.muted; font-size: Type.note; overflow: elide; }
                                 }
                                 CheckBox { checked: p.auto; text: "Switch by itself"; label: "Switch to " + p.name + " by itself"; focus-key: "profile-auto:" + i; horizontal-stretch: 0; y: (parent.height - self.height) / 2; toggled => { root.act("profile-auto", "" + i, 0); } }
                                 Button { label: "Use"; focus-key: "profile-use:" + i; button-height: 30px; horizontal-stretch: 0; enabled: !p.active; y: (parent.height - self.height) / 2; clicked => { root.act("profile-use", "" + i, 0); } }
@@ -477,9 +477,9 @@ export component DisplaysPage inherits VerticalLayout {
                             }
                             HorizontalLayout {
                                 spacing: 10px;
-                                Text { text: "Run after switching"; color: Theme.faint; font-size: 12px; vertical-alignment: center; width: 140px; }
+                                Text { text: "Run after switching"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; width: 140px; }
                                 exec := Entry { value: p.exec; placeholder: "e.g. pkill -SIGUSR2 waybar"; label: "Run after switching to " + p.name; commit(text) => { root.act("profile-exec", i + ":" + text, 0); } }
-                                Text { text: p.exec-hint != "" || exec.pending ? "Not applied yet" : ""; color: Theme.faint; font-size: 12px; vertical-alignment: center; width: 96px; }
+                                Text { text: p.exec-hint != "" || exec.pending ? "Not applied yet" : ""; color: Theme.faint; font-size: Type.note; vertical-alignment: center; width: 96px; }
                             }
                         }
                     }
@@ -509,7 +509,7 @@ export component DisplaysPage inherits VerticalLayout {
                             spacing: 1px;
                             horizontal-stretch: 1;
                             CardTitle { text: root.view.sel-title; overflow: elide; }
-                            Text { text: root.view.sel-sub; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                            Text { text: root.view.sel-sub; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
                         }
                         Tabs {
                             label: "Monitor settings";
@@ -594,9 +594,9 @@ export component DisplaysPage inherits VerticalLayout {
                             HorizontalLayout {
                                 spacing: 8px;
                                 alignment: start;
-                                Text { text: "X"; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                                Text { text: "X"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                                 x-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.x-text; label: "X"; invalid: root.view.x-bad; commit(text) => { root.act("x", text, 0); } }
-                                Text { text: "Y"; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                                Text { text: "Y"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                                 y-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.y-text; label: "Y"; invalid: root.view.y-bad; commit(text) => { root.act("y", text, 0); } }
                             }
                         }
@@ -634,7 +634,7 @@ export component DisplaysPage inherits VerticalLayout {
                             HorizontalLayout {
                                 spacing: 10px;
                                 Slider { label: "SDR brightness"; minimum: 0.5; maximum: 2.5; value: root.view.sdr-brightness; enabled: root.view.hdr; y: (parent.height - self.height) / 2; moved(v) => { root.act("sdr-brightness", "", v); } }
-                                Text { text: round(root.view.sdr-brightness * 100) / 100; color: Theme.text; font-size: 12px; font-family: "JetBrains Mono"; width: 36px; vertical-alignment: center; }
+                                Text { text: round(root.view.sdr-brightness * 100) / 100; color: Theme.text; font-size: Type.note; font-family: "JetBrains Mono"; width: 36px; vertical-alignment: center; }
                             }
                         }
                         if root.view.hdr-capable || root.view.hdr: Field {
@@ -643,7 +643,7 @@ export component DisplaysPage inherits VerticalLayout {
                             HorizontalLayout {
                                 spacing: 10px;
                                 Slider { label: "SDR saturation"; minimum: 0.5; maximum: 1.5; value: root.view.sdr-saturation; enabled: root.view.hdr; y: (parent.height - self.height) / 2; moved(v) => { root.act("sdr-saturation", "", v); } }
-                                Text { text: round(root.view.sdr-saturation * 100) / 100; color: Theme.text; font-size: 12px; font-family: "JetBrains Mono"; width: 36px; vertical-alignment: center; }
+                                Text { text: round(root.view.sdr-saturation * 100) / 100; color: Theme.text; font-size: Type.note; font-family: "JetBrains Mono"; width: 36px; vertical-alignment: center; }
                             }
                         }
                     }
@@ -698,7 +698,7 @@ export component DisplaysPage inherits VerticalLayout {
                             Text {
                                 text: "By make, model and serial, so a monitor keeps its settings on another port. Off: by port, such as DP-1.";
                                 color: Theme.faint;
-                                font-size: 12px;
+                                font-size: Type.note;
                                 wrap: word-wrap;
                             }
                         }
@@ -719,7 +719,7 @@ export component DisplaysPage inherits VerticalLayout {
             border-radius: 4px;
             background: root.view.status-tone == "danger" ? Theme.danger : root.view.status-tone == "warn" ? Theme.warn-text : root.view.status-tone == "accent" ? Theme.accent : Theme.faint;
         }
-        Text { text: root.view.status; color: root.view.status-tone == "danger" ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.view.status; color: root.view.status-tone == "danger" ? Theme.danger : Theme.muted; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         if root.view.can-save: Button { label: "Save to config file"; button-height: 34px; horizontal-stretch: 0; min-width: 84px; clicked => { root.act("save", "", 0); } }
         Button { label: "Revert"; button-height: 34px; horizontal-stretch: 0; min-width: 84px; enabled: root.view.can-revert; clicked => { root.act("revert", "", 0); } }
         Button { label: "Apply"; kind: "primary"; button-height: 34px; horizontal-stretch: 0; min-width: 96px; enabled: root.view.can-apply; clicked => { root.act("apply", "", 0); } }
@@ -784,15 +784,15 @@ export component KeepDialog inherits Modal {
     callback revert();
     label: "Keep these display settings?";
     dismissed => { root.revert(); }
-    Text { text: "Keep these display settings?"; color: Theme.text; font-size: 17px; font-weight: 600; }
-    Text { text: "If a screen stays black, do nothing: the old settings come back by themselves."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+    Text { text: "Keep these display settings?"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    Text { text: "If a screen stays black, do nothing: the old settings come back by themselves."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     Rectangle {
         height: 6px;
         border-radius: 3px;
         background: Theme.off-track;
         Rectangle { x: 0; width: parent.width * root.view.keep-fraction; border-radius: 3px; background: Theme.accent; }
     }
-    Text { text: "Going back in " + root.view.keep-seconds + " s"; color: Theme.muted; font-size: 12px; }
+    Text { text: "Going back in " + root.view.keep-seconds + " s"; color: Theme.muted; font-size: Type.note; }
     HorizontalLayout {
         spacing: 8px;
         alignment: end;
@@ -809,8 +809,8 @@ export component ConfigDialog inherits Modal {
     card-spacing: 12px;
     label: "Config file";
     dismissed => { root.closed(); }
-    Text { text: "Config file"; color: Theme.text; font-size: 17px; font-weight: 600; }
-    Text { text: root.view.config-path + ", with the changes not applied yet"; color: Theme.muted; font-size: 12px; font-family: "JetBrains Mono"; }
+    Text { text: "Config file"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    Text { text: root.view.config-path + ", with the changes not applied yet"; color: Theme.muted; font-size: Type.note; font-family: "JetBrains Mono"; }
     // The code scrolls both ways, with a bar for each when it doesn't fit.
     Rectangle {
         border-radius: 10px;
@@ -831,7 +831,7 @@ export component ConfigDialog inherits Modal {
                 text: root.view.config-text;
                 read-only: true;
                 color: Theme.text;
-                font-size: 12px;
+                font-size: Type.note;
                 font-family: "JetBrains Mono";
                 wrap: no-wrap;
             }

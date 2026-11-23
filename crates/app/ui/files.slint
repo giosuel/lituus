@@ -1,6 +1,6 @@
 // Files over Bluetooth, following the "Sending files (OBEX)" and "Incoming file" mockups. What
 // they show comes from Rust (src/files.rs).
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button } from "controls.slint";
 import { CheckBox, Modal } from "dialogs.slint";
@@ -33,17 +33,17 @@ export component SendFilesDialog inherits Modal {
     label: view.send-title;
     // Esc hides it, as Hide does; the files keep going.
     dismissed => { root.hide(); }
-    Text { text: root.view.send-title; color: Theme.text; font-size: 17px; font-weight: 600; }
-    Text { text: "Keep the device unlocked; it may ask you to accept each file."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+    Text { text: root.view.send-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    Text { text: "Keep the device unlocked; it may ask you to accept each file."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     for f in root.view.files: VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
             height: 30px;
             spacing: 10px;
             Icon { name: "file"; tint: Theme.muted; y: (parent.height - 16px) / 2; }
-            Text { text: f.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-            Text { text: f.size; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
-            Text { text: f.status; color: Theme.tone(f.tone); font-size: 12px; vertical-alignment: center; width: 56px; horizontal-alignment: right; }
+            Text { text: f.name; color: Theme.text; font-size: Type.body; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+            Text { text: f.size; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+            Text { text: f.status; color: Theme.tone(f.tone); font-size: Type.note; vertical-alignment: center; width: 56px; horizontal-alignment: right; }
         }
         if f.active: Rectangle {
             height: 3px;
@@ -52,7 +52,7 @@ export component SendFilesDialog inherits Modal {
             Rectangle { x: 0; width: parent.width * f.fraction; border-radius: 1.5px; background: Theme.accent; }
         }
     }
-    Text { text: root.view.send-summary; color: Theme.muted; font-size: 12px; }
+    Text { text: root.view.send-summary; color: Theme.muted; font-size: Type.note; }
     Rectangle {
         height: 6px;
         border-radius: 3px;
@@ -76,7 +76,7 @@ export component IncomingFileDialog inherits Modal {
     card-spacing: 12px;
     label: view.in-title;
     dismissed => { root.decline(); }
-    Text { text: root.view.in-title; color: Theme.text; font-size: 17px; font-weight: 600; wrap: word-wrap; }
+    Text { text: root.view.in-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
     Rectangle {
         height: 56px;
         border-radius: 10px;
@@ -91,15 +91,15 @@ export component IncomingFileDialog inherits Modal {
             VerticalLayout {
                 alignment: center;
                 spacing: 2px;
-                Text { text: root.view.in-name; color: Theme.text; font-size: 14px; font-weight: 500; overflow: elide; }
-                Text { text: root.view.in-meta; color: Theme.muted; font-size: 12px; }
+                Text { text: root.view.in-name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+                Text { text: root.view.in-meta; color: Theme.muted; font-size: Type.note; }
             }
         }
     }
     HorizontalLayout {
         spacing: 8px;
-        Text { text: "Saved to"; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
-        Text { text: root.view.in-folder; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: "Saved to"; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
+        Text { text: root.view.in-folder; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
     }
     CheckBox { text: root.view.in-always-label; checked <=> root.always; }
     HorizontalLayout {

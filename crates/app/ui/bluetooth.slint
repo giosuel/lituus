@@ -1,7 +1,7 @@
 // The Bluetooth page and its dialogs (pairing, adapter settings, renaming), following the
 // "Bluetooth (M5)" mockups. What it shows comes from Rust (src/bluetooth.rs); everything the
 // user does goes back through one callback, `act(verb, argument)`.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars, Battery, Spinner } from "icons.slint";
 import { Button, IconButton, Switch, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus } from "controls.slint";
 import { TextField, Segmented, CheckBox, FormRow, Modal } from "dialogs.slint";
@@ -99,7 +99,7 @@ component BtListRow inherits Focusable {
             spacing: 2px;
             horizontal-stretch: 1;
             Text { text: root.entry.name; color: Theme.text; font-weight: 500; overflow: elide; }
-            Text { text: root.entry.meta; color: root.entry.selected && root.entry.tone == "muted" ? Theme.accent : Theme.tone(root.entry.tone); font-size: 12px; overflow: elide; }
+            Text { text: root.entry.meta; color: root.entry.selected && root.entry.tone == "muted" ? Theme.accent : Theme.tone(root.entry.tone); font-size: Type.note; overflow: elide; }
         }
         if root.entry.battery >= 0: HorizontalLayout {
             horizontal-stretch: 0;
@@ -107,7 +107,7 @@ component BtListRow inherits Focusable {
             accessible-role: text;
             accessible-label: "Battery " + root.entry.battery + " %";
             Battery { percent: root.entry.battery; tint: root.entry.tone == "accent" ? Theme.accent : Theme.muted; y: (parent.height - 10px) / 2; }
-            Text { text: root.entry.battery + " %"; color: root.entry.tone == "accent" ? Theme.accent : Theme.muted; font-size: 12px; vertical-alignment: center; }
+            Text { text: root.entry.battery + " %"; color: root.entry.tone == "accent" ? Theme.accent : Theme.muted; font-size: Type.note; vertical-alignment: center; }
         }
         if root.entry.bars >= 0: SignalBars { bars: root.entry.bars; y: (parent.height - 14px) / 2; }
         if root.entry.button != "": Button {
@@ -177,7 +177,7 @@ export component BluetoothPage inherits HorizontalLayout {
                         spacing: 6px;
                         SectionLabel { text: section.title; vertical-alignment: center; horizontal-stretch: 1; }
                         if section.busy != "": Spinner { y: (parent.height - 12px) / 2; }
-                        if section.busy != "": Text { text: section.busy; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                        if section.busy != "": Text { text: section.busy; color: Theme.muted; font-size: Type.note; vertical-alignment: center; }
                     }
                     for row in section.rows: BtListRow {
                         entry: row;
@@ -191,7 +191,7 @@ export component BluetoothPage inherits HorizontalLayout {
                         padding-right: 10px;
                         padding-top: 6px;
                         padding-bottom: 6px;
-                        Text { text: section.empty; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                        Text { text: section.empty; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                     }
                 }
             }
@@ -254,7 +254,7 @@ component DeviceCard inherits Rectangle {
             alignment: center;
             spacing: 2px;
             Text { text: root.name; color: Theme.text; font-weight: 500; overflow: elide; }
-            Text { text: root.sub; color: Theme.muted; font-size: 12px; font-family: root.sub-mono ? "JetBrains Mono" : "Inter"; overflow: elide; }
+            Text { text: root.sub; color: Theme.muted; font-size: Type.note; font-family: root.sub-mono ? "JetBrains Mono" : "Inter"; overflow: elide; }
         }
     }
 }
@@ -269,8 +269,8 @@ export component BtPairDialog inherits Modal {
     dismissed => { root.cancelled(); }
     VerticalLayout {
         spacing: 4px;
-        Text { text: root.pair.title; color: Theme.text; font-size: 17px; font-weight: 600; wrap: word-wrap; }
-        Text { text: root.pair.text; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+        Text { text: root.pair.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+        Text { text: root.pair.text; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     }
     if root.pair.mode != "display": DeviceCard {
         icon: root.pair.icon;
@@ -294,7 +294,7 @@ export component BtPairDialog inherits Modal {
                 border-width: 1px;
                 border-color: i < root.pair.typed ? Theme.accent-soft-border : Theme.border2;
                 background: i < root.pair.typed ? Theme.accent-soft-bg : Theme.bg;
-                Text { text: digit; color: i < root.pair.typed ? Theme.accent : Theme.text; font-size: 26px; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
+                Text { text: digit; color: i < root.pair.typed ? Theme.accent : Theme.text; font-size: Type.display; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
     }
@@ -302,7 +302,7 @@ export component BtPairDialog inherits Modal {
         alignment: center;
         spacing: 8px;
         Spinner { y: (parent.height - 12px) / 2; }
-        Text { text: "Waiting for the keyboard · " + root.pair.typed + " of " + root.pair.digits.length + " typed"; color: Theme.muted; font-size: 12px; }
+        Text { text: "Waiting for the keyboard · " + root.pair.typed + " of " + root.pair.digits.length + " typed"; color: Theme.muted; font-size: Type.note; }
     }
     if root.pair.mode == "pin" || root.pair.mode == "passkey": VerticalLayout {
         spacing: 6px;
@@ -314,13 +314,13 @@ export component BtPairDialog inherits Modal {
             label: root.pair.mode == "pin" ? "PIN" : "Code";
             accepted => { if root.code != "" { root.accepted(); } }
         }
-        if root.pair.hint != "": Text { text: root.pair.hint; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+        if root.pair.hint != "": Text { text: root.pair.hint; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     }
     if root.pair.always != "": CheckBox {
         checked <=> root.always;
         text: root.pair.always;
     }
-    if root.pair.mode == "service": Text { text: "Marks it as trusted; you can change this in its details."; color: Theme.muted; font-size: 12px; x: 28px; }
+    if root.pair.mode == "service": Text { text: "Marks it as trusted; you can change this in its details."; color: Theme.muted; font-size: Type.note; x: 28px; }
     HorizontalLayout {
         padding-top: 6px;
         spacing: 8px;
@@ -349,18 +349,18 @@ export component BtAdapterDialog inherits Modal {
     card-width: 560px;
     label: "Bluetooth adapter";
     dismissed => { root.cancelled(); }
-    Text { text: "Bluetooth adapter"; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text { text: "Bluetooth adapter"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
     VerticalLayout {
         spacing: 12px;
         FormRow {
             label: "Adapter";
             label-top: 0;
-            Text { text: root.adapter; color: Theme.text; font-size: 13px; }
+            Text { text: root.adapter; color: Theme.text; font-size: Type.body; }
         }
         FormRow {
             label: "Name";
             TextField { text <=> root.name; mono: true; label: "Name"; accepted => { root.saved(); } }
-            Text { text: "What other devices see when they look for this computer"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            Text { text: "What other devices see when they look for this computer"; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
         }
         FormRow {
             label: "Visible for";
@@ -368,7 +368,7 @@ export component BtAdapterDialog inherits Modal {
                 alignment: start;
                 Segmented { options: ["3 minutes", "Always"]; selected <=> root.visible-choice; label: "Visible for"; height: 38px; }
             }
-            Text { text: "How long the Visible switch keeps the computer visible"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            Text { text: "How long the Visible switch keeps the computer visible"; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
         }
         FormRow {
             label: "Pairable";
@@ -394,9 +394,9 @@ export component BtRenameDialog inherits Modal {
     card-width: 420px;
     label: title;
     dismissed => { root.cancelled(); }
-    Text { text: root.title; color: Theme.text; font-size: 17px; font-weight: 600; wrap: word-wrap; }
+    Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
     TextField { text <=> root.name; autofocus: true; label: "Name"; accepted => { root.saved(); } }
-    Text { text: root.hint; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    Text { text: root.hint; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     HorizontalLayout {
         padding-top: 6px;
         spacing: 8px;

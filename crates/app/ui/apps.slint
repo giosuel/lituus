@@ -3,7 +3,7 @@
 // one's details beside it, saved as you go to your own copy of its desktop file. Several can be
 // hidden at once (Ctrl+click, Shift+click). What it shows comes from Rust (src/apps.rs); everything
 // done goes back through `act`.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, Switch, SectionLabel, Scroll, Focusable } from "controls.slint";
 import { TextField, Modal, Segmented, CheckBox, Select } from "dialogs.slint";
@@ -119,8 +119,8 @@ component AppItem inherits Focusable {
             alignment: center;
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.entry.name; color: root.entry.faint ? Theme.muted : Theme.text; font-size: 14px; overflow: elide; }
-            Text { text: root.entry.sub; color: Theme.faint; font-size: 12px; overflow: elide; }
+            Text { text: root.entry.name; color: root.entry.faint ? Theme.muted : Theme.text; font-size: Type.body; overflow: elide; }
+            Text { text: root.entry.sub; color: Theme.faint; font-size: Type.note; overflow: elide; }
         }
         if root.entry.badge != "" && root.entry.badge != "select": VerticalLayout {
             alignment: center;
@@ -129,7 +129,7 @@ component AppItem inherits Focusable {
                 width: badge.preferred-width + 14px;
                 border-radius: 10px;
                 background: root.entry.badge-tone == "warn" ? Theme.warn-bg : Theme.accent-soft-bg;
-                badge := Text { text: root.entry.badge; color: root.entry.badge-tone == "warn" ? Theme.warn-text : Theme.accent; font-size: 11px; }
+                badge := Text { text: root.entry.badge; color: root.entry.badge-tone == "warn" ? Theme.warn-text : Theme.accent; font-size: Type.label; }
             }
         }
         if root.entry.faint: Icon { name: "eye-off"; tint: Theme.faint; size: 14px; y: (parent.height - 14px) / 2; }
@@ -153,7 +153,7 @@ component Field inherits HorizontalLayout {
     spacing: 14px;
     padding-top: 8px;
     padding-bottom: 8px;
-    Text { text: root.label; color: Theme.muted; font-size: 13px; width: 170px; vertical-alignment: top; y: 9px; }
+    Text { text: root.label; color: Theme.muted; font-size: Type.body; width: 170px; vertical-alignment: top; y: 9px; }
     VerticalLayout {
         horizontal-stretch: 1;
         spacing: 4px;
@@ -170,7 +170,7 @@ component Chip inherits Rectangle {
     background: Theme.ctrl-bg;
     border-width: 1px;
     border-color: Theme.border;
-    label := Text { x: 10px; text: root.text; color: Theme.text; font-size: 12px; vertical-alignment: center; }
+    label := Text { x: 10px; text: root.text; color: Theme.text; font-size: Type.note; vertical-alignment: center; }
     IconButton { x: parent.width - 22px; icon: "close"; label: "Remove " + root.text; flat: true; size: 18px; icon-size: 10px; clicked => { root.removed(); } }
 }
 
@@ -191,8 +191,8 @@ component ProblemBox inherits Rectangle {
         VerticalLayout {
             spacing: 6px;
             horizontal-stretch: 1;
-            Text { text: root.problem.title; color: root.big ? Theme.warn-text : Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; }
-            Text { text: root.problem.text; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            Text { text: root.problem.title; color: root.big ? Theme.warn-text : Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
+            Text { text: root.problem.text; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
@@ -239,16 +239,16 @@ export component AppsPage inherits VerticalLayout {
             VerticalLayout {
                 alignment: center;
                 spacing: 6px;
-                Text { text: root.view.hero-title; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                Text { text: root.view.hero-title; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
                 if !root.compact: HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
                     for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
-                    Text { text: root.view.hero-line; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
+                    Text { text: root.view.hero-line; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
                     if root.view.hero-problems != "": Text {
                         text: root.view.hero-problems;
                         color: problems-area.has-hover ? Theme.text : Theme.warn-text;
-                        font-size: 13px;
+                        font-size: Type.body;
                         vertical-alignment: center;
                         problems-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", "problems"); } }
                     }
@@ -265,7 +265,7 @@ export component AppsPage inherits VerticalLayout {
             clicked => { root.act("add-open", ""); }
         }
     }
-    if root.view.message != "": Text { text: root.view.message; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+    if root.view.message != "": Text { text: root.view.message; color: Theme.danger; font-size: Type.body; wrap: word-wrap; }
     if root.view.state == "list": HorizontalLayout {
         spacing: 14px;
         vertical-stretch: 1;
@@ -294,7 +294,7 @@ export component AppsPage inherits VerticalLayout {
                         chip := Text {
                             text: f.label + (f.count == "" ? "" : "  " + f.count);
                             color: f.warn ? Theme.warn-text : f.selected ? Theme.text : Theme.muted;
-                            font-size: 13px;
+                            font-size: Type.body;
                         }
                         chip-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", f.id); } }
                     }
@@ -317,7 +317,7 @@ export component AppsPage inherits VerticalLayout {
                     Text {
                         text: root.view.selecting ? root.view.checked + " selected" : root.view.list-note;
                         color: Theme.muted;
-                        font-size: 12px;
+                        font-size: Type.note;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         overflow: elide;
@@ -339,11 +339,11 @@ export component AppsPage inherits VerticalLayout {
                     spacing: 6px;
                     for a in root.view.checked-apps: AppTile { app: a; size: 36px; }
                 }
-                Text { text: root.view.checked + " apps selected"; color: Theme.text; font-size: 17px; font-weight: 600; horizontal-alignment: center; }
+                Text { text: root.view.checked + " apps selected"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; horizontal-alignment: center; }
                 Text {
                     text: "Hide them from your launcher at once. They stay installed and keep opening their files; the Hidden list shows them again.";
                     color: Theme.muted;
-                    font-size: 13px;
+                    font-size: Type.body;
                     wrap: word-wrap;
                     horizontal-alignment: center;
                 }
@@ -382,9 +382,9 @@ export component AppsPage inherits VerticalLayout {
                         alignment: center;
                         spacing: 2px;
                         horizontal-stretch: 1;
-                        Text { text: root.view.title; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
-                        Text { text: root.view.line; color: Theme.muted; font-size: 13px; overflow: elide; }
-                        Text { text: root.view.path; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                        Text { text: root.view.title; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
+                        Text { text: root.view.line; color: Theme.muted; font-size: Type.body; overflow: elide; }
+                        Text { text: root.view.path; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
                     }
                     VerticalLayout { alignment: start; Button { label: "Open"; horizontal-stretch: 0; clicked => { root.act("launch", ""); } } }
                 }
@@ -398,16 +398,16 @@ export component AppsPage inherits VerticalLayout {
                         padding: 14px;
                         spacing: 6px;
                         HorizontalLayout {
-                            Text { text: root.view.changes.length == 1 ? "1 change from the package's file" : root.view.changes.length + " changes from the package's file"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            Text { text: root.view.changes.length == 1 ? "1 change from the package's file" : root.view.changes.length + " changes from the package's file"; color: Theme.text; font-size: Type.body; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
                             if root.view.can-restore: Button { label: "Restore original"; button-height: 30px; horizontal-stretch: 0; clicked => { root.act("restore", ""); } }
                         }
                         for c in root.view.changes: HorizontalLayout {
                             spacing: 14px;
-                            Text { text: c.label; color: Theme.muted; font-size: 12px; width: 120px; }
+                            Text { text: c.label; color: Theme.muted; font-size: Type.note; width: 120px; }
                             VerticalLayout {
                                 horizontal-stretch: 1;
-                                Text { text: c.old == "" ? "(none)" : c.old; color: Theme.danger; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
-                                Text { text: c.new == "" ? "(none)" : c.new; color: Theme.accent; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+                                Text { text: c.old == "" ? "(none)" : c.old; color: Theme.danger; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
+                                Text { text: c.new == "" ? "(none)" : c.new; color: Theme.accent; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
                             }
                         }
                     }
@@ -420,7 +420,7 @@ export component AppsPage inherits VerticalLayout {
                             label: "Show in launchers";
                             first: true;
                             HorizontalLayout { alignment: start; Switch { on: root.view.shown; label: "Show in launchers"; toggled => { root.act("shown", ""); } } }
-                            Text { text: root.view.shown-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                            Text { text: root.view.shown-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                         }
                         Field {
                             label: "Name";
@@ -433,17 +433,17 @@ export component AppsPage inherits VerticalLayout {
                         Field {
                             label: "Command";
                             TextField { text: root.view.exec; label: "Command"; mono: true; committed => { root.act("exec", self.text); } }
-                            if root.view.exec-note != "": Text { text: root.view.exec-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                            if root.view.exec-note != "": Text { text: root.view.exec-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                         }
                         if root.view.electron: Field {
                             label: "Runs on Wayland";
                             HorizontalLayout { alignment: start; Switch { on: root.view.wayland; label: "Runs on Wayland"; toggled => { root.act("wayland", ""); } } }
-                            Text { text: "An Electron app: on, it runs as a Wayland window instead of through Xwayland, so it's sharp on scaled monitors. Adds --ozone-platform-hint=auto."; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                            Text { text: "An Electron app: on, it runs as a Wayland window instead of through Xwayland, so it's sharp on scaled monitors. Adds --ozone-platform-hint=auto."; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                         }
                         Field {
                             label: "Uses the dedicated GPU";
                             HorizontalLayout { alignment: start; Switch { on: root.view.gpu; label: "Uses the dedicated GPU"; toggled => { root.act("gpu", ""); } } }
-                            Text { text: "For laptops with two graphics cards."; color: Theme.faint; font-size: 12px; }
+                            Text { text: "For laptops with two graphics cards."; color: Theme.faint; font-size: Type.note; }
                         }
                         Field {
                             label: "Open in a terminal";
@@ -463,7 +463,7 @@ export component AppsPage inherits VerticalLayout {
                                     accepted => { root.act("category-add", self.text); self.text = ""; }
                                 }
                             }
-                            Text { text: "Where launchers with sections put it."; color: Theme.faint; font-size: 12px; }
+                            Text { text: "Where launchers with sections put it."; color: Theme.faint; font-size: Type.note; }
                         }
                         Field {
                             label: "Search words";
@@ -473,19 +473,19 @@ export component AppsPage inherits VerticalLayout {
                             label: "Quick actions";
                             for a in root.view.actions: HorizontalLayout {
                                 spacing: 10px;
-                                Text { text: a.name; color: Theme.text; font-size: 13px; width: 170px; vertical-alignment: center; overflow: elide; }
+                                Text { text: a.name; color: Theme.text; font-size: Type.body; width: 170px; vertical-alignment: center; overflow: elide; }
                                 TextField { text: a.exec; label: a.name; mono: true; height: 32px; committed => { root.act("action-exec", a.id + "\u{1f}" + self.text); } }
                             }
-                            Text { text: "What a launcher offers on the app's menu."; color: Theme.faint; font-size: 12px; }
+                            Text { text: "What a launcher offers on the app's menu."; color: Theme.faint; font-size: Type.note; }
                         }
                         Field {
                             label: "Window class";
                             TextField { text: root.view.wm-class; label: "Window class"; mono: true; placeholder: "As the app sets it"; committed => { root.act("wm-class", self.text); } }
-                            Text { text: "Hyprland's window rules match this."; color: Theme.faint; font-size: 12px; }
+                            Text { text: "Hyprland's window rules match this."; color: Theme.faint; font-size: Type.note; }
                         }
                     }
                 }
-                if !root.view.has-app && root.view.other-problems.length == 0: Text { text: "Choose an app on the left."; color: Theme.faint; font-size: 13px; vertical-stretch: 1; horizontal-alignment: center; vertical-alignment: center; }
+                if !root.view.has-app && root.view.other-problems.length == 0: Text { text: "Choose an app on the left."; color: Theme.faint; font-size: Type.body; vertical-stretch: 1; horizontal-alignment: center; vertical-alignment: center; }
                 if !root.view.has-app && root.view.other-problems.length > 0: VerticalLayout {
                     spacing: 6px;
                     SectionLabel { text: "PROBLEMS"; height: 30px; vertical-alignment: center; }
@@ -496,7 +496,7 @@ export component AppsPage inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 8px;
                     Icon { name: "info"; tint: Theme.faint; size: 14px; y: 2px; }
-                    Text { text: root.view.footer; color: Theme.faint; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; }
+                    Text { text: root.view.footer; color: Theme.faint; font-size: Type.note; wrap: word-wrap; horizontal-stretch: 1; }
                 }
             }
         }
@@ -511,11 +511,11 @@ export component AddAppDialog inherits Modal {
     card-width: 620px;
     label: "Add an app";
     dismissed => { root.act("add-close", ""); }
-    Text { text: "Add an app"; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text { text: "Add an app"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
     Text {
         text: root.view.add-website ? "A website in a window of its own, with its own place in the launcher." : "For a program your package manager didn't install: an AppImage, a script, a game.";
         color: Theme.muted;
-        font-size: 13px;
+        font-size: Type.body;
         wrap: word-wrap;
     }
     HorizontalLayout {
@@ -535,7 +535,7 @@ export component AddAppDialog inherits Modal {
             TextField { text: root.view.add-program; label: "Program"; mono: true; placeholder: "~/Applications/App.AppImage"; committed => { root.act("add-program", self.text); } }
             Button { label: "Choose…"; horizontal-stretch: 0; clicked => { root.act("add-choose", ""); } }
         }
-        if root.view.add-program-note != "": Text { text: root.view.add-program-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+        if root.view.add-program-note != "": Text { text: root.view.add-program-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
     if root.view.add-website: Field {
         label: "Address";
@@ -553,7 +553,7 @@ export component AddAppDialog inherits Modal {
             }
             TextField { text: root.view.add-name; label: "Name"; committed => { root.act("add-name", self.text); } }
         }
-        if root.view.add-name-note != "": Text { text: root.view.add-name-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+        if root.view.add-name-note != "": Text { text: root.view.add-name-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
     if !root.view.add-website: Field {
         label: "Description";
@@ -573,11 +573,11 @@ export component AddAppDialog inherits Modal {
             alignment: start;
             Select { width: 220px; select-height: 34px; label: "Opens in"; options: root.view.add-browsers; selected: root.view.add-browser; chosen(i) => { root.act("add-browser", "" + i); } }
         }
-        Text { text: root.view.add-browser-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+        Text { text: root.view.add-browser-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
     HorizontalLayout {
         spacing: 8px;
-        Text { text: root.view.add-footer; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.view.add-footer; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         Button { label: "Cancel"; button-height: 36px; horizontal-stretch: 0; clicked => { root.act("add-close", ""); } }
         Button { label: "Add"; kind: "primary"; button-height: 36px; horizontal-stretch: 0; enabled: root.view.add-can-save; clicked => { root.act("add-save", ""); } }
     }
@@ -590,9 +590,9 @@ export component IconDialog inherits Modal {
     card-width: 620px;
     label: root.view.icon-title;
     dismissed => { root.act("icon-close", ""); }
-    Text { text: root.view.icon-title; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text { text: root.view.icon-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
     TextField { text: root.view.icon-query; label: "Search icons"; placeholder: "An icon's name"; edited => { root.act("icon-query", self.text); } }
-    Text { text: root.view.icon-note; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    Text { text: root.view.icon-note; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     icons := Rectangle {
         property <int> columns: 6;
         height: ceil(root.view.icon-results.length / self.columns) * 84px;
@@ -608,7 +608,7 @@ export component IconDialog inherits Modal {
                 spacing: 6px;
                 alignment: center;
                 HorizontalLayout { alignment: center; AppTile { app: r; size: 36px; } }
-                Text { text: r.name; color: Theme.muted; font-size: 10px; font-family: "JetBrains Mono"; horizontal-alignment: center; overflow: elide; }
+                Text { text: r.name; color: Theme.muted; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; overflow: elide; }
             }
             area := TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-pick", r.id); } }
         }

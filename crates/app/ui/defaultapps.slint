@@ -4,7 +4,7 @@
 // chosen in a list of the apps that say they open it, or any app. "Where these come from" lists
 // the files apps read. What it shows comes from Rust (src/defaultapps.rs); everything done goes
 // back through `act`.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, Focusable, SectionLabel, CardTitle, Scroll } from "controls.slint";
 import { TextField, Modal } from "dialogs.slint";
@@ -75,7 +75,7 @@ export component AppSelect inherits Focusable {
         padding-right: 10px;
         spacing: 10px;
         AppTile { app: root.app; y: (parent.height - self.height) / 2; }
-        Text { text: root.app.name == "" ? "None" : root.app.name; color: root.app.name == "" ? Theme.faint : Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.app.name == "" ? "None" : root.app.name; color: root.app.name == "" ? Theme.faint : Theme.text; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         Icon { name: "chevron"; tint: Theme.muted; size: 14px; y: (parent.height - 14px) / 2; }
     }
 }
@@ -103,17 +103,17 @@ component KindLine inherits Rectangle {
             alignment: center;
             spacing: 3px;
             horizontal-stretch: 1;
-            Text { text: root.kind.label; color: Theme.text; font-size: 14px; overflow: elide; }
-            if root.kind.mixed == "": Text { text: root.kind.hint + (root.kind.note == "" ? "" : " · " + root.kind.note); color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            Text { text: root.kind.label; color: Theme.text; font-size: Type.body; overflow: elide; }
+            if root.kind.mixed == "": Text { text: root.kind.hint + (root.kind.note == "" ? "" : " · " + root.kind.note); color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
             if root.kind.mixed != "": HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
                 Rectangle { width: 6px; height: 6px; y: (parent.height - 6px) / 2; border-radius: 3px; background: Theme.warn-text; }
-                Text { text: root.kind.mixed; color: Theme.warn-text; font-size: 12px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                Text { text: root.kind.mixed; color: Theme.warn-text; font-size: Type.note; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                 fix := Text {
                     text: root.kind.fix;
                     color: fix-area.has-hover ? Theme.text : Theme.accent;
-                    font-size: 12px;
+                    font-size: Type.note;
                     vertical-alignment: center;
                     fix-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("fix", root.kind.key); } }
                 }
@@ -144,8 +144,8 @@ component TypeLine inherits Rectangle {
             alignment: center;
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.entry.name; color: Theme.text; font-size: 14px; overflow: elide; }
-            Text { text: root.entry.line; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; overflow: elide; }
+            Text { text: root.entry.line; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
         }
         AppSelect {
             width: 220px;
@@ -189,12 +189,12 @@ export component DefaultAppsPage inherits VerticalLayout {
             VerticalLayout {
                 alignment: center;
                 spacing: 6px;
-                Text { text: root.view.hero-title; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                Text { text: root.view.hero-title; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
                 if !root.compact: HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
                     for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
-                    Text { text: root.view.hero-more; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
+                    Text { text: root.view.hero-more; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
                 }
             }
         }
@@ -218,12 +218,12 @@ export component DefaultAppsPage inherits VerticalLayout {
             width: parent.width - 48px;
             text: root.view.banner;
             color: Theme.text;
-            font-size: 13px;
+            font-size: Type.body;
             wrap: word-wrap;
         }
         Icon { x: 12px; y: 11px; name: "info"; tint: Theme.muted; }
     }
-    if root.view.error != "": Text { text: root.view.error; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+    if root.view.error != "": Text { text: root.view.error; color: Theme.danger; font-size: Type.body; wrap: word-wrap; }
     if root.view.state == "list": HorizontalLayout {
         spacing: 14px;
         vertical-stretch: 1;
@@ -267,10 +267,10 @@ export component DefaultAppsPage inherits VerticalLayout {
                     height: 44px;
                     padding-top: 10px;
                     SectionLabel { text: root.view.types-title; vertical-alignment: center; horizontal-stretch: 1; }
-                    Text { text: root.view.types-right; color: Theme.faint; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.view.types-right; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
                 }
                 for t[i] in root.view.types: TypeLine { entry: t; first: i == 0; act(v, a) => { root.act(v, a); } }
-                Text { text: root.view.types-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; min-height: 34px; vertical-alignment: bottom; }
+                Text { text: root.view.types-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; min-height: 34px; vertical-alignment: bottom; }
             }
         }
     }
@@ -297,8 +297,8 @@ component PickerRow inherits Focusable {
             alignment: center;
             spacing: 1px;
             horizontal-stretch: 1;
-            Text { text: root.app.name; color: Theme.text; font-size: 13px; overflow: elide; }
-            Text { text: root.app.detail; color: Theme.faint; font-size: 11px; overflow: elide; }
+            Text { text: root.app.name; color: Theme.text; font-size: Type.body; overflow: elide; }
+            Text { text: root.app.detail; color: Theme.faint; font-size: Type.label; overflow: elide; }
         }
         if root.app.selected: Icon { name: "check"; tint: Theme.accent; size: 14px; y: (parent.height - 14px) / 2; }
     }
@@ -311,14 +311,14 @@ export component AppPickerDialog inherits Modal {
     card-width: 460px;
     label: root.view.picker-title;
     dismissed => { root.act("picker-close", ""); }
-    Text { text: root.view.picker-title; color: Theme.text; font-size: 17px; font-weight: 600; wrap: word-wrap; }
-    Text { text: root.view.picker-hint; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+    Text { text: root.view.picker-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+    Text { text: root.view.picker-hint; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     Scroll {
         height: min(root.view.picker-apps.length * 46px + 8px, 440px);
         VerticalLayout {
             spacing: 2px;
             for a in root.view.picker-apps: PickerRow { app: a; chosen => { root.act("pick", a.id); } }
-            if root.view.picker-apps.length == 0: Text { text: "No app says it opens these."; color: Theme.faint; font-size: 13px; height: 40px; vertical-alignment: center; }
+            if root.view.picker-apps.length == 0: Text { text: "No app says it opens these."; color: Theme.faint; font-size: Type.body; height: 40px; vertical-alignment: center; }
         }
     }
     HorizontalLayout {
@@ -336,11 +336,11 @@ export component SourcesDialog inherits Modal {
     card-width: 600px;
     label: "Where default apps come from";
     dismissed => { root.act("sources-close", ""); }
-    Text { text: "Where default apps come from"; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text { text: "Where default apps come from"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
     Text {
         text: "Apps look in these files, first one first: the first that names an app for a file type wins. Lituus reads them the same way, so the page shows what really opens.";
         color: Theme.muted;
-        font-size: 13px;
+        font-size: Type.body;
         wrap: word-wrap;
     }
     VerticalLayout {
@@ -357,7 +357,7 @@ export component SourcesDialog inherits Modal {
                     spacing: 2px;
                     horizontal-stretch: 1;
                     Text { text: s.path; color: Theme.text; font-size: s.mono ? 12px : 13px; font-family: s.mono ? "JetBrains Mono" : "Inter"; overflow: elide; }
-                    Text { text: s.what; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    Text { text: s.what; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
                 }
                 if s.saves: VerticalLayout {
                     alignment: center;
@@ -366,7 +366,7 @@ export component SourcesDialog inherits Modal {
                         width: tag.preferred-width + 16px;
                         border-radius: 11px;
                         background: Theme.accent-soft-bg;
-                        tag := Text { text: "Lituus saves here"; color: Theme.accent; font-size: 11px; }
+                        tag := Text { text: "Lituus saves here"; color: Theme.accent; font-size: Type.label; }
                     }
                 }
             }

@@ -1,6 +1,6 @@
 // The form controls, the dialog frame every dialog uses, and the password dialog, styled like the
 // mockups (Password, Hidden network).
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, FieldLabel, Focusable, Focus, FocusTrap } from "controls.slint";
 
@@ -137,7 +137,7 @@ export component Segmented inherits Focusable {
                 Text {
                     text: option;
                     color: !root.enabled ? Theme.faint : i == root.selected ? Theme.text : Theme.muted;
-                    font-size: 13px;
+                    font-size: Type.body;
                     font-weight: i == root.selected ? 500 : 400;
                     horizontal-alignment: center;
                     overflow: elide;
@@ -147,12 +147,12 @@ export component Segmented inherits Focusable {
                     text: root.details.length > i ? root.details[i] : "";
                     height: root.details.length > 0 ? self.preferred-height : 0;
                     color: Theme.faint;
-                    font-size: 11px;
+                    font-size: Type.label;
                     horizontal-alignment: center;
                     overflow: elide;
                 }
             }
-            widest := Text { text: option; font-size: 13px; font-weight: 500; visible: false; }
+            widest := Text { text: option; font-size: Type.body; font-weight: 500; visible: false; }
             option-touch := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { root.selected = i; root.changed(i); } }
         }
     }
@@ -192,12 +192,12 @@ export component ViewSwitcher inherits Focusable {
             Text {
                 text: option;
                 color: i == root.selected ? Theme.text : Theme.muted;
-                font-size: 13px;
+                font-size: Type.body;
                 font-weight: i == root.selected ? 500 : 400;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
-            widest := Text { text: option; font-size: 13px; font-weight: 500; visible: false; }
+            widest := Text { text: option; font-size: Type.body; font-weight: 500; visible: false; }
             view-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; } }
         }
     }
@@ -233,12 +233,12 @@ export component Tabs inherits Focusable {
             Text {
                 text: option;
                 color: i == root.selected || tab-touch.has-hover ? Theme.text : Theme.muted;
-                font-size: 13px;
+                font-size: Type.body;
                 font-weight: i == root.selected ? 600 : 400;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
-            widest := Text { text: option; font-size: 13px; font-weight: 600; visible: false; }
+            widest := Text { text: option; font-size: Type.body; font-weight: 600; visible: false; }
             Rectangle { y: parent.height - 2px; height: 2px; background: i == root.selected ? Theme.accent : transparent; }
             tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; } }
         }
@@ -256,7 +256,7 @@ export component FormRow inherits HorizontalLayout {
         alignment: start;
         padding-top: root.label-top;
         padding-right: 12px;
-        Text { text: root.label; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+        Text { text: root.label; color: Theme.text; font-size: Type.body; wrap: word-wrap; }
     }
     VerticalLayout {
         horizontal-stretch: 1;
@@ -297,7 +297,7 @@ export component CheckBox inherits Focusable {
             // check box makes the generated code too big to compile in 8 GB.
             Icon { name: "check"; tint: Theme.on-accent; size: 14px; stroke-width: 2px; visible: root.checked; }
         }
-        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: 13px; vertical-alignment: center; }
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: Type.body; vertical-alignment: center; }
     }
 }
 
@@ -368,7 +368,7 @@ export component Select inherits Focusable {
             border-color: Theme.border2;
             background: Theme.surface;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: Theme.shadow;
             VerticalLayout {
                 padding: 4px;
                 for option[i] in root.options: Rectangle {
@@ -381,8 +381,8 @@ export component Select inherits Focusable {
                     VerticalLayout {
                         padding-left: 10px;
                         alignment: center;
-                        Text { text: option; color: Theme.text; font-size: 13px; }
-                        if root.details.length > i: Text { text: root.details[i]; color: Theme.muted; font-size: 11px; }
+                        Text { text: option; color: Theme.text; font-size: Type.body; }
+                        if root.details.length > i: Text { text: root.details[i]; color: Theme.muted; font-size: Type.label; }
                     }
                     item := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; root.chosen(i); } }
                 }
@@ -400,7 +400,7 @@ export component Modal inherits Rectangle {
     in property <length> card-padding: 24px;
     in property <string> label;
     callback dismissed();
-    background: #05060799;
+    background: Theme.scrim;
     // The page underneath doesn't scroll with the wheel either.
     TouchArea {
         clicked => { root.dismissed(); }
@@ -416,7 +416,7 @@ export component Modal inherits Rectangle {
         border-color: Theme.border2;
         background: Theme.surface;
         drop-shadow-blur: 40px;
-        drop-shadow-color: #00000080;
+        drop-shadow-color: Theme.shadow-strong;
         // Slint (1.18) has no dialog role; this is the nearest, and the one place to change.
         accessible-role: groupbox;
         accessible-label: root.label;
@@ -480,8 +480,8 @@ export component JoinDialog inherits Modal {
         VerticalLayout {
             spacing: 3px;
             alignment: center;
-            Text { text: root.title; color: Theme.text; font-size: 17px; font-weight: 600; wrap: word-wrap; }
-            Text { text: root.subtitle; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+            Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+            Text { text: root.subtitle; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
         }
     }
     if root.mode == "hidden": VerticalLayout {
@@ -504,18 +504,18 @@ export component JoinDialog inherits Modal {
             label: "Password";
             accepted => { if root.valid { root.accepted(); } }
         }
-        if root.error != "": Text { text: root.error; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+        if root.error != "": Text { text: root.error; color: Theme.danger; font-size: Type.note; wrap: word-wrap; }
         if root.error == "" && root.password-hints[root.security] != "": Text {
             text: root.password-hints[root.security];
             color: Theme.faint;
-            font-size: 12px;
+            font-size: Type.note;
         }
     }
     if root.mode != "prompt" && root.needs-password: VerticalLayout {
         spacing: 8px;
         FieldLabel { text: "Remember the password"; }
         Segmented { options: ["For me only", "All users", "Ask each time"]; selected <=> root.storage; label: "Remember the password"; }
-        Text { text: root.storage-hints[root.storage]; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+        Text { text: root.storage-hints[root.storage]; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     }
     if root.mode != "prompt": CheckBox { checked <=> root.autoconnect; text: "Connect automatically when in range"; }
     HorizontalLayout {
