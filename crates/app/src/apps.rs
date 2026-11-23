@@ -707,6 +707,10 @@ fn fix(state: &mut State, id: &str, verb: &str) {
             reload(state);
         }
         "show" => state.filter = "all".into(),
+        "icon" => {
+            let results = find_icons(d, &slug(&app.name));
+            state.icon = Some(IconPicker { for_add: false, query: slug(&app.name), results });
+        }
         other => {
             if let Some(path) = other.strip_prefix("use:") {
                 let new = app.exec.replacen(&edit::program(&app.exec), &shell_word(path), 1);
@@ -930,7 +934,7 @@ fn problem_view(state: &mut State, app: &App, p: &Problem) -> AppProblem {
         Problem::NoIcon => (
             format!("{} has no icon", app.name),
             format!("Your icon theme has no icon named {}.", app.icon),
-            vec![fix("show", "Show")],
+            vec![fix("icon", "Choose an icon…"), fix("show", "Show")],
         ),
     };
     AppProblem { id: s(&app.id), title: s(title), text: s(text), fixes: model(fixes), app: choice(state, app) }
