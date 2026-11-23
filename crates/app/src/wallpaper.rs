@@ -38,6 +38,7 @@ const EVERY: [u32; 8] = [5, 10, 15, 30, 60, 120, 360, 1440];
 pub enum Pending {
     Pictures(Vec<Set>, bool),
     Slideshow,
+    Splash(bool),
 }
 
 /// A monitor, as the hero draws it.
@@ -538,6 +539,39 @@ fn hyprpaper_slideshow(weak: Option<&slint::Weak<MainWindow>>, state: &mut State
     run(weak, state, work);
 }
 
+/// hyprpaper's splash (Hyprland's text over the picture): written, and hyprpaper started again
+/// (it reads its file only when it starts).
+fn hyprpaper_splash(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, on: bool) {
+    if needs_takeover(state) {
+        state.takeover = Some(Pending::Splash(on));
+        return;
+    }
+    let path = lituus_wallpaper::hyprpaper_conf(&state.hypr_dir());
+    let env = state.env();
+    let wait = weak.is_some();
+    let running = state.status.running == Some(Program::Hyprpaper);
+    let work = move || -> Result<(), String> {
+        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut text = lituus_wallpaper::hyprpaper_with_splash(&old, on);
+        if !text.contains(MARK) {
+            text = format!("{MARK}\n{text}");
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+        }
+        std::fs::write(&path, text).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+        if !running {
+            return Ok(());
+        }
+        let _ = lituus_wallpaper::stop(&env, Program::Hyprpaper);
+        if wait {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        lituus_wallpaper::start(&env, Program::Hyprpaper).map_err(|e| format!("Couldn't start hyprpaper again: {e}."))
+    };
+    run(weak, state, work);
+}
+
 /// A slideshow setting changed: hyprpaper's is written and started again; Lituus's own takes it
 /// from its next picture.
 fn slideshow_changed(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
@@ -764,6 +798,7 @@ pub fn view(state: &State) -> WallpaperView {
         if state.settings.sort != "name" {
             pictures.sort_by_key(|p| std::cmp::Reverse(p.modified));
         }
+        let hyprpaper = state.program() == Some(Program::Hyprpaper);
         for p in pictures {
             let on: Vec<String> = state.current.iter().filter(|(_, c)| *c == p.path).map(|(m, _)| m.clone()).collect();
             let size = state.sizes.get(&p.path).map(|(w, h)| format!("{w} × {h}")).unwrap_or_default();
@@ -775,6 +810,7 @@ pub fn view(state: &State) -> WallpaperView {
                 accent: !on.is_empty(),
                 picture: thumb(&p.path),
                 gif: p.gif(),
+                off: p.gif() && hyprpaper,
                 ..Default::default()
             });
         }
@@ -864,6 +900,11 @@ pub fn view(state: &State) -> WallpaperView {
     });
     v.message = s(state.message.clone().unwrap_or_default());
     v.takeover = state.takeover.is_some();
+    v.hyprpaper = state.program() == Some(Program::Hyprpaper);
+    v.splash = v.hyprpaper
+        && lituus_wallpaper::hyprpaper_splash(
+            &std::fs::read_to_string(lituus_wallpaper::hyprpaper_conf(&state.hypr_dir())).unwrap_or_default(),
+        );
     v
 }
 
@@ -882,6 +923,19 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
 fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &str, arg: &str, value: f32) {
     let index = value.max(0.0) as usize;
     match verb {
+        "splash" => {
+            let on = !lituus_wallpaper::hyprpaper_splash(
+                &std::fs::read_to_string(lituus_wallpaper::hyprpaper_conf(&state.hypr_dir())).unwrap_or_default(),
+            );
+            hyprpaper_splash(weak, state, on);
+        }
+        "set"
+            if state.program() == Some(Program::Hyprpaper)
+                && Path::new(arg).extension().is_some_and(|e| e.eq_ignore_ascii_case("gif")) =>
+        {
+            state.message =
+                Some("hyprpaper doesn't show GIFs: choose awww under Program for pictures that move.".into());
+        }
         "set" => {
             let path = PathBuf::from(arg);
             let set = set_for(state, path);
@@ -1027,6 +1081,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
                 match (take_over(state), pending) {
                     (Ok(()), Pending::Pictures(sets, after)) => set_picture(weak, state, sets, after),
                     (Ok(()), Pending::Slideshow) => hyprpaper_slideshow(weak, state),
+                    (Ok(()), Pending::Splash(on)) => hyprpaper_splash(weak, state, on),
                     (Err(e), _) => {
                         state.message = Some(format!("hyprpaper.conf couldn't be kept as hyprpaper.conf.bak: {e}."))
                     }
@@ -1269,6 +1324,14 @@ mod tests {
         // Asked once.
         act_with(None, &mut state, "set", &alps.display().to_string(), 0.0);
         assert!(state.takeover.is_none());
+        // The splash switch writes its line; a GIF isn't set (hyprpaper doesn't show them).
+        assert!(view(&state).hyprpaper && !view(&state).splash);
+        act_with(None, &mut state, "splash", "", 0.0);
+        let text = std::fs::read_to_string(&conf).unwrap();
+        assert!(text.contains("splash = true") && !text.contains("splash = false"), "{text}");
+        assert!(view(&state).splash);
+        act_with(None, &mut state, "set", "/w/rain.gif", 0.0);
+        assert!(state.message.as_deref().is_some_and(|m| m.contains("GIF")));
         std::fs::remove_dir_all(&d).unwrap();
     }
 

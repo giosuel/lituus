@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 pub use hyprpaper::{
     Entry as HyprpaperEntry, conf_text as hyprpaper_conf_text, entries as hyprpaper_entries,
-    fit_mode as hyprpaper_fit_mode,
+    fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, with_splash as hyprpaper_with_splash,
 };
 pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, read_folder, thumbnail};
 
