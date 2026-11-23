@@ -107,7 +107,18 @@ pub fn read_folder(dir: &Path, deep: bool) -> std::io::Result<Folder> {
 
 /// A picture's size in pixels, read from its header.
 pub fn dimensions(path: &Path) -> Option<(u32, u32)> {
-    image::image_dimensions(path).ok()
+    image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()
+}
+
+/// A picture, decoded by what's in it rather than its name: wallpapers are often saved with
+/// another format's extension (a JPEG called .png), which `image::open` refuses.
+fn open(path: &Path) -> Result<image::DynamicImage, String> {
+    image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())
 }
 
 /// A small copy of a picture, `width` × `height`, cropped to fill it, as a PNG in `cache`; made
@@ -120,8 +131,9 @@ pub fn thumbnail(path: &Path, cache: &Path, width: u32, height: u32) -> Result<P
     if out.exists() {
         return Ok(out);
     }
-    let img = image::open(path).map_err(|e| e.to_string())?;
-    let small = img.resize_to_fill(width, height, image::imageops::FilterType::Triangle);
+    let img = open(path)?;
+    // Lanczos: a sharper small copy than Triangle's, made once per picture.
+    let small = img.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3);
     std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
     // Through a temporary file, so a half-written one is never taken for done.
     let tmp = out.with_extension("tmp");
@@ -148,6 +160,13 @@ mod tests {
         png(&d.join("Nature/fjord.png"), 8, 8);
         png(&d.join("Space/deep/nebula.png"), 8, 8);
         png(&d.join(".hidden/x.png"), 8, 8);
+        // A JPEG saved as .png: still read, by what's in it.
+        image::RgbImage::from_pixel(40, 30, image::Rgb([200, 80, 10]))
+            .save_with_format(d.join("c.png"), image::ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(dimensions(&d.join("c.png")), Some((40, 30)));
+        assert!(thumbnail(&d.join("c.png"), &d.join(".cache"), 16, 9).is_ok());
+        std::fs::remove_file(d.join("c.png")).unwrap();
         std::fs::write(d.join("clip.mp4"), "").unwrap();
         let f = read_folder(&d, false).unwrap();
         assert_eq!(f.pictures.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a.jpg", "b.png"]);
