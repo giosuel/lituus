@@ -682,7 +682,12 @@ pub fn view(state: &State) -> SystemView {
     } else if !os.variant.is_empty() {
         os.variant.clone()
     } else {
-        os.version.trim_start_matches(&version_number(os)).trim().trim_matches(['(', ')']).to_owned()
+        // "26.04.1 LTS (Resolute Raccoon)" → "LTS (Resolute Raccoon)"; "13 (trixie)" → "trixie".
+        let rest = os.version.trim_start_matches(&version_number(os)).trim();
+        match rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            Some(inner) if !inner.contains('(') => inner.to_owned(),
+            _ => rest.to_owned(),
+        }
     });
     let mut distro = Vec::new();
     if let Some(like) = os.id_like.first() {
@@ -792,10 +797,7 @@ fn updates_view(state: &State, v: &mut SystemView) {
     } else if u.found.is_some() && found.is_empty() {
         "Lituus didn't find a package manager it can count updates for.".to_owned()
     } else if !u.running.is_empty() {
-        format!(
-            "{} runs it; when it closes, Lituus checks again.",
-            capital(terminal_name.as_deref().unwrap_or("Your terminal"))
-        )
+        format!("It runs {in_terminal}; when that closes, Lituus checks again.")
     } else if counted > 0 {
         format!("Update runs it {in_terminal}. The commands are in Settings.")
     } else {
@@ -985,6 +987,21 @@ mod tests {
         );
         assert_eq!((c[1].name.as_str(), c[1].default.as_str()), ("AUR (yay)", ""));
         assert_eq!(day_text("2026-12-09"), "9 Dec 2026");
+    }
+
+    #[test]
+    fn distributions_in_words() {
+        let detail = |version: &str, variant: &str| {
+            let os = Os { name: "X".into(), version: version.into(), variant: variant.into(), ..Default::default() };
+            let v = view(&State { info: Some(Info { os, ..info() }), ..Default::default() });
+            (v.distro_name.to_string(), v.distro_detail.to_string())
+        };
+        assert_eq!(detail("26.04.1 LTS (Resolute Raccoon)", ""), ("X 26.04.1".into(), "LTS (Resolute Raccoon)".into()));
+        assert_eq!(detail("13 (trixie)", ""), ("X 13".into(), "trixie".into()));
+        assert_eq!(
+            detail("43 (Workstation Edition)", "Workstation Edition"),
+            ("X 43".into(), "Workstation Edition".into())
+        );
     }
 
     #[test]
