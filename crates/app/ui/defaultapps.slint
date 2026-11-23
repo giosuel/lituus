@@ -44,7 +44,7 @@ export struct DefaultAppsView {
 }
 
 /// An app's icon, or its first letter on a tile.
-component AppTile inherits Rectangle {
+export component AppTile inherits Rectangle {
     in property <AppChoice> app;
     in property <length> size: 22px;
     width: size;
@@ -56,7 +56,7 @@ component AppTile inherits Rectangle {
 }
 
 /// The app chosen for something, as a button that opens the list to choose another.
-component AppSelect inherits Focusable {
+export component AppSelect inherits Focusable {
     in property <AppChoice> app;
     in property <string> label;
     callback clicked();
