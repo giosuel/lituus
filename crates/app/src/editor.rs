@@ -1201,6 +1201,9 @@ fn write_eap(s: &mut Settings, kind: Kind, initial: Option<&EapForm>, e: &EapFor
         put(s, X, "eap", Value::from(vec![EAP_METHODS[e.method].0.to_owned()]));
     }
     if edited!(phase2) || edited!(method) {
+        // The form shows phase2-autheap (an inner EAP method) when there's no phase2-auth, and
+        // TTLS goes by it when both are there: the choice made here replaces it.
+        remove(s, X, "phase2-autheap");
         if matches!(EAP_METHODS[e.method].0, "peap" | "ttls") {
             put(s, X, "phase2-auth", Value::from(PHASE2[e.phase2].0));
         } else {
@@ -1605,6 +1608,35 @@ mod tests {
         assert_eq!(read(&s).1.ip6, f.ip6);
         f.ip6.routes[0].prefix = "200".into();
         assert_eq!(check(kind, None, &f).ip6.routes, "The prefix of fd00:: is from 0 to 128.");
+    }
+
+    /// A TTLS connection set up with an inner EAP method (by nm-connection-editor or an eduroam
+    /// profile) signs in with the inner method chosen here, not the old one.
+    #[test]
+    fn a_new_inner_method_replaces_phase2_autheap() {
+        let s = settings(&[
+            ("connection", vec![("type", Value::from("802-11-wireless")), ("id", Value::from("corp"))]),
+            ("802-11-wireless", vec![("ssid", Value::from(b"corp".to_vec()))]),
+            ("802-11-wireless-security", vec![("key-mgmt", Value::from("wpa-eap"))]),
+            (
+                "802-1x",
+                vec![
+                    ("eap", Value::from(vec!["ttls".to_owned()])),
+                    ("identity", Value::from("a")),
+                    ("phase2-autheap", Value::from("gtc")),
+                ],
+            ),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(PHASE2[initial.eap.phase2].0, "gtc");
+        let mut f = initial.clone();
+        f.eap.phase2 = 0; // MSCHAPv2
+        let out = write(kind, &s, Some(&initial), &f, "me");
+        assert!(get(&out, "802-1x", "phase2-autheap").is_none(), "the old EAP inner method still wins");
+        assert_eq!(string(&out, "802-1x", "phase2-auth").as_deref(), Some("mschapv2"));
+        // Unchanged, it stays as it was.
+        let out = write(kind, &s, Some(&initial), &initial, "me");
+        assert_eq!(string(&out, "802-1x", "phase2-autheap").as_deref(), Some("gtc"));
     }
 
     // 01-7: nm-setting-ip4-config.c and nm-setting-ip6-config.c verify(): no DNS, search domains
