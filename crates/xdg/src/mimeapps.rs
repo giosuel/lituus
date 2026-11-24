@@ -145,9 +145,10 @@ pub fn candidates(files: &[ListFile], apps: &[App], mime: &str) -> Vec<String> {
     out
 }
 
-/// Makes `app` the default for each of `mimes` in the file at `path`, keeping the rest of it.
+/// Makes `app` the default for each of `mimes` in the file at `path`, keeping the rest of it. A
+/// file that can't be read is left as it is: written back, it would lose everything else in it.
 pub fn set_defaults(path: &Path, mimes: &[String], app: &str) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = lituus_fs::read_or_empty(path)?;
     let text = with_defaults(&text, mimes, app);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -292,6 +293,19 @@ mod tests {
         assert_eq!(f.default_for("text/html"), ["chromium.desktop"]);
         let out = with_defaults(text, &["text/html".into()], "brave.desktop");
         assert_eq!(out, "[Default Applications]\ntext/html=brave.desktop;\n\n[Default Applications]\n");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_is_left_as_it_is() {
+        let root = test_dir::with("mimeapps-unreadable", &[]);
+        let path = root.join("home/.config/mimeapps.list");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Not UTF-8: read as empty, it would be written back with only the new line.
+        let text = b"[Default Applications]\ntext/plain=caf\xe9.desktop;\n";
+        std::fs::write(&path, text).unwrap();
+        assert!(set_defaults(&path, &["text/html".into()], "firefox.desktop").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), text);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
