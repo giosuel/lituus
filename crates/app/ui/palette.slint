@@ -1,0 +1,250 @@
+// The command palette (M10, D-47; canvas page "Command palette"): Ctrl K opens it over the page.
+// Rust works out the rows (src/palette.rs); this draws them and passes on the keys.
+
+import { Theme, Type, Size } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Switch, SectionLabel, Kbd, Hint, IconTile } from "controls.slint";
+import { Segmented, SelectButton } from "dialogs.slint";
+import { Slider } from "sound.slint";
+
+/// A line of the palette: a section's title (kind "header", in `title`), or a row: a "page", an
+/// "action", or a setting with its control ("switch", "choice", "slider"). The title comes split
+/// around what the search found (`pre`, `hit`, `post`).
+export struct PaletteRow {
+    kind: string,
+    index: int,
+    id: string,
+    icon: string,
+    title: string,
+    pre: string,
+    hit: string,
+    post: string,
+    place: string,
+    on: bool,
+    options: [string],
+    choice: int,
+    value: float,
+    minimum: float,
+    maximum: float,
+    step: float,
+    value-text: string,
+    selected: bool,
+    // Stepped into: ← → change it, and `was` is the value it had.
+    editing: bool,
+    was: string,
+}
+
+/// What the palette shows; `keys` are the selected row's, for the footer.
+export struct PaletteView {
+    open: bool,
+    editing: bool,
+    rows: [PaletteRow],
+    keys: [Hint],
+    empty: string,
+}
+
+component PaletteLine inherits Rectangle {
+    in property <PaletteRow> line;
+    callback clicked();
+    callback set(float);
+    height: root.line.kind == "header" ? 30px : 48px;
+    border-radius: 9px;
+    background: root.line.selected ? Theme.accent-soft-bg : touch.has-hover && root.line.kind != "header" ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.line.title;
+    accessible-item-selected: root.line.selected;
+    // Under the controls, which take their own clicks.
+    touch := TouchArea {
+        mouse-cursor: root.line.kind == "header" ? MouseCursor.default : MouseCursor.pointer;
+        clicked => { if root.line.kind != "header" { root.clicked(); } }
+    }
+    if root.line.kind == "header": SectionLabel { x: 8px; y: 8px; height: 22px; text: root.line.title; vertical-alignment: center; }
+    if root.line.kind != "header": HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        IconTile { icon: root.line.icon; y: (parent.height - self.height) / 2; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            // The letters the search found, in the accent.
+            HorizontalLayout {
+                alignment: start;
+                // An empty part takes no room (an empty Text still takes a few pixels).
+                Text { text: root.line.pre; width: self.text == "" ? 0px : self.preferred-width; color: Theme.text; font-size: Type.body; font-weight: 500; }
+                Text { text: root.line.hit; width: self.text == "" ? 0px : self.preferred-width; color: Theme.accent; font-size: Type.body; font-weight: 600; }
+                Text { text: root.line.post; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; horizontal-stretch: 1; }
+            }
+            Text { text: root.line.place; color: Theme.faint; font-size: Type.note; overflow: elide; }
+        }
+        if root.line.editing: Text { text: root.line.was; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+        // Its control, with a ring while it's stepped into.
+        Rectangle {
+            width: control.preferred-width + 8px;
+            border-radius: 11px;
+            border-width: root.line.editing ? 2px : 0px;
+            border-color: Theme.accent;
+            control := HorizontalLayout {
+                x: 4px;
+                alignment: center;
+                if root.line.kind == "switch": VerticalLayout {
+                    alignment: center;
+                    Switch { on: root.line.on; label: root.line.title; toggled => { root.set(0); } }
+                }
+                if root.line.kind == "choice" && root.line.options.length <= 3: VerticalLayout {
+                    alignment: center;
+                    Segmented { options: root.line.options; selected: root.line.choice; label: root.line.title; changed(i) => { root.set(i); } }
+                }
+                if root.line.kind == "choice" && root.line.options.length > 3: VerticalLayout {
+                    alignment: center;
+                    SelectButton { width: 200px; text: root.line.value-text; label: root.line.title; clicked => { root.clicked(); } }
+                }
+                if root.line.kind == "slider": HorizontalLayout {
+                    spacing: 10px;
+                    Slider {
+                        width: 160px;
+                        value: root.line.value;
+                        minimum: root.line.minimum;
+                        maximum: root.line.maximum;
+                        step: root.line.step;
+                        label: root.line.title;
+                        value-text: root.line.value-text;
+                        moved(v) => { root.set(v); }
+                    }
+                    Text { text: root.line.value-text; color: Theme.muted; font-size: Type.note; font-family: "JetBrains Mono"; width: 56px; horizontal-alignment: right; vertical-alignment: center; }
+                }
+                if (root.line.kind == "page" || root.line.kind == "action") && root.line.selected: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 22px;
+                        height: 20px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: Theme.border2;
+                        Text { text: "↵"; color: Theme.muted; font-size: Type.label; font-family: "JetBrains Mono"; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Over the whole window: a dimmed page, and the palette 96 px from the top. A click beside it
+/// closes it; the search keeps the keyboard while it's open.
+export component CommandPalette inherits Rectangle {
+    in property <PaletteView> view;
+    in-out property <string> query <=> search.text;
+    callback edited(string);
+    /// "up", "down", "enter", "ctrl-enter", "left", "right", "esc", "close".
+    callback key(string);
+    callback clicked(int);
+    callback set(string, float);
+    callback closed();
+    public function focus-search() { search.focus(); }
+    background: Theme.scrim;
+    accessible-role: none;
+    TouchArea {
+        clicked => { root.closed(); }
+        scroll-event(event) => { accept }
+    }
+    card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: min(96px, max(16px, (parent.height - self.height) / 2));
+        width: min(720px, parent.width - 48px);
+        height: body.preferred-height;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.border2;
+        background: Theme.surface;
+        drop-shadow-blur: 60px;
+        drop-shadow-offset-y: 24px;
+        drop-shadow-color: Theme.shadow-strong;
+        clip: true;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: "Command palette";
+        // Clicks on the card stay on it.
+        TouchArea { }
+        body := VerticalLayout {
+            Rectangle {
+                height: 52px;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    Icon { name: "search"; tint: search.text == "" ? Theme.faint : Theme.muted; size: 16px; y: (parent.height - 16px) / 2; }
+                    keys := FocusScope {
+                        horizontal-stretch: 1;
+                        // Before the search field sees them: the list's keys, and while a row is
+                        // stepped into, ← → are its control's and the search waits.
+                        capture-key-pressed(event) => {
+                            if event.text == Key.UpArrow { root.key("up"); return accept; }
+                            if event.text == Key.DownArrow { root.key("down"); return accept; }
+                            if event.text == Key.Return { root.key(event.modifiers.control ? "ctrl-enter" : "enter"); return accept; }
+                            if event.text == Key.Escape { root.key("esc"); return accept; }
+                            if event.modifiers.control && (event.text == "k" || event.text == "K") { root.key("close"); return accept; }
+                            if event.text == Key.Tab || event.text == Key.Backtab { return accept; }
+                            if root.view.editing && event.text == Key.LeftArrow { root.key("left"); return accept; }
+                            if root.view.editing && event.text == Key.RightArrow { root.key("right"); return accept; }
+                            if root.view.editing { return accept; }
+                            reject
+                        }
+                        search := TextInput {
+                            width: parent.width;
+                            height: parent.height;
+                            color: root.view.editing ? Theme.muted : Theme.text;
+                            font-size: Type.card-title;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accessible-label: "Search settings, pages and actions";
+                            edited => { root.edited(self.text); }
+                        }
+                        if search.text == "": Text {
+                            x: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            horizontal-alignment: left;
+                            text: "Search settings, pages and actions…";
+                            color: Theme.faint;
+                            font-size: Type.card-title;
+                            vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout { alignment: center; Kbd { key: "Esc"; } }
+                }
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+            }
+            VerticalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 2px;
+                padding-bottom: 6px;
+                spacing: 2px;
+                for row in root.view.rows: PaletteLine {
+                    line: row;
+                    clicked => { root.clicked(row.index); }
+                    set(v) => { root.set(row.id, v); }
+                }
+                if root.view.empty != "": Text {
+                    height: 64px;
+                    text: root.view.empty;
+                    color: Theme.muted;
+                    font-size: Type.body;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+            Rectangle {
+                height: 40px;
+                Rectangle { y: 0; height: 1px; background: Theme.border; }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    spacing: 16px;
+                    alignment: start;
+                    for k in root.view.keys: Kbd { key: k.key; label: k.label; }
+                }
+            }
+        }
+    }
+}

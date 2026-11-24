@@ -26,6 +26,7 @@ mod nav;
 mod notify;
 mod openconnect;
 mod openvpn;
+mod palette;
 mod portal;
 mod profiles;
 mod qr;
@@ -207,8 +208,8 @@ struct App {
     apps: apps::State,
     /// Airplane mode, from when it's turned on until it ends.
     airplane: Option<airplane::Airplane>,
-    /// The sidebar's search.
-    nav_query: String,
+    /// The command palette (Ctrl K).
+    command: palette::State,
     /// The sidebar items whose sub-items are folded away, for this session only (config.toml
     /// holds settings, not the window's state).
     nav_folded: Vec<String>,
@@ -300,6 +301,7 @@ fn main() -> Result<(), slint::PlatformError> {
     connect_callbacks(&window);
     connect_focus(&window);
     setup::connect(&window);
+    connect_palette(&window);
     apply_theme(&window);
     render(&window);
     let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -744,24 +746,11 @@ fn connect_callbacks(window: &MainWindow) {
         }
     });
     let weak = window.as_weak();
-    window.on_nav_search(move |text| update(&weak, |app| app.nav_query = text.to_string()));
-    let weak = window.as_weak();
     window.on_nav_fold(move |id| {
         update(&weak, |app| match app.nav_folded.iter().position(|f| *f == id.as_str()) {
             Some(i) => _ = app.nav_folded.remove(i),
             None => app.nav_folded.push(id.into()),
         })
-    });
-    let weak = window.as_weak();
-    window.on_nav_search_accepted(move || {
-        let Some(window) = weak.upgrade() else { return };
-        let target = APP.with(|app| {
-            let app = app.borrow();
-            nav::first_match(&nav_entries(&app), &app.nav_query).map(str::to_owned)
-        });
-        if let Some(id) = target {
-            window.invoke_navigate(id.into());
-        }
     });
     let weak = window.as_weak();
     window.on_select(move |id| update(&weak, |app| app.ui.selected = Some(id.to_string())));
@@ -1725,7 +1714,7 @@ fn render(window: &MainWindow) {
         for (entry, status) in entries.iter_mut().zip(statuses) {
             entry.status = status.clone();
         }
-        window.set_nav_groups(model(nav::groups(&entries, &app.nav_query, app.ui.page.id(), &app.nav_folded)));
+        window.set_nav_groups(model(nav::groups(&entries, "", app.ui.page.id(), &app.nav_folded)));
         window.set_net_sub(v.net_hero.sub.as_str().into());
         window.set_count(v.count.as_str().into());
         window.set_net_hero(HeroInfo {
@@ -1860,7 +1849,79 @@ fn render(window: &MainWindow) {
         });
         window.set_hints(model(hints));
         render_quick(&mut app, airplane);
+        window.set_palette_view(palette::view(&app));
     });
+}
+
+/// The command palette's callbacks. Its changes run through the pages' own handlers, outside
+/// `update`: they update the state themselves.
+fn connect_palette(window: &MainWindow) {
+    let weak = window.as_weak();
+    window.on_palette_open(move || {
+        update(&weak, |app| palette::open(&mut app.command));
+        if let Some(window) = weak.upgrade() {
+            window.set_palette_query("".into());
+        }
+    });
+    let weak = window.as_weak();
+    window.on_palette_edited(move |text| update(&weak, |app| palette::edited(&mut app.command, &text)));
+    let weak = window.as_weak();
+    window.on_palette_key(move |key| {
+        let effects = APP.with(|app| palette::key(&mut app.borrow_mut(), &key));
+        run_palette(&weak, effects);
+    });
+    let weak = window.as_weak();
+    window.on_palette_clicked(move |row| {
+        let effects = APP.with(|app| palette::clicked(&mut app.borrow_mut(), row.max(0) as usize));
+        run_palette(&weak, effects);
+    });
+    let weak = window.as_weak();
+    window.on_palette_set(move |id, value| {
+        let effects = APP.with(|app| palette::set(&mut app.borrow_mut(), &id, value));
+        run_palette(&weak, effects);
+    });
+    let weak = window.as_weak();
+    window.on_palette_closed(move || update(&weak, |app| palette::close(&mut app.command)));
+}
+
+fn run_palette(weak: &slint::Weak<MainWindow>, effects: Vec<palette::Effect>) {
+    use palette::Effect;
+    // The palette's own change first (closed, a row stepped into).
+    update(weak, |_| {});
+    let Some(window) = weak.upgrade() else { return };
+    for effect in effects {
+        match effect {
+            Effect::Navigate(id) => window.invoke_navigate(id.into()),
+            Effect::Wifi => window.invoke_wifi_switched(),
+            Effect::Airplane => window.invoke_airplane_toggled(),
+            Effect::Bt(verb, arg) => window.invoke_bt_act(verb.into(), arg.into()),
+            Effect::Sound(verb, value) => window.invoke_sound_act(verb.into(), "".into(), value),
+            Effect::Input(verb, arg, value) => window.invoke_input_act(verb.into(), arg.into(), value),
+            Effect::Appearance(verb, index) => window.invoke_ap_act(verb.into(), index),
+            Effect::Option(id) => window.invoke_option_toggled(id.into()),
+            Effect::Wallpaper(verb) => window.invoke_wallpaper_act(verb.into(), "".into(), 0.0),
+            Effect::System(verb) => window.invoke_system_act(verb.into(), "".into()),
+            Effect::Shortcuts(verb) => window.invoke_shortcuts_act(verb.into(), "".into()),
+            Effect::Apps(verb) => window.invoke_apps_act(verb.into(), "".into()),
+            Effect::Hostname => window.invoke_hostname_clicked(),
+            Effect::Copy(text) => window.invoke_copy_text(text.into()),
+            // As the page's button does, from wherever the window is.
+            Effect::Net { id, verb } => update(weak, |app| {
+                let before = app.ui.selected.replace(id);
+                act(app, verb);
+                app.ui.selected = before;
+            }),
+            Effect::Highlight(label) => {
+                window.global::<Highlight>().set_label(label.into());
+                let weak = weak.clone();
+                slint::Timer::single_shot(Duration::from_millis(2500), move || {
+                    if let Some(window) = weak.upgrade() {
+                        window.global::<Highlight>().set_label("".into());
+                    }
+                });
+            }
+        }
+    }
 }
 
 fn render_dialog(window: &MainWindow, app: &mut App) {
@@ -3268,6 +3329,54 @@ mod tests {
         window.window().dispatch_event(WindowEvent::KeyReleased { text });
         // The Tab a dialog presses again to send the focus round (connect_focus).
         mock_elapsed_time(Duration::ZERO);
+    }
+
+    /// The command palette (M10): its list's keys go to Rust before the search field sees them,
+    /// and typing goes to the search; stepped into a row, ← → are the row's and the search waits.
+    #[test]
+    fn the_palette_takes_its_keys() {
+        let window = window();
+        let got = Rc::new(RefCell::new(Vec::<String>::new()));
+        let g = got.clone();
+        window.on_palette_key(move |key| g.borrow_mut().push(key.to_string()));
+        let g = got.clone();
+        window.on_palette_edited(move |text| g.borrow_mut().push(format!("typed {text}")));
+        let row = |kind: &str, title: &str| super::PaletteRow {
+            kind: kind.into(),
+            title: title.into(),
+            pre: title.into(),
+            ..Default::default()
+        };
+        let view = |editing: bool| super::PaletteView {
+            open: true,
+            editing,
+            rows: super::model(vec![
+                row("header", "SETTINGS · 1"),
+                super::PaletteRow { selected: true, editing, ..row("choice", "Mode") },
+            ]),
+            keys: super::model(vec![super::Hint::new("Esc", "Close")]),
+            empty: "".into(),
+        };
+        window.set_palette_view(view(false));
+        for key in [Key::DownArrow, Key::UpArrow, Key::Return, Key::Escape] {
+            press(&window, key);
+        }
+        press(&window, "d");
+        // Ctrl ↵ goes to the row's page.
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        press(&window, Key::Return);
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        assert_eq!(*got.borrow(), ["down", "up", "enter", "esc", "typed d", "ctrl-enter"]);
+        assert_eq!(window.get_palette_query(), "d");
+
+        got.borrow_mut().clear();
+        window.set_palette_view(view(true));
+        for key in [Key::RightArrow, Key::LeftArrow] {
+            press(&window, key);
+        }
+        press(&window, "x");
+        assert_eq!(*got.borrow(), ["right", "left"]);
+        assert_eq!(window.get_palette_query(), "d", "the search waits while a row is stepped into");
     }
 
     /// The window with the sidebar filled in, as the app shows it.
