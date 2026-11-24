@@ -423,6 +423,26 @@ impl InputSettings {
         out
     }
 
+    /// What these settings leave to the device's own default (libinput's, which isn't always
+    /// "adaptive" or two fingers) that `before` set: the acceleration or the touchpad's scroll
+    /// method, for every device or one. Hyprland takes only a name for those, and keeps what it
+    /// has for one that isn't given, so only reading its config again brings the default back.
+    pub fn left_to_default(&self, before: &InputSettings) -> bool {
+        // (acceleration, scroll method) as a device gets them: its own, else every one's.
+        let of = |s: &InputSettings, name: Option<&str>| -> (String, String) {
+            match name.and_then(|n| s.devices.iter().find(|d| d.name == n)).map(|d| &d.settings) {
+                Some(DeviceSettings::Mouse(m)) => (m.accel_profile.clone(), s.touchpad.scroll_method.clone()),
+                Some(DeviceSettings::Touchpad(_, t)) => (s.mouse.accel_profile.clone(), t.scroll_method.clone()),
+                None => (s.mouse.accel_profile.clone(), s.touchpad.scroll_method.clone()),
+            }
+        };
+        let gone = |name: Option<&str>| {
+            let ((a0, s0), (a1, s1)) = (of(before, name), of(self, name));
+            (!a0.is_empty() && a1.is_empty()) || (!s0.is_empty() && s1.is_empty())
+        };
+        gone(None) || before.devices.iter().any(|d| gone(Some(&d.name)))
+    }
+
     /// The settings in a file `file` wrote; what it doesn't have keeps Hyprland's defaults.
     pub fn parse(text: &str, lua: bool) -> Self {
         let (input, devices) = if lua { parse_lua(text) } else { parse_hyprlang(text) };
@@ -605,10 +625,19 @@ impl LuaReader<'_> {
                 }
                 b'\\' => {
                     self.i += 1;
-                    out.push(match *self.s.get(self.i)? {
-                        b'n' => b'\n',
-                        c => c,
-                    });
+                    match *self.s.get(self.i)? {
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        // \ddd: a byte by its number.
+                        b'0'..=b'9' => {
+                            let digits = self.s[self.i..].iter().take(3).take_while(|c| c.is_ascii_digit()).count();
+                            let n = std::str::from_utf8(&self.s[self.i..self.i + digits]).ok()?.parse::<u8>().ok()?;
+                            out.push(n);
+                            self.i += digits - 1;
+                        }
+                        c => out.push(c),
+                    }
                 }
                 c => out.push(c),
             }
@@ -903,5 +932,25 @@ mod tests {
         assert_eq!(main.active_keymap, "German (Switzerland)");
         assert_eq!(d.keyboards.iter().find(|k| k.name == "power-button").unwrap().active_layout_index, Some(0));
         assert!(d.keyboards.iter().any(|k| k.active_layout_index.is_none()));
+    }
+
+    /// Going back to the device's own default can't be said live (Hyprland takes only a name),
+    /// so it's told apart: for every device, and for one with its own settings or reset.
+    #[test]
+    fn what_goes_back_to_the_devices_default() {
+        let flat = MouseSettings { accel_profile: "flat".into(), ..MouseSettings::default() };
+        let before = InputSettings { mouse: flat.clone(), ..InputSettings::default() };
+        assert!(InputSettings::default().left_to_default(&before));
+        assert!(!before.left_to_default(&InputSettings::default()));
+        let adaptive = MouseSettings { accel_profile: "adaptive".into(), ..MouseSettings::default() };
+        assert!(!InputSettings { mouse: adaptive, ..InputSettings::default() }.left_to_default(&before));
+        // A mouse of its own on flat, back to the defaults.
+        let own = Device { name: "mx".into(), settings: DeviceSettings::Mouse(flat) };
+        let before = InputSettings { devices: vec![own], ..InputSettings::default() };
+        assert!(InputSettings::default().left_to_default(&before));
+        // A touchpad's scroll method.
+        let edge = TouchpadSettings { scroll_method: "edge".into(), ..TouchpadSettings::default() };
+        let before = InputSettings { touchpad: edge, ..InputSettings::default() };
+        assert!(InputSettings::default().left_to_default(&before));
     }
 }
