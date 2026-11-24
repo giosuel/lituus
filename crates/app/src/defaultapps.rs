@@ -202,10 +202,10 @@ fn choice(state: &mut State, id: Option<&str>, selected: bool) -> AppChoice {
         Some(a) if !a.flatpak.is_empty() => format!("Flatpak · {}", a.flatpak),
         _ => id.to_owned(),
     };
+    // Drawn as Apps draws them: an SVG icon never loads the files it names. 64 px is enough
+    // for the page's tiles (22 at most) on a screen scaled up to 2.9.
     let icon = match d.icons.get(id) {
-        Some(path) => {
-            state.images.entry(id.to_owned()).or_insert_with(|| Image::load_from_path(path).unwrap_or_default()).clone()
-        }
+        Some(path) => state.images.entry(id.to_owned()).or_insert_with(|| crate::apps::icon_image(path, 64)).clone(),
         None => Image::default(),
     };
     AppChoice {

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 pub mod desktop;
 pub mod edit;
+pub mod exec;
 pub mod kinds;
 pub mod mime;
 pub mod mimeapps;
