@@ -3,7 +3,7 @@
 
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Switch, SectionLabel, Kbd, Hint, IconTile } from "controls.slint";
+import { Switch, SectionLabel, Kbd, Hint, IconTile, Scroll } from "controls.slint";
 import { Segmented, SelectButton } from "dialogs.slint";
 import { Slider } from "sound.slint";
 
@@ -34,19 +34,24 @@ export struct PaletteRow {
     was: string,
 }
 
-/// What the palette shows; `keys` are the selected row's, for the footer.
+/// What the palette shows; `keys` are the selected row's, for the footer. The selected row is
+/// `reveal-top` from the top of the list and `reveal-size` tall (its section's title included
+/// when it's the first), so the list scrolls to it.
 export struct PaletteView {
     open: bool,
     editing: bool,
     rows: [PaletteRow],
     keys: [Hint],
     empty: string,
+    reveal-top: length,
+    reveal-size: length,
 }
 
 component PaletteLine inherits Rectangle {
     in property <PaletteRow> line;
     callback clicked();
     callback set(float);
+    // palette.rs counts on these (HEADER_HEIGHT, ROW_HEIGHT), to scroll to the selected row.
     height: root.line.kind == "header" ? 30px : 48px;
     border-radius: 9px;
     background: root.line.selected ? Theme.accent-soft-bg : touch.has-hover && root.line.kind != "header" ? Theme.hover : transparent;
@@ -130,8 +135,9 @@ component PaletteLine inherits Rectangle {
     }
 }
 
-/// Over the whole window: a dimmed page, and the palette 96 px from the top. A click beside it
-/// closes it; the search keeps the keyboard while it's open.
+/// Over the whole window: a dimmed page, and the palette 96 px from the top, where it stays
+/// however long its list gets; a list taller than the window scrolls. A click beside it closes
+/// it; the search keeps the keyboard while it's open.
 export component CommandPalette inherits Rectangle {
     in property <PaletteView> view;
     in-out property <string> query <=> search.text;
@@ -142,6 +148,9 @@ export component CommandPalette inherits Rectangle {
     callback set(string, float);
     callback closed();
     public function focus-search() { search.focus(); }
+    // The selected row, kept in view as ↑ ↓ move it.
+    property <length> reveal-top: root.view.reveal-top;
+    changed reveal-top => { list.reveal-part(root.view.reveal-top, root.view.reveal-size); }
     background: Theme.scrim;
     accessible-role: none;
     TouchArea {
@@ -150,7 +159,7 @@ export component CommandPalette inherits Rectangle {
     }
     card := Rectangle {
         x: (parent.width - self.width) / 2;
-        y: min(96px, max(16px, (parent.height - self.height) / 2));
+        y: 96px;
         width: min(720px, parent.width - 48px);
         height: body.preferred-height;
         border-radius: 14px;
@@ -197,7 +206,10 @@ export component CommandPalette inherits Rectangle {
                             vertical-alignment: center;
                             single-line: true;
                             accessible-label: "Search settings, pages and actions";
-                            edited => { root.edited(self.text); }
+                            edited => {
+                                list.reveal-part(0, 0);
+                                root.edited(self.text);
+                            }
                         }
                         if search.text == "": Text {
                             x: 0;
@@ -214,25 +226,34 @@ export component CommandPalette inherits Rectangle {
                 }
                 Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
             }
-            VerticalLayout {
+            HorizontalLayout {
                 padding-left: 8px;
                 padding-right: 8px;
-                padding-top: 2px;
-                padding-bottom: 6px;
-                spacing: 2px;
-                for row in root.view.rows: PaletteLine {
-                    line: row;
-                    clicked => { root.clicked(row.index); }
-                    set(v) => { root.set(row.id, v); }
-                }
-                if root.view.empty != "": Text {
-                    height: 64px;
-                    text: root.view.empty;
-                    color: Theme.muted;
-                    font-size: Type.body;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
+                // Up to 24 px above the window's bottom (search 52 px, keys 40 px); the
+                // scrollbar sits in the padding on the right.
+                list := Scroll {
+                    height: min(self.content-height, root.height - 96px - 24px - 52px - 40px);
+                    bar-inset: -6px;
+                    VerticalLayout {
+                        // Rust counts on these (palette::view's reveal-top).
+                        padding-top: 2px;
+                        padding-bottom: 6px;
+                        spacing: 2px;
+                        for row in root.view.rows: PaletteLine {
+                            line: row;
+                            clicked => { root.clicked(row.index); }
+                            set(v) => { root.set(row.id, v); }
+                        }
+                        if root.view.empty != "": Text {
+                            height: 64px;
+                            text: root.view.empty;
+                            color: Theme.muted;
+                            font-size: Type.body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
             }
             Rectangle {

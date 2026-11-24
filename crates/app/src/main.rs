@@ -3355,7 +3355,7 @@ mod tests {
                 super::PaletteRow { selected: true, editing, ..row("choice", "Mode") },
             ]),
             keys: super::model(vec![super::Hint::new("Esc", "Close")]),
-            empty: "".into(),
+            ..Default::default()
         };
         window.set_palette_view(view(false));
         for key in [Key::DownArrow, Key::UpArrow, Key::Return, Key::Escape] {

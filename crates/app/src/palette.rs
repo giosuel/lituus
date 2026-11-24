@@ -19,6 +19,12 @@ const ACTIONS_SHOWN: usize = 6;
 const PAGES_SHOWN: usize = 4;
 /// What the empty palette remembers as used last.
 const RECENT: usize = 3;
+/// The list's lines in palette.slint: a section's title, a row, the gap between two, and the
+/// padding above the first.
+const HEADER_HEIGHT: f32 = 30.0;
+const ROW_HEIGHT: f32 = 48.0;
+const LINE_GAP: f32 = 2.0;
+const LIST_TOP: f32 = 2.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -1125,6 +1131,7 @@ pub fn view(app: &App) -> PaletteView {
         }
     }
     let q = state.query.trim();
+    let reveal = reveal(&sections, selected);
     PaletteView {
         open: true,
         editing: state.editing.is_some(),
@@ -1135,7 +1142,29 @@ pub fn view(app: &App) -> PaletteView {
         }),
         rows: ModelRc::new(VecModel::from(rows)),
         keys: ModelRc::new(VecModel::from(if keys.is_empty() { vec![Hint::new("Esc", "Close")] } else { keys })),
+        reveal_top: reveal.0,
+        reveal_size: reveal.1,
     }
+}
+
+/// Where the selected row is in the list, as palette.slint lays it out: its top and height, from
+/// its section's title when it's the section's first, so the list can scroll to show it.
+fn reveal(sections: &[Section], selected: usize) -> (f32, f32) {
+    let mut y = LIST_TOP;
+    let mut n = 0;
+    for section in sections {
+        let title = y;
+        y += HEADER_HEIGHT + LINE_GAP;
+        for j in 0..section.rows.len() {
+            if n == selected {
+                let top = if j == 0 { title } else { y };
+                return (top, y + ROW_HEIGHT - top);
+            }
+            y += ROW_HEIGHT + LINE_GAP;
+            n += 1;
+        }
+    }
+    (0.0, 0.0)
 }
 
 fn row(item: &Item, value: Option<&Value>, hit: Hit) -> PaletteRow {
@@ -1246,6 +1275,17 @@ mod tests {
             Control::Choice { options: vec!["Auto".into(), "Dark".into(), "Light".into()], index: 0 },
             Some(Setter::Appearance("mode")),
         )
+    }
+
+    #[test]
+    fn the_list_scrolls_to_the_selected_row() {
+        let section = |title: &str, n: usize| Section { title: title.into(), rows: vec![(0, None); n] };
+        let sections = [section("SETTINGS · 2", 2), section("PAGES", 1)];
+        // The first row of a section brings its title along: 2 + 30 + 2, then the row's 48.
+        assert_eq!(reveal(&sections, 0), (2.0, 80.0));
+        assert_eq!(reveal(&sections, 1), (84.0, 48.0));
+        assert_eq!(reveal(&sections, 2), (134.0, 80.0));
+        assert_eq!(reveal(&sections, 3), (0.0, 0.0));
     }
 
     #[test]

@@ -478,6 +478,11 @@ export component Scroll inherits Rectangle {
         }
     }
 
+    /// The same for a part `top` from the top of the content.
+    public function reveal-part(top: length, size: length) {
+        self.reveal(self.absolute-position.y + flick.content-y + top, size);
+    }
+
     flick := Flickable {
         width: parent.width;
         height: parent.height;
