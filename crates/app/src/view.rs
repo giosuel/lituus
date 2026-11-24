@@ -2,8 +2,8 @@
 //! selection, search). Pure, so it's tested without a window.
 
 use lituus_nm::{
-    ActiveState, Band, ConnectionKind, Device, DeviceKind, KeyMgmt, Network, SavedConnection, Security, Snapshot,
-    WifiJoin, bars, channel,
+    ActiveState, Band, ConnectionKind, Device, DeviceKind, DeviceState, KeyMgmt, Network, SavedConnection, Security,
+    Snapshot, WifiJoin, bars, channel,
 };
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -584,8 +584,21 @@ fn hotspot_page(snap: &Snapshot) -> HotspotView {
     }
 }
 
+/// The Wi-Fi device the Wi-Fi page, the quick panel and the tray are about, and that Connect,
+/// Rescan and a hidden network use: the one connected to a network, else one NetworkManager
+/// manages (a usable one first), else the first. Not simply the first listed: with a USB
+/// adapter beside the internal card, or a card kept out of NetworkManager, the connection is
+/// often on the second.
 pub(crate) fn wifi_device(snapshot: &Snapshot) -> Option<&Device> {
-    snapshot.devices.iter().find(|d| d.kind == DeviceKind::Wifi)
+    snapshot.devices.iter().filter(|d| d.kind == DeviceKind::Wifi).min_by_key(|d| {
+        let active = d.active_connection.as_deref().and_then(|a| snapshot.active_connection(a));
+        (
+            active.is_none_or(|a| is_hotspot(snapshot, a)),
+            active.is_none(),
+            !d.managed,
+            d.state <= DeviceState::Unavailable,
+        )
+    })
 }
 
 /// What the computer is online through: the primary connection, or else any device's.
@@ -2031,6 +2044,64 @@ pub(crate) mod tests {
         assert_eq!(view.sections[0].rows.iter().next().unwrap().bars, 2);
         let q = crate::quick::build(Some(&snap), false, &[]);
         assert_eq!((q.networks[0].bars, q.icon), (2, crate::quick::TrayIcon::Wifi(2)));
+    }
+
+    /// An internal card NetworkManager doesn't manage, listed before the adapter in use.
+    fn two_adapters() -> Snapshot {
+        let mut snap = home();
+        let mut internal = snap.devices[0].clone();
+        internal.path = "/d/wlan-internal".into();
+        internal.interface = "wlp1s0".into();
+        internal.state = DeviceState::Unmanaged;
+        internal.managed = false;
+        internal.active_connection = None;
+        internal.ip4 = None;
+        internal.ip6 = None;
+        internal.wifi = Some(WifiDevice::default());
+        snap.devices.insert(0, internal);
+        snap
+    }
+
+    #[test]
+    fn the_wifi_page_follows_the_adapter_in_use() {
+        let snap = two_adapters();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_items.wifi, "Lumen Home");
+        assert_eq!(view.net_hero.name, "Lumen Home");
+        assert_eq!(rows(&view)[0], ("CONNECTED".to_owned(), vec!["Lumen Home".to_owned()]));
+        assert_eq!(rescan(&snap), Some(Command::Rescan { device: "/d/wlan".into() }));
+    }
+
+    #[test]
+    fn the_quick_panel_follows_the_adapter_in_use() {
+        let q = crate::quick::build(Some(&two_adapters()), false, &[]);
+        assert_eq!(q.status, "Wi-Fi: Lumen Home");
+        assert_eq!(q.icon, crate::quick::TrayIcon::Wifi(4));
+    }
+
+    /// Both adapters managed and in range, the connection on the second one.
+    #[test]
+    fn connected_through_the_second_of_two_managed_adapters() {
+        let mut snap = two_adapters();
+        snap.devices[0].state = DeviceState::Disconnected;
+        snap.devices[0].managed = true;
+        snap.devices[0].wifi = Some(WifiDevice {
+            access_points: vec![ap("/ap/i1", "Lumen Home", 5180, 70, Security::Wpa2Wpa3)],
+            ..WifiDevice::default()
+        });
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(rows(&view)[0], ("CONNECTED".to_owned(), vec!["Lumen Home".to_owned()]));
+        assert_eq!(view.details.as_ref().unwrap().status, "Connected");
+        // Connect on another network goes to the adapter in use, not the idle card.
+        let cafe = view.row_ids.iter().find(|id| id.contains(&hex("Aster Café".as_bytes()))).unwrap();
+        let Some(Intent::Join(target)) = intent(&snap, cafe, "connect") else { panic!("the password dialog") };
+        assert_eq!(target.device, "/d/wlan");
+        // With nothing connected: the first that NetworkManager manages.
+        snap.devices[1].active_connection = None;
+        snap.active.clear();
+        assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan-internal"));
+        snap.devices[0].managed = false;
+        assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan"));
     }
 
     #[test]
