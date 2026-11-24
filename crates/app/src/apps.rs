@@ -995,7 +995,9 @@ fn rows(state: &State) -> Vec<(String, Vec<App>)> {
     };
     let mut apps: Vec<App> = d.apps.iter().filter(|a| keep(a) && matches(a, &state.query)).cloned().collect();
     apps.sort_by_key(|a| a.name.to_lowercase());
-    if matches!(state.filter.as_str(), "" | "all") && state.query.is_empty() && state.checked.is_empty() {
+    // In sections also while apps are checked: the rows mustn't move under the pointer between
+    // one Ctrl+click and the next.
+    if matches!(state.filter.as_str(), "" | "all") && state.query.is_empty() {
         let mut out: Vec<(String, Vec<App>)> = Vec::new();
         for (i, (_, title)) in SECTIONS.iter().enumerate() {
             let in_it: Vec<App> = apps.iter().filter(|a| section_of(a) == i).cloned().collect();
@@ -1162,7 +1164,7 @@ pub fn view(state: &mut State) -> AppsView {
         "hidden" => format!("HIDDEN · {hidden}"),
         "added" => "ADDED BY YOU".to_owned(),
         "problems" => format!("PROBLEMS · {}", problems.len()),
-        _ if !state.query.is_empty() || !state.checked.is_empty() => "ALL APPS, A–Z".to_owned(),
+        _ if !state.query.is_empty() => "ALL APPS, A–Z".to_owned(),
         _ => String::new(),
     });
     let selecting = !state.checked.is_empty();
@@ -1657,6 +1659,43 @@ mod tests {
         root
     }
 
+    /// The page, with the user's apps in `root`/home and the system's in `root`/usr.
+    fn state_in(root: &Path) -> State {
+        let dirs = Dirs {
+            data_home: root.join("home/.local/share"),
+            data_dirs: vec![root.join("usr/share")],
+            ..Default::default()
+        };
+        State { data: Some(read(dirs, 1.0, &HashMap::new())), ..Default::default() }
+    }
+
+    #[test]
+    fn checking_apps_keeps_the_list_as_it_is() {
+        let root = test_root("check");
+        for (id, name, category) in [("a", "Blender", "Graphics"), ("b", "Vim", "Utility"), ("c", "Files", "System")] {
+            write(
+                &root,
+                &format!("usr/share/applications/{id}.desktop"),
+                &format!("[Desktop Entry]\nType=Application\nName={name}\nExec=sh\nCategories={category};\n"),
+            );
+        }
+        let mut state = state_in(&root);
+        let weak = slint::Weak::default();
+        let shown = |state: &State| -> Vec<(String, Vec<String>)> {
+            rows(state).into_iter().map(|(title, apps)| (title, apps.into_iter().map(|a| a.name).collect())).collect()
+        };
+        let before = shown(&state);
+        assert_eq!(
+            before.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["GRAPHICS AND VIDEO", "ACCESSORIES", "SYSTEM"]
+        );
+        // A Ctrl+click: the rows stay where they are for the next one.
+        act(&weak, &mut state, "select", "a.desktop");
+        act(&weak, &mut state, "check", "c.desktop");
+        assert_eq!(shown(&state), before);
+        assert_eq!(view(&mut state).list_title, "");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     // An SVG icon that names another file: an `<image>` of it.
     fn icon_naming(href: &Path) -> String {
         format!(
