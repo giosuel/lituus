@@ -7,6 +7,20 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::model::Version;
+
+/// Whether the Hyprland running reads a Lua config: the one decision every page and Set up…
+/// go by. Hyprland 0.55 and later read hyprland.lua, or else a hyprland.conf alone with the old
+/// (hyprlang) parser, and make a hyprland.lua when there's neither; older ones read only
+/// hyprlang. `eval` works only on Lua and `keyword` only on hyprlang. A version Hyprland didn't
+/// give counts as a new one.
+pub fn reads_lua(version: Option<&Version>, dir: &Path) -> bool {
+    if version.is_some_and(|v| !v.lua()) {
+        return false;
+    }
+    dir.join("hyprland.lua").exists() || !dir.join("hyprland.conf").exists()
+}
+
 /// `$XDG_CONFIG_HOME/hypr`, or `~/.config/hypr`.
 pub fn config_dir() -> PathBuf {
     match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
@@ -60,11 +74,17 @@ impl ConfigFile {
 
     /// Adds the load line at the end of the user's main config, after copying it to
     /// `backup_path` (D-44: only from the dialog that asks first). It appends to the file where
-    /// it is, so a config that's a link into the user's dotfiles stays a link. Returns the copy.
+    /// it is, so a config that's a link into the user's dotfiles stays a link. Lituus's own file
+    /// is made first if no page has written it yet: Hyprland shows a config error for a
+    /// `require` or `source` of a file that isn't there. Returns the copy.
     pub fn add_load_line(&self) -> std::io::Result<PathBuf> {
         use std::io::Write;
         let main = self.main_path();
         let text = std::fs::read_to_string(&main)?;
+        if !self.path().exists() {
+            let comment = if self.lua { "--" } else { "#" };
+            self.write(&format!("{comment} Lituus's file: its pages add their settings here.\n"))?;
+        }
         let backup = self.backup_path();
         std::fs::copy(&main, &backup)?;
         let (comment, line) = self.load_lines();
@@ -206,6 +226,50 @@ mod tests {
         assert!(file.loaded());
         // A copy that's already there is kept.
         assert_eq!(file.backup_path(), d.join("hyprland.lua.bak.1"));
+    }
+
+    /// The line Set up… adds doesn't name a file that isn't there: Hyprland shows a config error
+    /// for a `require` of a missing module and a `source` of a missing file. A file that's there
+    /// is kept.
+    #[test]
+    fn set_up_leaves_a_file_for_the_line_to_load() {
+        for lua in [true, false] {
+            let d = dir(if lua { "setup-new-lua" } else { "setup-new-conf" });
+            let file = ConfigFile::new(&d, lua);
+            std::fs::write(file.main_path(), "").unwrap();
+            file.add_load_line().unwrap();
+            assert!(file.path().exists(), "{} isn't there", file.path().display());
+            assert_eq!(file.read_section("Displays"), None);
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        let d = dir("setup-kept");
+        let file = ConfigFile::new(&d, true);
+        std::fs::write(file.main_path(), "").unwrap();
+        file.write("-- Written by Lituus (Input).\n").unwrap();
+        file.add_load_line().unwrap();
+        assert_eq!(file.read().as_deref(), Some("-- Written by Lituus (Input).\n"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Lua or hyprlang: what the Hyprland running reads, by its version and the config there.
+    #[test]
+    fn lua_or_hyprlang_as_hyprland_reads_it() {
+        let version = |v: &str| Version { version: v.into(), ..Default::default() };
+        // 0.54 with a hyprland.lua written ahead of the upgrade: hyprlang.
+        let d = dir("reads-054");
+        std::fs::write(d.join("hyprland.conf"), "").unwrap();
+        std::fs::write(d.join("hyprland.lua"), "").unwrap();
+        assert!(!reads_lua(Some(&version("0.54.2")), &d));
+        assert!(reads_lua(Some(&version("0.57.0")), &d));
+        // 0.55 and later with only a hyprland.conf: the old parser.
+        std::fs::remove_file(d.join("hyprland.lua")).unwrap();
+        assert!(!reads_lua(Some(&version("0.57.0")), &d));
+        assert!(!reads_lua(None, &d));
+        // Neither: Hyprland makes a hyprland.lua.
+        std::fs::remove_file(d.join("hyprland.conf")).unwrap();
+        assert!(reads_lua(None, &d));
+        assert!(!reads_lua(Some(&version("0.53.3")), &d));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
