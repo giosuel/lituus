@@ -1,10 +1,13 @@
 //! The pictures in a folder, its subfolders with a few of theirs, and small copies of them for a
 //! grid, kept in a cache folder so a folder of 6K pictures opens quickly the second time.
 
+use std::fs::{OpenOptions, Permissions};
 use std::hash::{Hash, Hasher};
+use std::io::{BufWriter, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// What both programs show (awww has more behind build options; hyprpaper checks these).
 const EXTENSIONS: [&str; 7] = ["jpg", "jpeg", "png", "webp", "gif", "bmp", "jfif"];
@@ -122,33 +125,94 @@ fn open(path: &Path) -> Result<image::DynamicImage, String> {
         .map_err(|e| e.to_string())
 }
 
-/// A small copy of a picture, `width` × `height`, cropped to fill it, as a PNG in `cache`; made
-/// once for each version of the file.
+/// A thumbnail not used for this long goes (`prune_thumbnails`).
+const UNUSED: Duration = Duration::from_secs(30 * 24 * 3600);
+/// How often a thumbnail in use is marked so.
+const DAY: Duration = Duration::from_secs(24 * 3600);
+
+/// A small copy of a picture, `width` × `height`, cropped to fill it, in `cache`; made once for
+/// each version of the file. A JPEG, a tenth of a photo's PNG, or a PNG if it has see-through
+/// parts. Only the user can read the cache, as the freedesktop thumbnail spec asks: a thumbnail
+/// shows what a private picture holds.
 pub fn thumbnail(path: &Path, cache: &Path, width: u32, height: u32) -> Result<PathBuf, String> {
     let meta = path.metadata().map_err(|e| e.to_string())?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (path, meta.len(), meta.modified().ok(), width, height).hash(&mut hasher);
-    let out = cache.join(format!("{:016x}.png", hasher.finish()));
-    if out.exists() {
-        return Ok(out);
+    let key = format!("{:016x}", hasher.finish());
+    if let Some(done) = ["jpg", "png"].iter().map(|x| cache.join(format!("{key}.{x}"))).find(|t| t.exists()) {
+        used(&done);
+        return Ok(done);
     }
     let img = open(path)?;
     // Lanczos: a sharper small copy than Triangle's, made once per picture.
     let small = img.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3);
-    std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(cache).map_err(|e| e.to_string())?;
+    // One made before Lituus kept it private.
+    let _ = std::fs::set_permissions(cache, Permissions::from_mode(0o700));
+    let clear = small.color().has_alpha() && small.to_rgba8().pixels().any(|p| p[3] < u8::MAX);
+    let out = cache.join(format!("{key}.{}", if clear { "png" } else { "jpg" }));
     // Through a temporary file, so a half-written one is never taken for done; one of this
     // call's own, so two threads making the same thumbnail don't write into one file and rename
     // it from under each other.
     static MADE: AtomicU64 = AtomicU64::new(0);
-    let tmp = out.with_extension(format!("{}.{}.tmp", std::process::id(), MADE.fetch_add(1, Ordering::Relaxed)));
-    let saved = small
-        .save_with_format(&tmp, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())
-        .and_then(|()| std::fs::rename(&tmp, &out).map_err(|e| e.to_string()));
+    let tmp = cache.join(format!("{key}.{}.{}.tmp", std::process::id(), MADE.fetch_add(1, Ordering::Relaxed)));
+    let saved = (|| -> Result<(), String> {
+        let file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+        let mut w = BufWriter::new(file);
+        if clear {
+            small.write_with_encoder(image::codecs::png::PngEncoder::new(&mut w))
+        } else {
+            small.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, 85))
+        }
+        .map_err(|e| e.to_string())?;
+        w.flush().map_err(|e| e.to_string())?;
+        drop(w);
+        std::fs::rename(&tmp, &out).map_err(|e| e.to_string())
+    })();
     if saved.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     saved.map(|()| out)
+}
+
+/// Marks a thumbnail as used now, for `prune_thumbnails`: once a day, not a write for each
+/// picture each time the page opens.
+fn used(thumb: &Path) {
+    let stale = thumb.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > DAY));
+    if stale && let Ok(file) = OpenOptions::new().write(true).open(thumb) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+}
+
+/// Clears out the cache of thumbnails: those not used for a month, what an interrupted save left
+/// behind, and, beyond `limit` bytes, those used longest ago.
+pub fn prune_thumbnails(cache: &Path, limit: u64) {
+    let Ok(entries) = std::fs::read_dir(cache) else { return };
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let age = used.elapsed().unwrap_or_default();
+        // Another thread's may be in the making still.
+        let tmp = path.extension().is_some_and(|x| x == "tmp");
+        if age > UNUSED || (tmp && age > DAY) {
+            let _ = std::fs::remove_file(&path);
+        } else if !tmp {
+            kept.push((used, meta.len(), path));
+        }
+    }
+    kept.sort_by_key(|(used, _, _)| std::cmp::Reverse(*used));
+    let mut total = 0;
+    for (_, len, path) in kept {
+        total += len;
+        if total > limit {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,9 +255,53 @@ mod tests {
         let cache = d.join("cache");
         let t = thumbnail(&d.join("b.png"), &cache, 32, 18).unwrap();
         assert_eq!(dimensions(&t), Some((32, 18)));
+        // A JPEG, the user's alone.
+        assert_eq!(t.extension().unwrap(), "jpg");
+        assert_eq!(std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&t).unwrap().permissions().mode() & 0o777, 0o600);
         // Made once.
         assert_eq!(thumbnail(&d.join("b.png"), &cache, 32, 18).unwrap(), t);
         assert!(thumbnail(&d.join("clip.mp4"), &cache, 32, 18).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_see_through_picture_keeps_its_png() {
+        let d = std::env::temp_dir().join(format!("lituus-wallpaper-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        image::RgbaImage::from_pixel(32, 18, image::Rgba([10, 120, 200, 0])).save(d.join("clear.png")).unwrap();
+        // Saved with an alpha channel, but opaque: a JPEG.
+        image::RgbaImage::from_pixel(32, 18, image::Rgba([10, 120, 200, 255])).save(d.join("opaque.png")).unwrap();
+        assert_eq!(thumbnail(&d.join("clear.png"), &d.join("cache"), 16, 9).unwrap().extension().unwrap(), "png");
+        assert_eq!(thumbnail(&d.join("opaque.png"), &d.join("cache"), 16, 9).unwrap().extension().unwrap(), "jpg");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn the_cache_is_cleared_out() {
+        let d = std::env::temp_dir().join(format!("lituus-wallpaper-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let now = SystemTime::now();
+        let file = |name: &str, bytes: usize, ago: u64| {
+            std::fs::write(d.join(name), vec![0; bytes]).unwrap();
+            let f = OpenOptions::new().write(true).open(d.join(name)).unwrap();
+            f.set_modified(now - Duration::from_secs(ago)).unwrap();
+        };
+        let hours = 3600;
+        file("unused.jpg", 10, 40 * 24 * hours);
+        file("left.1.2.tmp", 10, 2 * 24 * hours);
+        file("making.1.3.tmp", 10, 10);
+        file("old.jpg", 10, 3 * hours);
+        file("older.png", 10, 4 * hours);
+        file("new.jpg", 10, 1);
+        file("newer.jpg", 10, 0);
+        prune_thumbnails(&d, 30);
+        let mut left: Vec<String> =
+            std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["making.1.3.tmp", "new.jpg", "newer.jpg", "old.jpg"]);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

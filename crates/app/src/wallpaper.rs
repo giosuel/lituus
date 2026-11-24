@@ -295,6 +295,10 @@ fn forget_unshown(state: &mut State) {
     state.sizes.retain(|p, _| grid.contains(p));
 }
 
+/// How large the cache of thumbnails grows, at most: about 6,000 of the grid's, or 1,500 of the
+/// hero's.
+const CACHE_LIMIT: u64 = 256 << 20;
+
 /// The cache of thumbnails: ~/.cache/lituus/thumbnails.
 fn cache_dir() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
@@ -324,6 +328,9 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
     let weak = weak.clone();
     std::thread::spawn(move || {
         let cache = cache_dir();
+        // Cleared out once a run, before the first thumbnails (the others wait for it).
+        static PRUNED: std::sync::Once = std::sync::Once::new();
+        PRUNED.call_once(|| lituus_wallpaper::prune_thumbnails(&cache, CACHE_LIMIT));
         for batch in wanted.chunks(8) {
             let done: Vec<Made> = batch
                 .iter()

@@ -21,7 +21,7 @@ pub use hyprpaper::{
     fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, unwritable as hyprpaper_unwritable,
     with_splash as hyprpaper_with_splash,
 };
-pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, read_folder, thumbnail};
+pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, prune_thumbnails, read_folder, thumbnail};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
