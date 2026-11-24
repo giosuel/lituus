@@ -2203,7 +2203,8 @@ async fn run(
                 .unwrap_or("wireguard")
                 .to_owned();
             match portal::save_file("Export the WireGuard configuration", &format!("{name}.conf")).await {
-                Ok(Some(path)) => match write_private(&path, &conf) {
+                // 0600 even when saved over a file that was there with another mode.
+                Ok(Some(path)) => match lituus_fs::write_private(&path, &conf) {
                     Ok(()) => {
                         notice(weak, &format!("Saved {}. It holds the private key: keep it safe.", path.display()))
                     }
@@ -2526,17 +2527,6 @@ fn notice(weak: &slint::Weak<MainWindow>, text: &str) {
     });
 }
 
-/// Writes a file only the user can read (keys and certificates).
-fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    file.write_all(contents.as_bytes())
-}
-
 /// The base of an imported VPN connection: its name, started by hand, and the user's own.
 fn imported_settings(kind: editor::Kind, name: &str, owner: Option<&str>) -> lituus_nm::Settings {
     let mut settings = editor::new_settings(kind, &secrets::new_uuid());
@@ -2599,7 +2589,7 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
             Err(e) => return notice(weak, &format!("{file} isn't an OpenVPN file Lituus can read: {e}")),
         };
         for (path, contents) in &imported.files {
-            if let Err(e) = write_private(path, contents) {
+            if let Err(e) = lituus_fs::write_private(path, contents) {
                 return notice(weak, &format!("Couldn't save {}: {e}.", path.display()));
             }
         }
