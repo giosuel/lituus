@@ -138,6 +138,8 @@ pub struct Network {
     pub saved: Option<String>,
     /// Whether the device is connected to it now.
     pub active: bool,
+    /// The access point in use (an index into `access_points`), or else the strongest.
+    current: usize,
 }
 
 impl Network {
@@ -152,6 +154,12 @@ impl Network {
 
     pub fn strength(&self) -> u8 {
         self.strongest().strength
+    }
+
+    /// The access point the device is on while it's connected to this network; the strongest
+    /// otherwise. What the network's signal, band and BSSID are about.
+    pub fn current(&self) -> &AccessPoint {
+        &self.access_points[self.current]
     }
 }
 
@@ -170,9 +178,10 @@ pub fn networks(access_points: &[AccessPoint], active_ap: Option<&str>, saved: &
             let mut bands: Vec<Band> = aps.iter().filter_map(|ap| Band::from_mhz(ap.frequency)).collect();
             bands.sort();
             bands.dedup();
-            let active = active_ap.is_some_and(|path| aps.iter().any(|ap| ap.path == path));
+            let current = active_ap.and_then(|path| aps.iter().position(|ap| ap.path == path));
             let saved = saved.iter().find(|c| c.wifi_ssid() == Some(&ssid[..])).map(|c| c.uuid.clone());
-            Network { ssid, security, access_points: aps, bands, saved, active }
+            let active = current.is_some();
+            Network { ssid, security, access_points: aps, bands, saved, active, current: current.unwrap_or(0) }
         })
         .collect();
     networks.sort_by(|a, b| {
@@ -290,6 +299,9 @@ mod tests {
         assert!(home.active);
         assert_eq!(home.strength(), 80);
         assert_eq!(home.strongest().bssid, "BB");
+        // Connected through the weaker one: that's the one its signal and band are about.
+        assert_eq!(home.current().bssid, "AA");
+        assert_eq!(nets[1].current().bssid, "DD");
         assert_eq!(home.bands, [Band::Ghz2_4, Band::Ghz5]);
         assert_eq!(nets[1].saved.as_deref(), Some("u-office"));
         assert_eq!(nets[2].saved, None);

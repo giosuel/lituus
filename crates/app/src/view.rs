@@ -961,7 +961,7 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
             meta,
             tone,
             icon: "bars",
-            bars: bars(n.strength()),
+            bars: bars(n.current().strength),
             secure: n.security.needs_secrets(),
             indent: false,
         };
@@ -1340,7 +1340,8 @@ fn wifi_details(snap: &Snapshot, state: &UiState, id: &str) -> Option<DetailsDat
     let device = wifi_device(snap)?;
     let networks = snap.networks().into_iter().find(|(p, _)| *p == device.path)?.1;
     let n = networks.into_iter().find(|n| network_id(n) == format!("wifi:{id}"))?;
-    let ap = n.strongest().clone();
+    // Connected: the access point in use, which needn't be the strongest of the network's.
+    let ap = n.current().clone();
     let saved = n.saved.as_deref().and_then(|uuid| snap.connections.iter().find(|c| c.uuid == uuid));
     let connecting = n.active && device.state.is_connecting();
     let band_line = |mhz: u32| {
@@ -1998,6 +1999,38 @@ pub(crate) mod tests {
         let actions: Vec<String> = d.actions.iter().map(|a| a.label.to_string()).collect();
         assert_eq!(actions, ["Disconnect", "Edit", "Share", "Forget"]);
         assert_eq!(view.hostname, "thinkpad-x1");
+    }
+
+    /// Connected to the weaker of two access points of one network.
+    fn on_the_weaker_access_point() -> Snapshot {
+        let mut snap = home();
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        wifi.access_points[0].strength = 40; // /ap/1, 5 GHz, the one in use
+        wifi.access_points.push(ap("/ap/9", "Lumen Home", 2437, 95, Security::Wpa2Wpa3));
+        snap
+    }
+
+    #[test]
+    fn the_connected_networks_details_describe_the_access_point_in_use() {
+        let snap = on_the_weaker_access_point();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_hero.meta, "Connected · 5 GHz · 866 Mb/s");
+        let shown = [
+            view.details.as_ref().unwrap().status_extra.to_string(),
+            detail(&view, "Signal").unwrap(),
+            detail(&view, "Band").unwrap(),
+            detail(&view, "BSSID").unwrap(),
+        ];
+        assert_eq!(shown, ["· 5 GHz · 866 Mb/s", "40 %", "5 GHz · channel 36", "BB:/ap/1"]);
+    }
+
+    #[test]
+    fn the_connected_networks_bars_are_those_of_the_access_point_in_use() {
+        let snap = on_the_weaker_access_point();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.sections[0].rows.iter().next().unwrap().bars, 2);
+        let q = crate::quick::build(Some(&snap), false, &[]);
+        assert_eq!((q.networks[0].bars, q.icon), (2, crate::quick::TrayIcon::Wifi(2)));
     }
 
     #[test]

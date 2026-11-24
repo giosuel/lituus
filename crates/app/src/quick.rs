@@ -105,7 +105,8 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
                 id: view::network_id(&n),
                 name: n.name(),
                 meta: format!("{what}{bands}"),
-                bars: lituus_nm::bars(n.strength()),
+                // The access point in use, for the connected one (and the tray's icon).
+                bars: lituus_nm::bars(n.current().strength),
                 active: n.active,
                 connecting: n.active && connecting,
             });
