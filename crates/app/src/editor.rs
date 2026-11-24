@@ -904,8 +904,17 @@ fn in_subnet(ip: Ipv4Addr, network: Ipv4Addr, prefix: u32) -> bool {
     u32::from(ip) & mask == u32::from(network) & mask
 }
 
+/// Disabled (and IPv6's Ignore): the page hides everything but the method.
+fn is_off(ip: &IpForm, v6: bool) -> bool {
+    if v6 { ip.method >= 4 } else { ip.method == 4 }
+}
+
 fn check_ip(ip: &IpForm, v6: bool) -> IpErrors {
     let mut e = IpErrors::default();
+    // The rest is hidden, and isn't saved (see write_ip).
+    if is_off(ip, v6) {
+        return e;
+    }
     let family = if v6 { "IPv6" } else { "IPv4" };
     let max_prefix = if v6 { 128 } else { 32 };
     let manual = if v6 { ip.method == 2 } else { ip.method == 1 };
@@ -947,6 +956,16 @@ fn check_ip(ip: &IpForm, v6: bool) -> IpErrors {
     }
     if let Some(bad) = ip.dns.iter().find(|d| parse_ip(d, v6).is_none()) {
         e.dns = format!("{bad} isn't an {family} address.");
+    }
+    // NetworkManager refuses these (nm-setting-ip4-config.c, nm-setting-ip6-config.c: verify).
+    let link_local = if v6 { ip.method == 3 } else { ip.method == 2 };
+    let shared = !v6 && ip.method == 3;
+    if link_local && !ip.addresses.is_empty() && e.addresses.is_empty() {
+        e.addresses = "Link-local takes no addresses of its own: remove them.".into();
+    }
+    if (link_local || shared) && (!ip.dns.is_empty() || !ip.search.trim().is_empty()) && e.dns.is_empty() {
+        let method = if shared { "Shared" } else { "Link-local" };
+        e.dns = format!("{method} takes no DNS servers or search domains: remove them.");
     }
     for r in &ip.routes {
         if r.dest.trim().is_empty() {
@@ -1297,8 +1316,9 @@ fn write_ip(s: &mut Settings, setting: &str, v6: bool, initial: Option<&IpForm>,
             .collect();
         put(s, setting, "address-data", Value::from(data));
     }
-    if edited!(gateway) {
-        if ip.gateway.trim().is_empty() {
+    if edited!(gateway) || edited!(addresses) {
+        // NetworkManager refuses a gateway without addresses, and its field goes with the first.
+        if ip.gateway.trim().is_empty() || ip.addresses.is_empty() {
             remove(s, setting, "gateway")
         } else {
             put(s, setting, "gateway", Value::from(ip.gateway.trim()))
@@ -1367,6 +1387,13 @@ fn write_ip(s: &mut Settings, setting: &str, v6: bool, initial: Option<&IpForm>,
         }
         if edited!(stable_privacy) {
             put(s, setting, "addr-gen-mode", Value::from(if ip.stable_privacy { 1i32 } else { 0i32 }));
+        }
+    }
+    // Switched off: NetworkManager refuses addresses, a gateway, DNS servers and search domains
+    // with Disabled or Ignore, and the page hides them, so they go.
+    if is_off(ip, v6) {
+        for key in ["address-data", "addresses", "gateway", "dns", "dns-data", "dns-search"] {
+            remove(s, setting, key);
         }
     }
 }
@@ -1578,6 +1605,81 @@ mod tests {
         assert_eq!(read(&s).1.ip6, f.ip6);
         f.ip6.routes[0].prefix = "200".into();
         assert_eq!(check(kind, None, &f).ip6.routes, "The prefix of fd00:: is from 0 to 128.");
+    }
+
+    // 01-7: nm-setting-ip4-config.c and nm-setting-ip6-config.c verify(): no DNS, search domains
+    // or addresses with disabled, ignore or link-local; no DNS with shared.
+    #[test]
+    fn switching_ipv4_off_drops_what_networkmanager_refuses_with_it() {
+        let address = HashMap::from([("address", Value::from("192.168.1.20")), ("prefix", Value::from(24u32))]);
+        let s = settings(&[
+            ("connection", vec![("id", "Office".into()), ("uuid", "u".into()), ("type", "802-3-ethernet".into())]),
+            (
+                "ipv4",
+                vec![
+                    ("method", "manual".into()),
+                    ("address-data", Value::from(vec![address])),
+                    ("gateway", "192.168.1.1".into()),
+                    ("dns", Value::from(vec![u32::from_ne_bytes([9, 9, 9, 9])])),
+                    ("dns-search", Value::from(vec!["home.arpa".to_owned()])),
+                ],
+            ),
+            ("ipv6", vec![("method", "auto".into())]),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(initial.ip4.addresses.len(), 1);
+        let mut form = initial.clone();
+        form.ip4.method = 4; // Disabled: the page hides addresses, gateway and DNS.
+        assert_eq!(check(kind, Some(&initial), &form).total(kind), 0);
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert_eq!(<&str>::try_from(&*out["ipv4"]["method"]).unwrap(), "disabled");
+        let left: Vec<&str> = ["address-data", "addresses", "gateway", "dns", "dns-data", "dns-search"]
+            .into_iter()
+            .filter(|key| out["ipv4"].get(*key).is_some_and(|v| !is_empty_list(v)))
+            .collect();
+        assert!(left.is_empty(), "{left:?} with method=disabled: NetworkManager refuses the save");
+
+        // Link-local and Shared show the rows, so they say what to remove.
+        form.ip4.method = 2;
+        let e = check(kind, Some(&initial), &form);
+        assert_eq!(e.ip4.addresses, "Link-local takes no addresses of its own: remove them.");
+        assert_eq!(e.ip4.dns, "Link-local takes no DNS servers or search domains: remove them.");
+        form.ip4.method = 3;
+        let e = check(kind, Some(&initial), &form);
+        assert_eq!(
+            (e.ip4.addresses.as_str(), e.ip4.dns.as_str()),
+            ("", "Shared takes no DNS servers or search domains: remove them.")
+        );
+        // The last address removed takes the gateway with it.
+        form.ip4.method = 0;
+        form.ip4.addresses.clear();
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert!(!out["ipv4"].contains_key("gateway"));
+    }
+
+    #[test]
+    fn switching_ipv6_to_ignore_drops_its_dns_servers() {
+        let quad9 = std::net::Ipv6Addr::from([0x2620, 0xfe, 0, 0, 0, 0, 0, 0xfe]).octets().to_vec();
+        let s = settings(&[
+            ("connection", vec![("id", "Office".into()), ("uuid", "u".into()), ("type", "802-3-ethernet".into())]),
+            ("ipv4", vec![("method", "auto".into())]),
+            ("ipv6", vec![("method", "auto".into()), ("dns", Value::from(vec![quad9]))]),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(initial.ip6.dns.len(), 1);
+        let mut form = initial.clone();
+        form.ip6.method = 4; // Ignore.
+        assert_eq!(check(kind, Some(&initial), &form).total(kind), 0);
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert_eq!(<&str>::try_from(&*out["ipv6"]["method"]).unwrap(), "ignore");
+        assert!(
+            out["ipv6"].get("dns").is_none_or(is_empty_list),
+            "ipv6.dns with method=ignore: NetworkManager refuses the save"
+        );
+    }
+
+    fn is_empty_list(v: &OwnedValue) -> bool {
+        matches!(&**v, Value::Array(a) if a.is_empty())
     }
 
     const WG_FILE: &str = "[Interface]\nPrivateKey = dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=\nAddress = 10.8.0.2/24\n\n\
