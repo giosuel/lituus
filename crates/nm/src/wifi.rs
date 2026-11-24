@@ -35,7 +35,9 @@ impl Security {
     /// From an access point's `Flags`, `WpaFlags` and `RsnFlags`.
     pub fn from_flags(flags: u32, wpa: u32, rsn: u32) -> Self {
         let any = wpa | rsn;
-        if any & SEC_KEY_MGMT_802_1X != 0 {
+        // NetworkManager sets EAP_SUITE_B_192 without 802_1X for an access point whose only key
+        // management is the 192-bit suite, so either bit means Enterprise.
+        if any & (SEC_KEY_MGMT_802_1X | SEC_KEY_MGMT_EAP_SUITE_B_192) != 0 {
             if any & SEC_KEY_MGMT_EAP_SUITE_B_192 != 0 { Self::Wpa3Enterprise } else { Self::Enterprise }
         } else if rsn & SEC_KEY_MGMT_SAE != 0 {
             if rsn & SEC_KEY_MGMT_PSK != 0 { Self::Wpa2Wpa3 } else { Self::Wpa3 }
@@ -43,7 +45,9 @@ impl Security {
             Self::Wpa2
         } else if wpa & SEC_KEY_MGMT_PSK != 0 {
             Self::Wpa
-        } else if rsn & SEC_KEY_MGMT_OWE != 0 && rsn & SEC_KEY_MGMT_OWE_TM == 0 {
+        } else if rsn & SEC_KEY_MGMT_OWE != 0 && (flags & AP_FLAGS_PRIVACY != 0 || rsn & SEC_KEY_MGMT_OWE_TM == 0) {
+            // In a transition pair (OWE_TM), the encrypted half (privacy set) is Enhanced Open,
+            // and the open half stays open.
             Self::Owe
         } else if flags & AP_FLAGS_PRIVACY != 0 {
             Self::Wep
@@ -288,6 +292,21 @@ mod tests {
         assert_eq!(Security::from_flags(0, 0, owe | 0x1000), Security::Open);
         assert!(!Security::Owe.needs_secrets());
         assert!(Security::Wpa2.needs_secrets());
+    }
+
+    /// NetworkManager sets EAP_SUITE_B_192 (0x2000) without 802_1X (0x200) for an access point
+    /// whose only key management is wpa-eap-suite-b-192.
+    #[test]
+    fn suite_b_192_only_is_wpa3_enterprise() {
+        assert_eq!(Security::from_flags(1, 0, 0x2000), Security::Wpa3Enterprise);
+    }
+
+    /// An Enhanced Open transition pair: the encrypted half has OWE and OWE_TM, with privacy;
+    /// the open half has OWE_TM alone, without.
+    #[test]
+    fn the_encrypted_half_of_an_owe_transition_pair_is_enhanced_open() {
+        assert_eq!(Security::from_flags(1, 0, 0x800 | 0x1000), Security::Owe);
+        assert_eq!(Security::from_flags(0, 0, 0x1000), Security::Open);
     }
 
     #[test]
