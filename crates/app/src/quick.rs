@@ -53,6 +53,8 @@ pub enum TrayIcon {
     Airplane,
     WifiOff,
     Connecting,
+    /// The Wi-Fi card runs the hotspot.
+    Hotspot,
     /// Wi-Fi with 0 to 4 bars.
     Wifi(u8),
     Wired,
@@ -67,6 +69,7 @@ impl TrayIcon {
             Self::Airplane => "airplane-mode-symbolic",
             Self::WifiOff => "network-wireless-disabled-symbolic",
             Self::Connecting => "network-wireless-acquiring-symbolic",
+            Self::Hotspot => "network-wireless-hotspot-symbolic",
             Self::Wifi(0) => "network-wireless-signal-none-symbolic",
             Self::Wifi(1) => "network-wireless-signal-weak-symbolic",
             Self::Wifi(2) => "network-wireless-signal-ok-symbolic",
@@ -105,7 +108,8 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
                 id: view::network_id(&n),
                 name: n.name(),
                 meta: format!("{what}{bands}"),
-                bars: lituus_nm::bars(n.strength()),
+                // The access point in use, for the connected one (and the tray's icon).
+                bars: lituus_nm::bars(n.current().strength),
                 active: n.active,
                 connecting: n.active && connecting,
             });
@@ -136,12 +140,18 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
         })
         .collect();
     let connected = networks.iter().find(|n| n.active);
+    // The card runs the hotspot: it isn't on a network.
+    let hotspot = device
+        .and_then(|d| snap.active_connection(d.active_connection.as_deref()?))
+        .is_some_and(|a| view::is_hotspot(snap, a));
     let status = if device.is_none() {
         "Wi-Fi: no device".to_owned()
     } else if !snap.wireless_hardware_enabled {
         "Wi-Fi: blocked".to_owned()
     } else if !snap.wireless_enabled {
         "Wi-Fi: off".to_owned()
+    } else if hotspot {
+        "Wi-Fi: hotspot".to_owned()
     } else {
         match connected {
             Some(n) if n.connecting => format!("Wi-Fi: connecting to {}…", n.name),
@@ -149,11 +159,18 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
             None => "Wi-Fi: not connected".to_owned(),
         }
     };
-    let icon = icon(snap, connected, vpns.iter().any(|v| v.connected), airplane);
+    let icon = icon(snap, connected, hotspot, vpns.iter().any(|v| v.connected), airplane);
     Quick { wifi_available, wifi_on, status, networks, vpns, airplane, icon }
 }
 
-fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, vpn: bool, airplane: bool) -> TrayIcon {
+/// Puts `networks` in the order `before` had them, new ones after. While the popup is open, a
+/// scan landing as the pointer goes to a row would otherwise move another network under it,
+/// and a click joins that one (an open network at once).
+pub fn keep_order(networks: &mut [QuickNetwork], before: &[QuickNetwork]) {
+    networks.sort_by_key(|n| before.iter().position(|b| b.id == n.id).unwrap_or(usize::MAX));
+}
+
+fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, hotspot: bool, vpn: bool, airplane: bool) -> TrayIcon {
     let wired = snap.devices.iter().any(|d| {
         d.kind == DeviceKind::Ethernet
             && d.active_connection
@@ -166,6 +183,7 @@ fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, vpn: bool, airplane: bool)
         _ if wired => TrayIcon::Wired,
         Some(n) if n.connecting => TrayIcon::Connecting,
         Some(n) => TrayIcon::Wifi(n.bars),
+        None if hotspot => TrayIcon::Hotspot,
         None if airplane => TrayIcon::Airplane,
         None if view::wifi_device(snap).is_some() && !snap.wireless_enabled => TrayIcon::WifiOff,
         None => TrayIcon::Offline,
@@ -190,6 +208,27 @@ mod tests {
         assert_eq!(q.networks[0].bars, 4);
         assert_eq!(q.icon, TrayIcon::Wifi(4));
         assert_eq!(q.icon.name(), "network-wireless-signal-excellent-symbolic");
+    }
+
+    #[test]
+    fn the_open_popup_keeps_its_order() {
+        let before = build(Some(&home()), false, &[]).networks;
+        let mut snap = home();
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        // The library comes into reach, a new network appears, and the café fades.
+        wifi.access_points[2].strength = 90;
+        wifi.access_points[1].strength = 20;
+        wifi.access_points.push(crate::view::tests::ap("/ap/7", "Nachbar", 2437, 80, lituus_nm::Security::Wpa2));
+        let mut q = build(Some(&snap), false, &[]);
+        assert_eq!(names(&q), ["Lumen Home", "Bibliothek-Free", "Nachbar", "Aster Café"]);
+        keep_order(&mut q.networks, &before);
+        assert_eq!(names(&q), ["Lumen Home", "Aster Café", "Bibliothek-Free", "Nachbar"]);
+        // Only the order is kept: the bars are the new ones.
+        assert_eq!(q.networks[1].bars, 1);
+    }
+
+    fn names(q: &Quick) -> Vec<&str> {
+        q.networks.iter().map(|n| n.name.as_str()).collect()
     }
 
     #[test]

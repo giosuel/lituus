@@ -538,3 +538,31 @@ async fn settings_round_trip() {
     client.save_hostname("thinkpad-x1").await.unwrap();
     assert_eq!(client.snapshot().await.unwrap().hostname, "thinkpad-x1");
 }
+
+/// A profile another user keeps to themselves is listed by ListConnections, but GetSettings
+/// refuses it (Settings.PermissionDenied). libnm leaves such a profile out; so does the snapshot,
+/// rather than failing as a whole.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_this_user_may_not_read_doesnt_hide_the_others() {
+    let Some(bus) = Bus::start(true).await else { return };
+    let (wifi, _) = home_setup(&bus).await;
+    let private: String = bus.mock("AddWiFiConnection", &(&wifi, "alice", "Aster Café", "wpa-psk")).await;
+    let _: () = bus
+        .mock_at(
+            &private,
+            "AddMethod",
+            &(
+                "org.freedesktop.NetworkManager.Settings.Connection",
+                "GetSettings",
+                "",
+                "a{sa{sv}}",
+                "raise dbus.exceptions.DBusException('Insufficient privileges.', \
+                 name='org.freedesktop.NetworkManager.Settings.PermissionDenied')",
+            ),
+        )
+        .await;
+    let client = Client::new(bus.connect().await);
+    let snapshot = client.snapshot().await.expect("a snapshot without the profile we may not read");
+    assert_eq!((snapshot.connections.len(), snapshot.unreadable), (1, 1));
+    assert_eq!(snapshot.devices.len(), 2);
+}
