@@ -59,9 +59,11 @@ NetworkManager (Wi-Fi, wired, VPN, every connection setting), Bluetooth through 
 audio, files, a phone's internet), sound through PipeWire, and displays through Hyprland."""
 # $auto adds the libraries the binary links against (xkbcommon among them); EGL is loaded at runtime.
 depends = "$auto, network-manager, libxkbcommon0, libegl1"
-# Optional: OpenVPN, Cisco AnyConnect, file dialogs (certificates, VPN files), and a keyring for "for me only".
+# Optional: file dialogs (certificates, VPN files), a keyring for "for me only", Bluetooth and
+# sound; OpenVPN and Cisco AnyConnect, Hyprland for Displays, Keyboard, Mouse & touchpad and
+# Shortcuts, hyprpaper for Wallpaper, and the default terminal. (awww and matugen aren't in Debian.)
 recommends = "xdg-desktop-portal, gnome-keyring | kwalletmanager, bluez, bluez-obexd, pipewire-pulse | pulseaudio"
-suggests = "network-manager-openvpn, network-manager-openconnect-gnome"
+suggests = "network-manager-openvpn, network-manager-openconnect-gnome, hyprland, hyprpaper, xdg-terminal-exec"
 assets = [
     ["target/release/lituus", "usr/bin/", "755"],
     ["../../packaging/linux/ch.giosuel.Lituus.desktop", "usr/share/applications/", "644"],

@@ -14,7 +14,12 @@ optdepends=('networkmanager-openvpn: OpenVPN connections'
             'networkmanager-openconnect: Cisco AnyConnect connections, with web sign-in'
             'bluez: Bluetooth, and files over Bluetooth (its obexd)'
             'pipewire-pulse: the Sound page and Bluetooth audio profiles'
-            'hyprland: the Displays page'
+            'hyprland: the Displays, Keyboard, Mouse & touchpad and Shortcuts pages'
+            'awww: the Wallpaper page (or hyprpaper)'
+            'hyprpaper: the Wallpaper page (or awww)'
+            'matugen: colours that follow the wallpaper'
+            'xdg-terminal-exec: the default terminal on Default apps'
+            'pacman-contrib: current update counts on System (checkupdates)'
             'xdg-desktop-portal: file dialogs (certificates, VPN files, files to send)'
             'gnome-keyring: passwords kept "for me only" (or KWallet)')
 provides=("$_pkgname=$pkgver")
