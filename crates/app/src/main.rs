@@ -38,6 +38,8 @@ mod sound;
 mod system;
 mod theme;
 mod tray;
+#[cfg(test)]
+mod ui_tokens;
 mod view;
 mod virt;
 mod wallpaper;
