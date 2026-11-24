@@ -4897,6 +4897,64 @@ mod tests {
         assert!(field().accessible_value().unwrap().contains('y'), "the field lost the focus");
     }
 
+    /// Add takes the name as it stands in the field, not as it was last handed over.
+    #[test]
+    fn add_an_app_takes_the_name_being_typed() {
+        let window = window();
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        window.set_apps(super::AppsView {
+            state: "list".into(),
+            add_open: true,
+            add_program: "~/Applications/Game.AppImage".into(),
+            add_name: "Game".into(),
+            add_can_save: true,
+            ..Default::default()
+        });
+        text_field(&window, "Name").mock_single_click(PointerEventButton::Left);
+        press(&window, "X");
+        control(&window, "Add", AccessibleRole::Button).mock_single_click(PointerEventButton::Left);
+        assert_eq!(*acted.borrow(), ["add-name GameX", "add-save "]);
+    }
+
+    /// A website's Add waits for its address: one being typed counts, and Add hands it over
+    /// first. The name it fills in isn't overwritten by the empty field's.
+    #[test]
+    fn add_a_website_takes_the_address_being_typed() {
+        let window = window();
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        window.on_apps_act(move |verb, arg| {
+            a.borrow_mut().push(format!("{verb} {arg}"));
+            // As apps::act does: the address names the app, and then there's something to add.
+            if verb == "add-address" {
+                let w = w.unwrap();
+                w.set_apps(super::AppsView {
+                    add_address: arg,
+                    add_name: "Todoist".into(),
+                    add_can_save: true,
+                    ..w.get_apps()
+                });
+            }
+        });
+        window.set_apps(super::AppsView {
+            state: "list".into(),
+            add_open: true,
+            add_website: true,
+            ..Default::default()
+        });
+        let add = || control(&window, "Add", AccessibleRole::Button);
+        assert_eq!(add().accessible_enabled(), Some(false));
+        text_field(&window, "Address").mock_single_click(PointerEventButton::Left);
+        press(&window, "t");
+        assert_eq!(add().accessible_enabled(), Some(true));
+        add().mock_single_click(PointerEventButton::Left);
+        assert_eq!(*acted.borrow(), ["add-address t", "add-save "]);
+    }
+
     /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
     fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
         let (p, s) = (slider.absolute_position(), slider.size());

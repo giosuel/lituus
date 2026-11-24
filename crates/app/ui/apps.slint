@@ -496,6 +496,13 @@ export component AppsPage inherits VerticalLayout {
 export component AddAppDialog inherits Modal {
     in property <AppsView> view;
     callback act(string, string);
+    // What's in the fields. A click on Add leaves the focus in the field being typed in, so it
+    // hasn't handed its text over yet: Add does that first.
+    property <string> program;
+    property <string> address;
+    property <string> name;
+    property <string> comment;
+    property <bool> pending: root.name != root.view.add-name || (root.view.add-website ? root.address != root.view.add-address : root.program != root.view.add-program || root.comment != root.view.add-comment);
     card-width: 620px;
     label: "Add an app";
     dismissed => { root.act("add-close", ""); }
@@ -520,14 +527,14 @@ export component AddAppDialog inherits Modal {
         label: "Program";
         HorizontalLayout {
             spacing: 8px;
-            TextField { value: root.view.add-program; label: "Program"; mono: true; placeholder: "~/Applications/App.AppImage"; committed => { root.act("add-program", self.text); } }
+            TextField { value: root.view.add-program; text <=> root.program; label: "Program"; mono: true; placeholder: "~/Applications/App.AppImage"; committed => { root.act("add-program", self.text); } }
             Button { label: "Choose…"; horizontal-stretch: 0; clicked => { root.act("add-choose", ""); } }
         }
         if root.view.add-program-note != "": Text { text: root.view.add-program-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
     if root.view.add-website: Field {
         label: "Address";
-        TextField { value: root.view.add-address; label: "Address"; mono: true; placeholder: "https://app.example.com"; committed => { root.act("add-address", self.text); } }
+        TextField { value: root.view.add-address; text <=> root.address; label: "Address"; mono: true; placeholder: "https://app.example.com"; committed => { root.act("add-address", self.text); } }
     }
     Field {
         label: "Name";
@@ -539,13 +546,13 @@ export component AddAppDialog inherits Modal {
                 AppTile { app: root.view.add-icon; size: 34px; x: 2px; y: 2px; }
                 TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-open", "add"); } }
             }
-            TextField { value: root.view.add-name; label: "Name"; committed => { root.act("add-name", self.text); } }
+            TextField { value: root.view.add-name; text <=> root.name; label: "Name"; committed => { root.act("add-name", self.text); } }
         }
         if root.view.add-name-note != "": Text { text: root.view.add-name-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
     if !root.view.add-website: Field {
         label: "Description";
-        TextField { value: root.view.add-comment; label: "Description"; committed => { root.act("add-comment", self.text); } }
+        TextField { value: root.view.add-comment; text <=> root.comment; label: "Description"; committed => { root.act("add-comment", self.text); } }
     }
     if !root.view.add-website: Field {
         label: "Category";
@@ -567,7 +574,23 @@ export component AddAppDialog inherits Modal {
         spacing: 8px;
         Text { text: root.view.add-footer; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         Button { label: "Cancel"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.act("add-close", ""); } }
-        Button { label: "Add"; kind: "primary"; button-height: Size.button-dialog; horizontal-stretch: 0; enabled: root.view.add-can-save; clicked => { root.act("add-save", ""); } }
+        Button {
+            label: "Add";
+            kind: "primary";
+            button-height: Size.button-dialog;
+            horizontal-stretch: 0;
+            // Also while a field holds text not handed over (an address typed, say): the click hands
+            // it over, and adds the app if that's enough.
+            enabled: root.view.add-can-save || root.pending;
+            clicked => {
+                // The name first: a program or an address handed over fills in an empty one.
+                if root.name != root.view.add-name { root.act("add-name", root.name); }
+                if !root.view.add-website && root.comment != root.view.add-comment { root.act("add-comment", root.comment); }
+                if !root.view.add-website && root.program != root.view.add-program { root.act("add-program", root.program); }
+                if root.view.add-website && root.address != root.view.add-address { root.act("add-address", root.address); }
+                // What was handed over may have left nothing to add (the name emptied).
+                if root.view.add-can-save { root.act("add-save", ""); }
+            }
         }
     }
 }
