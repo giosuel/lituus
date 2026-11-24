@@ -356,6 +356,12 @@ fn needs_takeover(state: &State) -> bool {
 /// asking once). `after`: the command after a change runs, with the last picture.
 fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut sets: Vec<Set>, after: bool) {
     let Some(program) = state.program() else { return };
+    // Shown now but gone at hyprpaper's next start, or a file it can't read at all: not set.
+    let unwritable = sets.iter().find_map(|s| lituus_wallpaper::hyprpaper_unwritable(&s.path.display().to_string()));
+    if let (Program::Hyprpaper, Some(why)) = (program, unwritable) {
+        state.message = Some(cant_hold(why));
+        return;
+    }
     if program == Program::Hyprpaper && needs_takeover(state) {
         state.takeover = Some(Pending::Pictures(sets, after));
         return;
@@ -408,6 +414,11 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
         run_after(&env, &after, sets.last().map(|s| s.path.as_path()))
     };
     run(weak, state, work);
+}
+
+/// The message for a path hyprpaper.conf can't hold (`hyprpaper_unwritable`).
+fn cant_hold(why: &str) -> String {
+    format!("hyprpaper.conf can't hold a path with {why}: rename the file or folder to use it with hyprpaper.")
 }
 
 /// Runs the command after a change, if there is one.
@@ -533,6 +544,13 @@ fn following(pictures: &[PathBuf], now: Option<&Path>, shuffle: bool, seed: usiz
 /// hyprpaper's slideshow: the folder on every monitor in hyprpaper.conf, which hyprpaper reads
 /// when it starts, so it's started again.
 fn hyprpaper_slideshow(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
+    if let Some(why) = lituus_wallpaper::hyprpaper_unwritable(&state.folder_path().display().to_string()) {
+        // Without the folder in hyprpaper.conf there's no slideshow: it stays off.
+        state.message = Some(cant_hold(why));
+        state.settings.slideshow = false;
+        save(state, "slideshow", false);
+        return;
+    }
     if needs_takeover(state) {
         state.takeover = Some(Pending::Slideshow);
         return;
@@ -980,8 +998,17 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             set_picture(weak, state, vec![set], true);
         }
         "random" => {
-            let pictures: Vec<PathBuf> =
-                state.folder.iter().flat_map(|f| f.pictures.iter().map(|p| p.path.clone())).collect();
+            let hyprpaper = state.program() == Some(Program::Hyprpaper);
+            let pictures: Vec<PathBuf> = state
+                .folder
+                .iter()
+                .flat_map(|f| f.pictures.iter())
+                // Not one that a click would be refused.
+                .filter(|p| {
+                    !hyprpaper || lituus_wallpaper::hyprpaper_unwritable(&p.path.display().to_string()).is_none()
+                })
+                .map(|p| p.path.clone())
+                .collect();
             if !pictures.is_empty() {
                 // Not the one shown now, if there's another.
                 let now: Vec<&PathBuf> = state.current.iter().map(|(_, p)| p).collect();
@@ -1568,6 +1595,37 @@ mod tests {
         let c = calls(&d);
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-3, /w/now.png, cover".to_owned()), "{c:?}");
         assert_eq!(view(&state).everys.row_count(), EVERY.len());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A `#` is written as hyprlang reads it back; a path hyprpaper.conf can't hold at all isn't
+    /// set (it would show now and be gone at hyprpaper's next start).
+    #[test]
+    fn paths_in_hyprpaper_conf() {
+        let (mut state, d) = state_in("hyprpaper-paths", Some(Program::Hyprpaper));
+        stand_in(&d, "pkill", "");
+        let conf = d.join("hypr/hyprpaper.conf");
+        let hash = state.folder_path().join("#1 alps.png");
+        act_with(None, &mut state, "set", &hash.display().to_string(), 0.0);
+        let text = std::fs::read_to_string(&conf).unwrap();
+        assert!(text.contains("/##1 alps.png\n"), "{text}");
+        assert_eq!(lituus_wallpaper::hyprpaper_entries(&text)[0].path, hash.display().to_string());
+        let calls_before = calls(&d).len();
+        act_with(None, &mut state, "set", "/w/$HOME.png", 0.0);
+        assert_eq!(
+            state.message.as_deref(),
+            Some("hyprpaper.conf can't hold a path with a $: rename the file or folder to use it with hyprpaper.")
+        );
+        assert_eq!(calls(&d).len(), calls_before, "{:?}", calls(&d));
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
+        // Nor a slideshow of a folder it can't hold: it stays off.
+        let folder = d.join("home/two##hashes");
+        std::fs::create_dir_all(&folder).unwrap();
+        act_with(None, &mut state, "folder", &folder.display().to_string(), 0.0);
+        act_with(None, &mut state, "slideshow", "", 0.0);
+        assert!(state.message.as_deref().is_some_and(|m| m.contains("two # in a row")), "{:?}", state.message);
+        assert!(!state.settings.slideshow && !config::load(&state.config_path()).wallpaper.slideshow);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

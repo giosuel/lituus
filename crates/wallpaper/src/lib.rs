@@ -14,7 +14,8 @@ use std::process::{Command, Stdio};
 
 pub use hyprpaper::{
     Entry as HyprpaperEntry, conf_text as hyprpaper_conf_text, entries as hyprpaper_entries,
-    fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, with_splash as hyprpaper_with_splash,
+    fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, unwritable as hyprpaper_unwritable,
+    with_splash as hyprpaper_with_splash,
 };
 pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, read_folder, thumbnail};
 
@@ -297,8 +298,10 @@ pub fn set(env: &Env, program: Program, set: &Set, monitors: &[String]) -> Resul
         Program::Hyprpaper => {
             // hyprpaper's empty monitor is its fallback; Lituus names each monitor instead.
             let targets = if set.monitors.is_empty() { monitors.to_vec() } else { set.monitors.clone() };
+            // hyprctl splits "monitor, path, fit" at each comma without a `\` before it.
+            let path = set.path.display().to_string().replace(',', "\\,");
             for m in targets {
-                let arg = format!("{m}, {}, {}", set.path.display(), set.fill.hyprctl());
+                let arg = format!("{m}, {path}, {}", set.fill.hyprctl());
                 let out = env.run("hyprctl", &["hyprpaper", "wallpaper", &arg])?;
                 if out.contains("failed") || out.contains("error") {
                     return Err(Error::Refused(out.trim().to_owned()));
@@ -457,6 +460,23 @@ mod tests {
         let c = calls(&d);
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-3, /w/a.jpg, stretch".to_owned()), "{c:?}");
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-5, /w/a.jpg, stretch".to_owned()), "{c:?}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn hyprpaper_gets_a_comma_in_a_path_escaped() {
+        let (env, d) = stand_ins("comma", &[("hyprctl", "")]);
+        let pic = Set {
+            path: "/w/Trip, 2024.jpg".into(),
+            monitors: vec![],
+            fill: Fill::Cover,
+            transition: String::new(),
+            duration: 0.0,
+            fps: 0,
+            bar_colour: String::new(),
+        };
+        set(&env, Program::Hyprpaper, &pic, &["DP-3".into()]).unwrap();
+        assert_eq!(calls(&d), ["hyprctl hyprpaper wallpaper DP-3, /w/Trip\\, 2024.jpg, cover"]);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
