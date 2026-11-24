@@ -3,7 +3,7 @@
 
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Switch, SectionLabel, Kbd, Hint, IconTile, Scroll } from "controls.slint";
+import { Switch, SectionLabel, Kbd, Hint, IconTile, Scroll, Focus } from "controls.slint";
 import { Segmented, SelectButton } from "dialogs.slint";
 import { Slider } from "sound.slint";
 
@@ -141,6 +141,8 @@ component PaletteLine inherits Rectangle {
 export component CommandPalette inherits Rectangle {
     in property <PaletteView> view;
     in-out property <string> query <=> search.text;
+    /// Goes up when the window gives the keyboard back to the palette (it fell out of it).
+    in property <int> focus-requests;
     callback edited(string);
     /// "up", "down", "enter", "ctrl-enter", "left", "right", "esc", "close".
     callback key(string);
@@ -148,6 +150,7 @@ export component CommandPalette inherits Rectangle {
     callback set(string, float);
     callback closed();
     public function focus-search() { search.focus(); }
+    changed focus-requests => { search.focus(); }
     // The selected row, kept in view as ↑ ↓ move it.
     property <length> reveal-top: root.view.reveal-top;
     changed reveal-top => { list.reveal-part(root.view.reveal-top, root.view.reveal-size); }
@@ -184,6 +187,7 @@ export component CommandPalette inherits Rectangle {
                     Icon { name: "search"; tint: search.text == "" ? Theme.faint : Theme.muted; size: 16px; y: (parent.height - 16px) / 2; }
                     keys := FocusScope {
                         horizontal-stretch: 1;
+                        focus-gained => { Focus.held = true; }
                         // Before the search field sees them: the list's keys, and while a row is
                         // stepped into, ← → are its control's and the search waits.
                         capture-key-pressed(event) => {
@@ -206,6 +210,7 @@ export component CommandPalette inherits Rectangle {
                             vertical-alignment: center;
                             single-line: true;
                             accessible-label: "Search settings, pages and actions";
+                            changed has-focus => { if self.has-focus { Focus.held = true; } }
                             edited => {
                                 list.reveal-part(0, 0);
                                 root.edited(self.text);
@@ -242,7 +247,12 @@ export component CommandPalette inherits Rectangle {
                         for row in root.view.rows: PaletteLine {
                             line: row;
                             clicked => { root.clicked(row.index); }
-                            set(v) => { root.set(row.id, v); }
+                            // A slider takes the focus when it's pressed: the search takes it
+                            // back, so the palette's keys and typing keep working.
+                            set(v) => {
+                                root.set(row.id, v);
+                                search.focus();
+                            }
                         }
                         if root.view.empty != "": Text {
                             height: 64px;

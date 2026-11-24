@@ -5196,4 +5196,64 @@ mod tests {
         mock_elapsed_time(Duration::ZERO);
         assert!(ring_on(&window, "Set up…"));
     }
+
+    /// Clicks a palette row's slider, then presses ↓, a letter and Esc: what the palette got of
+    /// them, and its search text. `rebuilt`: the change replaced the rows, as a render does.
+    fn keys_after_a_click_on_a_palette_slider(rebuilt: bool) -> (Vec<String>, String) {
+        let window = window();
+        let got = Rc::new(RefCell::new(Vec::<String>::new()));
+        let g = got.clone();
+        window.on_palette_key(move |key| g.borrow_mut().push(key.to_string()));
+        let view = || super::PaletteView {
+            open: true,
+            rows: super::model(vec![super::PaletteRow {
+                kind: "slider".into(),
+                id: "repeat-delay".into(),
+                title: "Repeat delay".into(),
+                pre: "Repeat delay".into(),
+                value: 0.5,
+                maximum: 1.0,
+                step: 0.1,
+                selected: true,
+                ..Default::default()
+            }]),
+            keys: super::model(vec![super::Hint::new("Esc", "Close")]),
+            ..Default::default()
+        };
+        window.set_palette_view(view());
+        let w = window.as_weak();
+        window.on_palette_set(move |_, _| {
+            if rebuilt {
+                w.unwrap().set_palette_view(view());
+            }
+        });
+        let slider = control(&window, "Repeat delay", AccessibleRole::Slider);
+        let (p, s) = (slider.absolute_position(), slider.size());
+        click(&window, p.x + s.width * 0.3, p.y + s.height / 2.0);
+        wait_for_the_focus();
+        press(&window, Key::DownArrow);
+        press(&window, "d");
+        press(&window, Key::Escape);
+        let got = got.borrow().clone();
+        (got, window.get_palette_query().to_string())
+    }
+
+    /// A click on a palette row's slider leaves the keyboard with the palette: ↑↓ and Esc still
+    /// reach it, and typing goes to the search.
+    #[test]
+    fn the_palette_keeps_the_keyboard_after_a_click_on_its_slider() {
+        assert_eq!(
+            keys_after_a_click_on_a_palette_slider(false),
+            (vec!["down".to_owned(), "esc".into()], "d".to_owned())
+        );
+    }
+
+    /// Also when the change rebuilt the row, and the slider that took the focus is gone.
+    #[test]
+    fn the_palette_keeps_the_keyboard_after_its_slider_is_rebuilt() {
+        assert_eq!(
+            keys_after_a_click_on_a_palette_slider(true),
+            (vec!["down".to_owned(), "esc".into()], "d".to_owned())
+        );
+    }
 }

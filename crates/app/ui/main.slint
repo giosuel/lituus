@@ -381,6 +381,14 @@ export component MainWindow inherits Window {
         // takes it first.
         focus-gained => { Focus.held = !root.modal-open && !root.editor-open; }
         key-pressed(event) => {
+            // The palette is over everything, the dialogs included: Ctrl K and Esc close it as
+            // they do from its search, and the search gets the keyboard back.
+            if root.palette-view.open {
+                if event.modifiers.control && (event.text == "k" || event.text == "K") { root.palette-key("close"); }
+                else if event.text == Key.Escape { root.palette-key("esc"); }
+                root.take-keys();
+                return accept;
+            }
             // A dialog or the editor has the keyboard while it's open. Esc still closes the ones
             // it always closed from here; any other key gives the keyboard back to it, and the
             // page behind gets none, not even Tab.
@@ -977,11 +985,14 @@ export component MainWindow inherits Window {
     // The editor's own dialogs (its routes, Add a port).
     property <bool> editor-dialog-open: root.editor-open && (root.editor-routes != "" || root.editor-ports-open);
 
-    // Gives the keyboard to what's on top: a dialog, the editor, or else the page (the window's
-    // keys). For when the focus went away with a control, or fell out of what has it to the
-    // window: the page behind a dialog never gets the keys.
+    // Gives the keyboard to what's on top: the palette, a dialog, the editor, or else the page
+    // (the window's keys). For when the focus went away with a control, or fell out of what has
+    // it to the window: the page behind a dialog never gets the keys.
+    property <int> palette-focus-requests;
     function take-keys() {
-        if root.modal-open || root.editor-dialog-open {
+        if root.palette-view.open {
+            root.palette-focus-requests += 1;
+        } else if root.modal-open || root.editor-dialog-open {
             Focus.to-dialog();
         } else if root.editor-open {
             editor.take-focus();
@@ -1421,6 +1432,7 @@ export component MainWindow inherits Window {
     if root.palette-view.open: CommandPalette {
         view: root.palette-view;
         query <=> root.palette-query;
+        focus-requests: root.palette-focus-requests;
         init => { self.focus-search(); }
         edited(text) => { root.palette-edited(text); }
         key(k) => { root.palette-key(k); }
