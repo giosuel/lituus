@@ -488,7 +488,9 @@ export component Scroll inherits Rectangle {
         flicked => { root.scrolled(); }
         body := VerticalLayout {
             // With the scrollbar inside the area, its 10 px and a gap stay free on the right, so
-            // it never covers the content (D-46); a negative inset puts it in the padding.
+            // it never covers the content (D-46); a negative inset puts it in the padding. At
+            // x 0: Slint centres a child narrower than its parent.
+            x: 0;
             width: flick.width - (root.bar-inset >= 0 ? 14px + root.bar-inset : 0px);
             height: flick.content-height;
             spacing: root.spacing;

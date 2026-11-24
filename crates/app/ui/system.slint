@@ -7,7 +7,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, CardTitle, SectionLabel, IconTile } from "controls.slint";
-import { Hero, HeroSubject, Card, ScrollCard, Tooltip, EmptyState, DividerRow } from "shell.slint";
+import { Hero, HeroSubject, Card, ScrollCard, Tooltip, EmptyState } from "shell.slint";
 
 /// A fact about the hardware: what it is (label), its name (title) and a line under it. link: an
 /// Open Displays button beside it.
@@ -72,10 +72,14 @@ component Fact inherits Rectangle {
 }
 
 /// A name, its value and a note on the right; a line above it unless it's the first.
-component SoftwareRow inherits DividerRow {
+// Not DividerRow, whose rows are 48 px at least: these facts are a compact list, so the card
+// fits at 1070 px. The same divider.
+component SoftwareRow inherits Rectangle {
     in property <SystemSoftware> entry;
+    in property <bool> first;
     in property <bool> narrow;
-    height: 48px;
+    height: 40px;
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
         spacing: 12px;
         Text { text: root.entry.name; color: Theme.muted; font-size: Type.body; vertical-alignment: center; width: root.narrow ? 110px : 150px; overflow: elide; }
@@ -92,11 +96,13 @@ component SoftwareRow inherits DividerRow {
     }
 }
 
-component UpdateRow inherits DividerRow {
+component UpdateRow inherits Rectangle {
     in property <SystemUpdate> entry;
+    in property <bool> first;
     in property <bool> narrow;
     callback update();
-    height: 48px;
+    height: 46px;
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
         spacing: 12px;
         HorizontalLayout {
