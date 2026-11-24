@@ -5286,6 +5286,27 @@ mod tests {
         acted
     }
 
+    /// When the shortcut dialog stops listening, the box that had the keyboard goes: the dialog
+    /// takes it back, so the next Esc closes it (it went nowhere before).
+    #[test]
+    fn the_shortcut_dialog_keeps_the_keyboard_after_listening() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        let mut view = window.get_shortcuts();
+        view.dialog = super::ShortcutDialog { open: true, listening: true, ..Default::default() };
+        window.set_shortcuts(view.clone());
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Escape);
+        // The listening box takes the press (and reports the release, as it does every key's).
+        assert!(acted.borrow().iter().any(|a| a == "d-stop "));
+        // The app stops listening, as d-stop does.
+        view.dialog.listening = false;
+        window.set_shortcuts(view);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Escape);
+        assert_eq!(acted.borrow().last().map(String::as_str), Some("d-cancel "));
+    }
+
     /// A shortcut's ⋯ menu is worked from the keyboard: Enter opens it, ↓ and Enter choose from
     /// it, and the focus is back on ⋯ after it.
     #[test]

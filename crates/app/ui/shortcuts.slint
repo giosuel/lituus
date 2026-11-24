@@ -343,6 +343,10 @@ component BigKey inherits Rectangle {
 component KeysBand inherits Rectangle {
     in property <ShortcutDialog> dialog;
     callback act(string, string);
+    // Listening ends (Esc, or keys recorded): the box that had the keyboard goes, and Slint drops
+    // the focus with it. The dialog takes it back, so Esc closes it and Tab stays in it.
+    property <bool> listening: root.dialog.listening;
+    changed listening => { if !self.listening { Focus.to-dialog(); } }
     height: band.preferred-height;
     border-top-left-radius: 13px;
     border-top-right-radius: 13px;
