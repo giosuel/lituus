@@ -236,6 +236,10 @@ struct Job {
     file: ConfigFile,
     settings: InputSettings,
     reset: Vec<Device>,
+    /// Something went back to the device's own default, which Hyprland only takes by reading
+    /// its config again (`InputSettings::left_to_default`): it's asked to, after the file is
+    /// written.
+    reload: bool,
 }
 
 /// What came of a job: the text written, or why not; and the devices afterwards.
@@ -254,6 +258,10 @@ pub struct State {
     loaded: bool,
     /// The settings as Hyprland has them, with the changes made here.
     pub settings: InputSettings,
+    /// The settings as last read from Hyprland or sent to it.
+    sent: InputSettings,
+    /// What the bar has to say about a change Hyprland didn't take live.
+    note: Option<String>,
     /// The Input part of the file, as last read or written.
     saved: Option<String>,
     devices: Devices,
@@ -328,7 +336,7 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
 
 fn read_hyprland() -> Result<Read, lituus_hypr::Error> {
     let h = Hyprland::from_env()?;
-    let lua = h.version().map(|v| v.lua()).unwrap_or(true);
+    let lua = lituus_hypr::reads_lua(h.version().ok().as_ref(), &config_dir());
     let devices = h.devices()?;
     let mut options = Vec::new();
     for o in OPTIONS {
@@ -358,6 +366,7 @@ fn loaded(state: &mut State, read: Result<Read, lituus_hypr::Error>) {
             let written = state.saved.as_deref().map(|t| InputSettings::parse(t, read.lua)).unwrap_or_default();
             state.settings = InputSettings::from_fields(&read.options, &[]);
             state.settings.devices = written.devices;
+            state.sent = state.settings.clone();
             state.file = Some(file);
             state.lua = read.lua;
             state.hypr = Some(read.hypr);
@@ -392,7 +401,14 @@ fn commit(weak: &slint::Weak<MainWindow>, state: &mut State) {
             Device { name: name.clone(), settings: defaults(&state.settings, touchpad) }
         })
         .collect();
-    let job = Job { hypr, lua: state.lua, file, settings: state.settings.clone(), reset };
+    // Back to the device's own default: Hyprland reads its config again when it loads Lituus's
+    // file; otherwise the default is back when Hyprland starts again.
+    let before = std::mem::replace(&mut state.sent, state.settings.clone());
+    let to_default = state.settings.left_to_default(&before);
+    state.note = (to_default && !state.loaded)
+        .then(|| "Saved; Hyprland goes back to the device's default when it starts again".to_owned());
+    let reload = to_default && state.loaded;
+    let job = Job { hypr, lua: state.lua, file, settings: state.settings.clone(), reset, reload };
     if cfg!(test) {
         let done = run(&job);
         finish(state, done);
@@ -444,6 +460,13 @@ fn run(job: &Job) -> Done {
         Ok(()) => Ok(text),
         Err(e) => Err(format!("Couldn't write {}: {e}", job.file.path().display())),
     };
+    if written.is_ok()
+        && job.reload
+        && let Some(h) = &job.hypr
+        && let Err(e) = h.request("reload")
+    {
+        error = Some(format!("Hyprland didn't read its config again: {e}"));
+    }
     // Hyprland sets the keyboards up again on its next frame.
     let devices = job.hypr.as_ref().and_then(|h| {
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -488,6 +511,7 @@ fn defaults(s: &InputSettings, touchpad: bool) -> DeviceSettings {
 /// The page was left: its last change can't be reverted any more.
 pub fn left(state: &mut State) {
     state.last = None;
+    state.note = None;
     state.reverted = false;
     state.changed_at = None;
 }
@@ -832,6 +856,8 @@ fn bar(state: &State) -> InputBar {
     let text_now = state.text();
     let (text, path, tone) = if let Some(e) = &state.error {
         (e.clone(), String::new(), "danger")
+    } else if let Some(note) = state.note.as_ref().filter(|_| state.applied) {
+        (note.clone(), String::new(), "warn")
     } else if state.reverted {
         ("Reverted, and saved to".to_owned(), path, "accent")
     } else if let Some((what, _)) = &state.last {
@@ -1659,6 +1685,27 @@ B: PROP=5
         assert_eq!(v.bar.text, "Reverted, and saved to");
         assert!(!v.bar.can_revert);
         assert!(!std::fs::read_to_string(dir.join("lituus.lua")).unwrap().contains("ctrl:nocaps"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Acceleration back to Hyprland's default (empty: the device's own, which Lituus doesn't
+    /// guess) can't be sent live: Hyprland reads its config again when it loads Lituus's file,
+    /// and otherwise the bar says when the default is back.
+    #[test]
+    fn going_back_to_the_devices_default_acceleration() {
+        let (mut st, dir) = state_in("accel-default");
+        let w = weak();
+        act(&w, &mut st, "accel", "0", 0.0);
+        assert_eq!(st.settings.mouse.accel_profile, "flat");
+        act(&w, &mut st, "revert", "", 0.0);
+        assert_eq!(st.settings.mouse.accel_profile, "");
+        let text = mouse_view(&st, &[]).bar.text;
+        assert_eq!(text, "Saved; Hyprland goes back to the device's default when it starts again");
+        // Loaded by the config: Hyprland reads it again, and nothing waits.
+        st.loaded = true;
+        act(&w, &mut st, "accel", "0", 0.0);
+        act(&w, &mut st, "revert", "", 0.0);
+        assert_eq!(mouse_view(&st, &[]).bar.text, "Reverted, and saved to");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

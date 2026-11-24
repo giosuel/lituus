@@ -1,6 +1,7 @@
 [package]
 name = "lituus"
-description = "Settings for Hyprland and other desktops without them: network, Bluetooth, sound and displays"
+description = "Settings app for Hyprland and other desktops without one"
+homepage = "https://lituus.giosuel.io"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -52,17 +53,21 @@ workspace = true
 [package.metadata.deb]
 name = "lituus"
 maintainer = "giosuel <me@giosuel.ch>"
-section = "net"
+section = "admin"
 priority = "optional"
 extended-description = """\
-The settings app for Linux desktops that don't come with one, such as Hyprland. Network through \
-NetworkManager (Wi-Fi, wired, VPN, every connection setting), Bluetooth through BlueZ (pairing, \
-audio, files, a phone's internet), sound through PipeWire, and displays through Hyprland."""
+The settings app for Linux desktops that don't come with one, such as Hyprland: network through \
+NetworkManager (Wi-Fi, wired, VPNs, a hotspot, every connection setting), Bluetooth through BlueZ \
+(pairing, audio, files, a phone's internet), sound through PipeWire, displays, input and \
+shortcuts through Hyprland, wallpapers through awww or hyprpaper, the apps your launcher shows, \
+default apps, and the system's hardware, updates and name."""
 # $auto adds the libraries the binary links against (xkbcommon among them); EGL is loaded at runtime.
 depends = "$auto, network-manager, libxkbcommon0, libegl1"
-# Optional: OpenVPN, Cisco AnyConnect, file dialogs (certificates, VPN files), and a keyring for "for me only".
+# Optional: file dialogs (certificates, VPN files), a keyring for "for me only", Bluetooth and
+# sound; OpenVPN and Cisco AnyConnect, Hyprland for Displays, Keyboard, Mouse & touchpad and
+# Shortcuts, hyprpaper for Wallpaper, and the default terminal. (awww and matugen aren't in Debian.)
 recommends = "xdg-desktop-portal, gnome-keyring | kwalletmanager, bluez, bluez-obexd, pipewire-pulse | pulseaudio"
-suggests = "network-manager-openvpn, network-manager-openconnect-gnome"
+suggests = "network-manager-openvpn, network-manager-openconnect-gnome, hyprland, hyprpaper, xdg-terminal-exec"
 assets = [
     ["target/release/lituus", "usr/bin/", "755"],
     ["../../packaging/linux/ch.giosuel.Lituus.desktop", "usr/share/applications/", "644"],
@@ -78,7 +83,7 @@ assets = [
 # works across distributions whose package names differ.
 [package.metadata.generate-rpm]
 name = "lituus"
-summary = "Manage Wi-Fi, wired and VPN connections"
+summary = "Settings app for Hyprland and other desktops without one"
 assets = [
     { source = "target/release/lituus", dest = "/usr/bin/lituus", mode = "755" },
     { source = "../../packaging/linux/ch.giosuel.Lituus.desktop", dest = "/usr/share/applications/ch.giosuel.Lituus.desktop", mode = "644" },

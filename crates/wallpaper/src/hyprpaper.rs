@@ -44,39 +44,79 @@ pub fn fit_mode(fill: crate::Fill) -> &'static str {
     }
 }
 
+/// A line as hyprlang reads it: without its comment, which starts at a `#`, and with `##` as one
+/// `#`; a line that starts with `#` is a comment whole.
+fn uncommented(line: &str) -> String {
+    if line.trim_start().starts_with('#') {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '#' {
+            out.push(c);
+        } else if chars.as_str().starts_with('#') {
+            chars.next();
+            out.push('#');
+            // hyprlang (0.6) takes the character after a `##` as it is, even another `#`.
+            out.extend(chars.next());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// A `wallpaper {` line.
+fn opens(line: &str) -> bool {
+    line.trim().strip_prefix("wallpaper").is_some_and(|rest| rest.trim_start().starts_with('{'))
+}
+
 /// A block's span in the file's lines: from its `wallpaper {` line to its `}`, and what it holds.
 fn blocks(text: &str) -> Vec<(usize, usize, Entry)> {
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<String> = text.lines().map(uncommented).collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i].split('#').next().unwrap_or_default().trim();
-        if line.starts_with("wallpaper") && line.trim_start_matches("wallpaper").trim_start().starts_with('{') {
-            let start = i;
-            let mut entry = Entry::picture("", "", "cover");
-            // `wallpaper { monitor = DP-1 }` on one line, or over several.
-            let mut body = line.split_once('{').map(|(_, b)| b.to_owned()).unwrap_or_default();
-            while !body.contains('}') && i + 1 < lines.len() {
-                i += 1;
-                body.push('\n');
-                body.push_str(lines[i].split('#').next().unwrap_or_default());
+        if !opens(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        // hyprlang ends a block at a line that is `}` alone: a `}` in a value (a picture's path)
+        // is part of it. A block on one line (`wallpaper { monitor = DP-1 }`), or one with the
+        // `}` after its last value, ends at that `}`.
+        i = if lines[i].trim_end().ends_with('}') {
+            i
+        } else {
+            let rest: Vec<usize> = (i + 1..lines.len()).take_while(|j| !opens(&lines[*j])).collect();
+            rest.iter()
+                .find(|j| lines[**j].trim() == "}")
+                .or_else(|| rest.iter().find(|j| lines[**j].trim_end().ends_with('}')))
+                .or(rest.last())
+                .copied()
+                .unwrap_or(i)
+        };
+        let mut entry = Entry::picture("", "", "cover");
+        for (at, line) in (start..=i).zip(&lines[start..=i]) {
+            let mut field = if at == start { line.split_once('{').map_or("", |(_, b)| b) } else { line.as_str() };
+            if at == i {
+                field = field.trim_end().strip_suffix('}').unwrap_or(field);
             }
-            for field in body.split(['\n', '}']) {
-                if let Some((k, v)) = field.split_once('=') {
-                    let v = v.trim().to_owned();
-                    match k.trim() {
-                        "monitor" => entry.monitor = v,
-                        "path" => entry.path = v,
-                        "fit_mode" => entry.fit_mode = v,
-                        "timeout" => entry.timeout = v.parse().unwrap_or(0),
-                        "order" => entry.order = v,
-                        "recursive" => entry.recursive = matches!(v.as_str(), "1" | "true" | "yes" | "on"),
-                        _ => {}
-                    }
+            if let Some((k, v)) = field.split_once('=') {
+                let v = v.trim().to_owned();
+                match k.trim() {
+                    "monitor" => entry.monitor = v,
+                    "path" => entry.path = v,
+                    "fit_mode" => entry.fit_mode = v,
+                    "timeout" => entry.timeout = v.parse().unwrap_or(0),
+                    "order" => entry.order = v,
+                    "recursive" => entry.recursive = matches!(v.as_str(), "1" | "true" | "yes" | "on"),
+                    _ => {}
                 }
             }
-            out.push((start, i, entry));
         }
+        out.push((start, i, entry));
         i += 1;
     }
     out
@@ -85,6 +125,7 @@ fn blocks(text: &str) -> Vec<(usize, usize, Entry)> {
 /// Whether hyprpaper draws Hyprland's splash text over the picture (`splash`, off unless set).
 pub fn splash(text: &str) -> bool {
     top_level(text)
+        .into_iter()
         .find_map(|(_, k, v)| (k == "splash").then_some(matches!(v.as_str(), "1" | "true" | "yes" | "on")))
         .unwrap_or(false)
 }
@@ -93,7 +134,7 @@ pub fn splash(text: &str) -> bool {
 pub fn with_splash(text: &str, on: bool) -> String {
     let line = format!("splash = {on}");
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    match top_level(text).find(|(_, k, _)| k == "splash") {
+    match top_level(text).into_iter().find(|(_, k, _)| k == "splash") {
         Some((i, _, _)) => lines[i] = line,
         None => lines.insert(0, line),
     }
@@ -103,18 +144,16 @@ pub fn with_splash(text: &str, on: bool) -> String {
 }
 
 /// The `key = value` lines outside the blocks: (line, key, value).
-fn top_level(text: &str) -> impl Iterator<Item = (usize, String, String)> + '_ {
-    let mut depth = 0i32;
-    text.lines().enumerate().filter_map(move |(i, l)| {
-        let l = l.split('#').next().unwrap_or_default();
-        let outside = depth == 0;
-        depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
-        if !outside || l.contains('{') {
-            return None;
-        }
-        let (k, v) = l.split_once('=')?;
-        Some((i, k.trim().to_owned(), v.trim().to_owned()))
-    })
+fn top_level(text: &str) -> Vec<(usize, String, String)> {
+    let spans: Vec<(usize, usize)> = blocks(text).into_iter().map(|(start, end, _)| (start, end)).collect();
+    text.lines()
+        .enumerate()
+        .filter(|(i, _)| !spans.iter().any(|(start, end)| (start..=end).contains(&i)))
+        .filter_map(|(i, l)| {
+            let (k, v) = uncommented(l).split_once('=').map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))?;
+            Some((i, k, v))
+        })
+        .collect()
 }
 
 /// The `wallpaper` blocks in hyprpaper.conf's text.
@@ -122,15 +161,46 @@ pub fn entries(text: &str) -> Vec<Entry> {
     blocks(text).into_iter().map(|(_, _, e)| e).collect()
 }
 
+/// Why hyprlang can't read a path back as it is, if it can't. A `#` is written `##`, but hyprlang
+/// (0.6) reads a run of them wrongly; `$` takes a variable's value (an environment variable's
+/// too), `{{` starts a sum, a `\` can join lines or drop out (and hyprctl takes `\,` as an
+/// escape), a line break ends the value, and a space at either end is trimmed.
+pub fn unwritable(path: &str) -> Option<&'static str> {
+    if path.contains("##") {
+        Some("two # in a row")
+    } else if path.contains('$') {
+        Some("a $")
+    } else if path.contains("{{") {
+        Some("{{")
+    } else if path.contains('\\') {
+        Some("a \\")
+    } else if path.contains(['\n', '\r']) {
+        Some("a line break")
+    } else if path.trim() != path {
+        Some("a space at either end")
+    } else {
+        None
+    }
+}
+
+/// A value as hyprlang reads it back: a lone `#` would start a comment.
+fn escaped(value: &str) -> String {
+    value.replace('#', "##")
+}
+
 /// The file with a block for each of `set` (replacing that monitor's, or added at the end), the
-/// rest as it was.
+/// rest as it was. A picture whose path hyprlang can't hold (`unwritable`) isn't written: its
+/// monitor keeps its block.
 pub fn conf_text(text: &str, set: &[Entry]) -> String {
     let found = blocks(text);
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let set: Vec<&Entry> = set.iter().filter(|e| unwritable(&e.path).is_none()).collect();
     let block = |e: &Entry| {
         let mut b = format!(
             "wallpaper {{\n    monitor = {}\n    path = {}\n    fit_mode = {}\n",
-            e.monitor, e.path, e.fit_mode
+            escaped(&e.monitor),
+            escaped(&e.path),
+            e.fit_mode
         );
         if e.timeout > 0 {
             b.push_str(&format!("    timeout = {}\n", e.timeout));
@@ -217,5 +287,51 @@ mod tests {
             conf_text("", &[Entry::picture("DP-1", "/a", "cover")]),
             "wallpaper {\n    monitor = DP-1\n    path = /a\n    fit_mode = cover\n}\n"
         );
+    }
+
+    #[test]
+    fn a_hash_in_a_path_is_written_doubled() {
+        // hyprlang ends a value at a lone `#` (a comment) and reads `##` as one `#`.
+        let new = conf_text("", &[Entry::picture("DP-1", "/w/no#1.jpg", "cover")]);
+        assert!(new.contains("    path = /w/no##1.jpg\n"), "{new}");
+        assert_eq!(entries(&new), [Entry::picture("DP-1", "/w/no#1.jpg", "cover")]);
+        // In the user's own lines too: `##` is a `#`, and a comment still ends the value.
+        let mine = "wallpaper {\n    monitor = DP-1\n    path = /w/a##1.jpg # mine\n}\n";
+        assert_eq!(entries(mine), [Entry::picture("DP-1", "/w/a#1.jpg", "cover")]);
+        // hyprlang takes the character after `##` as it is: `####x` is `##`, then a comment.
+        let run = "wallpaper {\n    monitor = DP-1\n    path = /w/two####x.jpg\n}\n";
+        assert_eq!(entries(run)[0].path, "/w/two##");
+        // A line that starts with `#` is a comment, `##` or not.
+        assert!(entries("## wallpaper {\n").is_empty() && !splash("##splash = true\n"));
+    }
+
+    #[test]
+    fn a_brace_in_a_path_stays_in_its_block() {
+        let new = conf_text("", &[Entry::picture("DP-1", "/w/a}b.jpg", "tile")]);
+        assert_eq!(entries(&new), [Entry::picture("DP-1", "/w/a}b.jpg", "tile")]);
+        assert_eq!(
+            conf_text(&new, &[Entry::picture("DP-1", "/w/c.jpg", "cover")]),
+            "wallpaper {\n    monitor = DP-1\n    path = /w/c.jpg\n    fit_mode = cover\n}\n"
+        );
+        // A folder ending in `}`, and a splash line after it, which stays the file's own.
+        let new = conf_text("", &[Entry::picture("DP-1", "/w/old}", "cover")]);
+        let new = with_splash(&format!("{new}splash = true\n"), false);
+        assert!(!splash(&new) && new.ends_with("}\nsplash = false\n"), "{new}");
+        assert_eq!(entries(&new)[0].path, "/w/old}");
+    }
+
+    #[test]
+    fn paths_hyprlang_changes_are_not_written() {
+        for path in ["/w/a##b.jpg", "/w/$HOME.jpg", "/w/a{{b}}.jpg", "/w/back\\", "/w/a\nb.jpg", "/w/a.jpg "] {
+            assert!(unwritable(path).is_some(), "{path}");
+            let new = conf_text(
+                "wallpaper {\n    monitor = DP-1\n    path = /w/old.jpg\n}\n",
+                &[Entry::picture("DP-1", path, "cover")],
+            );
+            assert_eq!(entries(&new), [Entry::picture("DP-1", "/w/old.jpg", "cover")], "{path}");
+        }
+        for path in ["/w/#1 alps.jpg", "/w/a}b{c.jpg", "/w/Trip, 2024.jpg", "/w/it's.jpg"] {
+            assert_eq!(unwritable(path), None, "{path}");
+        }
     }
 }

@@ -106,9 +106,12 @@ impl Monitor {
     }
 
     /// The rule selector that finds this monitor wherever it's plugged in: by description when
-    /// it has a serial, else by connector.
-    pub fn selector(&self) -> String {
-        if self.serial.is_empty() || self.description.is_empty() {
+    /// it has a serial, else by connector. Two monitors of one make, model and serial (many
+    /// models give every unit the same serial) share a description, which would name both: those
+    /// go by connector. `all` is every monitor Hyprland has.
+    pub fn selector(&self, all: &[Monitor]) -> String {
+        let twin = all.iter().any(|o| o.name != self.name && o.description == self.description);
+        if self.serial.is_empty() || self.description.is_empty() || twin {
             self.name.clone()
         } else {
             format!("desc:{}", self.description)
@@ -182,9 +185,15 @@ impl Version {
         Some((parts.next()?.ok()?, parts.next()?.ok()?, parts.next().and_then(Result::ok).unwrap_or(0)))
     }
 
-    /// Hyprland 0.55 and later are configured in Lua; older ones in hyprlang.
+    /// Hyprland 0.55 and later are configured in Lua; older ones in hyprlang. Which one a
+    /// running Hyprland reads is `reads_lua`'s to say.
     pub fn lua(&self) -> bool {
-        self.numbers().is_none_or(|(major, minor, _)| major > 0 || minor >= 55)
+        self.at_least(0, 55)
+    }
+
+    /// This version or a later one; a version Hyprland didn't give counts as the newest.
+    pub fn at_least(&self, major: u32, minor: u32) -> bool {
+        self.numbers().is_none_or(|(a, b, _)| (a, b) >= (major, minor))
     }
 }
 
@@ -216,12 +225,24 @@ mod tests {
         assert_eq!((g8.name.as_str(), g8.serial.as_str()), ("DP-5", "HNAY500052"));
         assert_eq!(g8.mode(), Mode { width: 3840, height: 2160, refresh: 240_000 });
         assert_eq!(g8.logical_size(), (2560, 1440));
-        assert_eq!(g8.selector(), "desc:Samsung Electric Company Odyssey G81SF HNAY500052");
+        assert_eq!(g8.selector(&monitors), "desc:Samsung Electric Company Odyssey G81SF HNAY500052");
         assert_eq!(g8.modes().len(), 6);
         assert!(g8.focused && g8.hardware_details.hdr);
         assert_eq!(g8.inches(), Some(27));
         assert_eq!(monitors[3].logical_size(), (2560, 1440));
         assert_eq!(monitors[0].mode().rule(), "2560x1440@239.76");
+    }
+
+    /// Two monitors of one make, model and serial go by their connectors; others stay by
+    /// description.
+    #[test]
+    fn twins_go_by_connector() {
+        let mut monitors = fixture();
+        monitors[1].description = monitors[0].description.clone();
+        monitors[1].serial = monitors[0].serial.clone();
+        assert_eq!(monitors[0].selector(&monitors), monitors[0].name);
+        assert_eq!(monitors[1].selector(&monitors), monitors[1].name);
+        assert!(monitors[2].selector(&monitors).starts_with("desc:"));
     }
 
     #[test]
@@ -264,6 +285,7 @@ mod tests {
         assert!(v("0.57.0").lua());
         assert!(v("0.55.2").lua());
         assert!(!v("0.54.3").lua());
+        assert!(v("0.56.2").at_least(0, 56) && !v("0.55.4").at_least(0, 56) && v("").at_least(0, 56));
         assert_eq!(Version { version: String::new(), tag: "v0.48.1".into() }.numbers(), Some((0, 48, 1)));
     }
 }

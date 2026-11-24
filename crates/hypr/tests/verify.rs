@@ -1,6 +1,6 @@
 //! The files Lituus writes, checked by a real Hyprland (`Hyprland --verify-config`): the one on
 //! the PATH, or the command in LITUUS_HYPRLAND (`{dir}` in it is the config folder), such as a
-//! container with Hyprland. Skipped when there's neither.
+//! container with Hyprland. Skipped when there's neither, unless LITUUS_REQUIRE_HYPRLAND is set.
 
 use std::process::Command;
 
@@ -101,6 +101,12 @@ fn hyprland_accepts_the_lua_file() {
     let dir = std::env::temp_dir().join(format!("lituus-verify-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let Some(mut verify) = hyprland(&dir) else {
+        // CI's hyprland job installs it, so skipping there would pass without checking anything.
+        // Other runs (the test job, the AUR package's check()) have none.
+        assert!(
+            std::env::var_os("LITUUS_REQUIRE_HYPRLAND").is_none(),
+            "LITUUS_REQUIRE_HYPRLAND is set, but there's no Hyprland to check with"
+        );
         eprintln!("no Hyprland to check with: skipped");
         return;
     };
@@ -125,9 +131,15 @@ fn hyprland_accepts_the_lua_file() {
     text = with_section(&text, "Input", &input().file(true));
     // The live forms too: they're what `hyprctl eval` runs.
     for r in &rules {
-        text += &r.lua_live();
+        text += &r.lua_live(Some(-1));
         text += "\n";
     }
+    for w in &workspaces {
+        text += &w.lua_live();
+        text += "\n";
+    }
+    text += &WorkspaceRule::lua_unbind("4");
+    text += "\n";
     for statement in input().lua_live() {
         text += &statement;
         text += "\n";

@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::Dirs;
+use crate::{Dirs, exec};
 
 /// A desktop file's lines, edited key by key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -26,53 +26,92 @@ impl DesktopFile {
         t
     }
 
-    /// The lines of a group: (first line after its header, end).
-    fn group(&self, group: &str) -> Option<(usize, usize)> {
+    /// The lines of a group, in each place it is (a file may have it twice; GLib reads them as
+    /// one, the later's keys winning): (first line after its header, end).
+    fn groups(&self, group: &str) -> Vec<(usize, usize)> {
         let header = format!("[{group}]");
-        let start = self.lines.iter().position(|l| l.trim() == header)? + 1;
-        let end =
-            self.lines[start..].iter().position(|l| l.trim().starts_with('[')).map_or(self.lines.len(), |p| start + p);
-        Some((start, end))
-    }
-
-    pub fn get(&self, group: &str, key: &str) -> Option<String> {
-        let (start, end) = self.group(group)?;
-        self.lines[start..end].iter().find_map(|l| {
-            let (k, v) = l.split_once('=')?;
-            (k.trim() == key).then(|| v.trim().to_owned())
-        })
-    }
-
-    /// Sets a key (`None` removes it); a new key goes after the group's last key.
-    pub fn set(&mut self, group: &str, key: &str, value: Option<&str>) {
-        let (start, end) = match self.group(group) {
-            Some(g) => g,
-            None => {
-                if value.is_none() {
-                    return;
-                }
-                if self.lines.last().is_some_and(|l| !l.trim().is_empty()) {
-                    self.lines.push(String::new());
-                }
-                self.lines.push(format!("[{group}]"));
-                (self.lines.len(), self.lines.len())
+        let mut out = Vec::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.trim() == header {
+                let start = i + 1;
+                let end = self.lines[start..]
+                    .iter()
+                    .position(|l| l.trim().starts_with('['))
+                    .map_or(self.lines.len(), |p| start + p);
+                out.push((start, end));
             }
+        }
+        out
+    }
+
+    /// The lines that set `key` in a group, and with `translations` its `key[de]` lines too.
+    fn key_lines(&self, group: &str, key: &str, translations: bool) -> Vec<usize> {
+        let is_key = |k: &str| {
+            k == key || (translations && k.strip_prefix(key).is_some_and(|r| r.starts_with('[') && r.ends_with(']')))
         };
-        let at = (start..end).find(|&i| self.lines[i].split_once('=').is_some_and(|(k, _)| k.trim() == key));
-        match (at, value) {
-            (Some(i), Some(v)) => self.lines[i] = format!("{key}={v}"),
-            (Some(i), None) => {
-                self.lines.remove(i);
+        self.groups(group)
+            .into_iter()
+            .flat_map(|(start, end)| start..end)
+            .filter(|&i| self.lines[i].split_once('=').is_some_and(|(k, _)| is_key(k.trim())))
+            .collect()
+    }
+
+    /// A key's value; the last one when the file has it twice, as GLib and `desktop::parse` read it.
+    pub fn get(&self, group: &str, key: &str) -> Option<String> {
+        let i = *self.key_lines(group, key, false).last()?;
+        self.lines[i].split_once('=').map(|(_, v)| v.trim().to_owned())
+    }
+
+    /// Sets a key (`None` removes it); a new key goes after the group's last key. A new value
+    /// also removes the key's translations (`Name[de]`): a launcher in German would show those
+    /// instead. The same value changes nothing, translations included.
+    pub fn set(&mut self, group: &str, key: &str, value: Option<&str>) {
+        if self.get(group, key).as_deref() == value {
+            return;
+        }
+        if self.groups(group).is_empty() {
+            if self.lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                self.lines.push(String::new());
+            }
+            self.lines.push(format!("[{group}]"));
+        }
+        // The last line of the key is changed; the rest go: its translations, and any earlier
+        // line of it, which GLib reads as overwritten.
+        let mut gone = self.key_lines(group, key, true);
+        let last = self.key_lines(group, key, false).last().copied();
+        match (last, value) {
+            (Some(i), Some(v)) => {
+                self.lines[i] = format!("{key}={v}");
+                gone.retain(|&g| g != i);
             }
             (None, Some(v)) => {
-                let mut last = end;
-                while last > start && self.lines[last - 1].trim().is_empty() {
-                    last -= 1;
+                let (start, end) = *self.groups(group).last().expect("the group was added");
+                let mut at = end;
+                while at > start && self.lines[at - 1].trim().is_empty() {
+                    at -= 1;
                 }
-                self.lines.insert(last, format!("{key}={v}"));
+                self.lines.insert(at, format!("{key}={v}"));
+                for g in &mut gone {
+                    if *g >= at {
+                        *g += 1;
+                    }
+                }
             }
-            (None, None) => {}
+            (_, None) => {}
         }
+        for i in gone.into_iter().rev() {
+            self.lines.remove(i);
+        }
+    }
+
+    /// The groups of the file's quick actions ("Desktop Action new").
+    pub fn actions(&self) -> Vec<String> {
+        self.lines
+            .iter()
+            .filter_map(|l| l.trim().strip_prefix('[')?.strip_suffix(']'))
+            .filter(|g| g.starts_with("Desktop Action "))
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn set_bool(&mut self, key: &str, on: bool) {
@@ -94,12 +133,30 @@ pub fn own_path(dirs: &Dirs, id: &str) -> PathBuf {
     dirs.data_home.join("applications").join(id)
 }
 
+/// Where a change to an app goes: its own file where it is (Wine writes them in subfolders, as
+/// `wine/Programs/Foo.desktop` for the id `wine-Programs-Foo.desktop`), else a new copy at
+/// applications/<id>. A second file with the same id would be one Lituus doesn't read, and
+/// launchers would pick either.
+pub fn own_file(dirs: &Dirs, id: &str, current: &Path) -> PathBuf {
+    if current.starts_with(dirs.data_home.join("applications")) { current.to_owned() } else { own_path(dirs, id) }
+}
+
 /// Changes an app (by id; `current` is the file it's read from now), in the user's own copy.
+/// A copy that ends up the same as the package's file is removed instead, so the app follows
+/// its package again; the file the app is read from is returned.
 pub fn change(dirs: &Dirs, id: &str, current: &Path, edit: impl FnOnce(&mut DesktopFile)) -> std::io::Result<PathBuf> {
-    let own = own_path(dirs, id);
+    let own = own_file(dirs, id, current);
     let text = std::fs::read_to_string(if own.is_file() { &own } else { current })?;
     let mut file = DesktopFile::parse(&text);
     edit(&mut file);
+    if let Some(package) = crate::desktop::package_file(dirs, id)
+        && std::fs::read_to_string(&package).is_ok_and(|p| DesktopFile::parse(&p) == file)
+    {
+        if own.is_file() {
+            std::fs::remove_file(&own)?;
+        }
+        return Ok(package);
+    }
     if let Some(dir) = own.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -107,12 +164,14 @@ pub fn change(dirs: &Dirs, id: &str, current: &Path, edit: impl FnOnce(&mut Desk
     Ok(own)
 }
 
-/// Back to the package's file: the user's copy goes (only when there is a package's file).
+/// Back to the package's file: the user's copy goes (only when there is a package's file),
+/// also from a subfolder.
 pub fn restore(dirs: &Dirs, id: &str) -> std::io::Result<()> {
     if crate::desktop::package_file(dirs, id).is_none() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "there's no package's file to go back to"));
     }
-    std::fs::remove_file(own_path(dirs, id))
+    let own = crate::desktop::find(dirs, id).filter(|a| a.own).map_or_else(|| own_path(dirs, id), |a| a.path);
+    std::fs::remove_file(own)
 }
 
 /// What a copy changes from the package's file: (key, the package's value, the copy's), for the
@@ -149,14 +208,31 @@ pub fn differences(package: &str, own: &str) -> Vec<(String, String, String)> {
     out
 }
 
-/// The program a command runs: its first word, without env and quotes.
-pub fn program(exec: &str) -> String {
-    let mut words = exec.split_whitespace().map(|w| w.trim_matches('"'));
-    let mut w = words.next().unwrap_or_default();
-    if w == "env" || w.ends_with("/env") {
-        w = words.find(|w| !w.contains('=') && !w.starts_with('-')).unwrap_or_default();
+/// Where the program is among a command's words: the first, or after `env` and its settings.
+fn program_at(words: &[exec::Word]) -> Option<usize> {
+    let first = words.first()?;
+    if first.text == "env" || first.text.ends_with("/env") {
+        return words.iter().skip(1).position(|w| !w.text.contains('=') && !w.text.starts_with('-')).map(|p| p + 1);
     }
-    w.to_owned()
+    Some(0)
+}
+
+/// The program a command runs: its first word, after `env`, unquoted as the spec says.
+pub fn program(exec: &str) -> String {
+    let words = exec::words(exec);
+    program_at(&words).map(|i| words[i].text.clone()).unwrap_or_default()
+}
+
+/// The command with `program` in its program's place, quoted as Exec needs it.
+pub fn with_program(exec: &str, program: &str) -> String {
+    let words = exec::words(exec);
+    match program_at(&words) {
+        Some(i) => {
+            let at = &words[i].span;
+            format!("{}{}{}", &exec[..at.start], exec::quote(program), &exec[at.end..])
+        }
+        None => exec::quote(program),
+    }
 }
 
 /// A program by name on PATH, or its path.
@@ -174,14 +250,17 @@ pub fn find_program(program: &str, path: &str) -> Option<PathBuf> {
 /// An Electron app: the command names electron, its program is a script that runs electron, or
 /// Chromium's files lie beside it.
 pub fn is_electron(exec: &str, path: &str) -> bool {
+    use std::io::Read;
     if exec.contains("electron") {
         return true;
     }
     let Some(p) = find_program(&program(exec), path) else { return false };
     let real = p.canonicalize().unwrap_or(p);
-    if let Ok(bytes) = std::fs::read(&real)
-        && bytes.starts_with(b"#!")
-        && String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).contains("electron")
+    // Only a script's first lines matter; programs are often hundreds of MB (Chromium, AppImages).
+    let mut start = Vec::new();
+    if std::fs::File::open(&real).and_then(|f| f.take(4096).read_to_end(&mut start)).is_ok()
+        && start.starts_with(b"#!")
+        && String::from_utf8_lossy(&start).contains("electron")
     {
         return true;
     }
@@ -190,17 +269,28 @@ pub fn is_electron(exec: &str, path: &str) -> bool {
 
 pub const WAYLAND_FLAG: &str = "--ozone-platform-hint=auto";
 
-/// The command with Electron's Wayland flag after its program, or without it.
+/// The command with Electron's Wayland flag after its program, or without it. The rest is kept
+/// as written, quotes and spaces in them included.
 pub fn with_wayland(exec: &str, on: bool) -> String {
-    let words: Vec<&str> = exec.split_whitespace().filter(|w| *w != WAYLAND_FLAG).collect();
-    if !on || words.is_empty() {
-        return words.join(" ");
+    let words = exec::words(exec);
+    let program = if on { program_at(&words) } else { None };
+    let mut out = String::with_capacity(exec.len() + WAYLAND_FLAG.len() + 1);
+    let mut copied = 0;
+    for (i, w) in words.iter().enumerate() {
+        if w.text == WAYLAND_FLAG {
+            // The flag goes, with the space before it.
+            copied = w.span.end;
+            continue;
+        }
+        out.push_str(&exec[copied..w.span.end]);
+        copied = w.span.end;
+        if Some(i) == program {
+            out.push(' ');
+            out.push_str(WAYLAND_FLAG);
+        }
     }
-    let at = if program(exec) != words[0] { words.iter().position(|w| *w == program(exec)).unwrap_or(0) } else { 0 };
-    let mut out: Vec<&str> = words[..=at].to_vec();
-    out.push(WAYLAND_FLAG);
-    out.extend(&words[at + 1..]);
-    out.join(" ")
+    out.push_str(&exec[copied..]);
+    out.trim().to_owned()
 }
 
 #[cfg(test)]
@@ -245,6 +335,87 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_that_changes_nothing_goes() {
+        // Hidden, then shown again: the copy would be the package's file, and the app would stop
+        // following its package.
+        let root = test_dir::with("edit-back", &[("usr/share/applications/firefox.desktop", FIREFOX)]);
+        let dirs = test_dir::dirs(&root);
+        let system = root.join("usr/share/applications/firefox.desktop");
+        let own = change(&dirs, "firefox.desktop", &system, |f| f.set_bool("NoDisplay", true)).unwrap();
+        assert!(own.is_file());
+        let now = change(&dirs, "firefox.desktop", &own, |f| f.set_bool("NoDisplay", false)).unwrap();
+        assert_eq!(now, system);
+        assert!(!own.exists());
+        // The same name again changes nothing either.
+        change(&dirs, "firefox.desktop", &system, |f| f.set(ENTRY, "Name", Some("Firefox"))).unwrap();
+        assert!(!own.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_own_file_in_a_subfolder_is_changed_where_it_is() {
+        // As Wine writes them: the id is wine-Programs-Foo.desktop.
+        let root = test_dir::with(
+            "edit-sub",
+            &[(
+                "home/.local/share/applications/wine/Programs/Foo.desktop",
+                "[Desktop Entry]\nType=Application\nName=Foo\nExec=wine foo.exe\n",
+            )],
+        );
+        let dirs = test_dir::dirs(&root);
+        let apps = crate::desktop::all(&dirs);
+        assert_eq!((apps.len(), apps[0].id.as_str(), apps[0].own), (1, "wine-Programs-Foo.desktop", true));
+        let current = apps[0].path.clone();
+        let written = change(&dirs, &apps[0].id, &current, |f| f.set_bool("NoDisplay", true)).unwrap();
+        assert!(
+            !root.join("home/.local/share/applications/wine-Programs-Foo.desktop").exists(),
+            "a second file with the same id was written"
+        );
+        assert_eq!(written, current);
+        assert!(crate::desktop::all(&dirs)[0].no_display);
+        // A copy of a package's file in a subfolder (kde/) is changed and restored where it is.
+        test_dir::write(&root, "usr/share/applications/kde/dolphin.desktop", FIREFOX);
+        test_dir::write(&root, "home/.local/share/applications/kde/dolphin.desktop", FIREFOX);
+        let own = root.join("home/.local/share/applications/kde/dolphin.desktop");
+        assert_eq!(change(&dirs, "kde-dolphin.desktop", &own, |f| f.set_bool("NoDisplay", true)).unwrap(), own);
+        restore(&dirs, "kde-dolphin.desktop").unwrap();
+        assert!(!own.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_new_value_drops_the_keys_translations() {
+        // A launcher in German shows Name[de], not Name (the spec's "Localized values for keys").
+        let vim = "[Desktop Entry]\nType=Application\nName=Vim\nName[de]=Vim\nName[sr@latin]=Vim\nComment=Edit text files\nComment[de]=Textdateien bearbeiten\nKeywords=Text;editor;\nKeywords[de]=Text;Editor;\nExec=vim %F\n\n[Desktop Action new]\nName=New\nName[de]=Neu\n";
+        let mut f = DesktopFile::parse(vim);
+        // The same value changes nothing.
+        f.set(ENTRY, "Name", Some("Vim"));
+        assert_eq!(f.text(), vim);
+        f.set(ENTRY, "Name", Some("My Editor"));
+        f.set(ENTRY, "Keywords", Some("code;"));
+        f.set(ENTRY, "Comment", None);
+        assert_eq!(
+            f.text(),
+            "[Desktop Entry]\nType=Application\nName=My Editor\nKeywords=code;\nExec=vim %F\n\n[Desktop Action new]\nName=New\nName[de]=Neu\n"
+        );
+    }
+
+    #[test]
+    fn a_duplicated_key_is_changed_where_it_counts() {
+        // Scripts that append a line: GLib (and desktop::parse) read the last one.
+        let mut f = DesktopFile::parse("[Desktop Entry]\nType=Application\nName=A\nNoDisplay=false\nNoDisplay=true\n");
+        assert_eq!(f.get(ENTRY, "NoDisplay").as_deref(), Some("true"));
+        f.set(ENTRY, "NoDisplay", None);
+        let app = crate::desktop::parse("a.desktop", Path::new("/a.desktop"), &f.text()).unwrap();
+        assert!(!app.no_display, "{}", f.text());
+        // A group written twice is one group: its key is set once, in the later one.
+        let mut f = DesktopFile::parse("[Desktop Entry]\nName=A\nExec=a\n[Desktop Entry]\nExec=b\n");
+        assert_eq!(f.get(ENTRY, "Exec").as_deref(), Some("b"));
+        f.set(ENTRY, "Exec", Some("c"));
+        assert_eq!(f.text(), "[Desktop Entry]\nName=A\n[Desktop Entry]\nExec=c\n");
+    }
+
+    #[test]
     fn electron_and_wayland() {
         assert_eq!(program("env GDK_BACKEND=x11 obsidian %U"), "obsidian");
         assert!(is_electron("electron37 /usr/lib/obsidian/app.asar %U", ""));
@@ -252,5 +423,47 @@ mod tests {
         assert_eq!(with_wayland("obsidian %U", true), "obsidian --ozone-platform-hint=auto %U");
         assert_eq!(with_wayland("env A=1 obsidian %U", true), "env A=1 obsidian --ozone-platform-hint=auto %U");
         assert_eq!(with_wayland("obsidian --ozone-platform-hint=auto %U", false), "obsidian %U");
+    }
+
+    #[test]
+    fn a_quoted_program_with_a_space() {
+        assert_eq!(program("\"/home/u/My Apps/Tool.AppImage\" %U"), "/home/u/My Apps/Tool.AppImage");
+        assert_eq!(program("env WINEPREFIX=\"/home/u/My Games/pfx\" wine start.exe"), "wine");
+        assert_eq!(
+            with_wayland("\"/opt/Electron Fiddle/electron-fiddle\" %U", true),
+            "\"/opt/Electron Fiddle/electron-fiddle\" --ozone-platform-hint=auto %U"
+        );
+        // Two spaces inside a quoted argument are part of it.
+        assert_eq!(with_wayland("app --title \"a  b\" %U", true), "app --ozone-platform-hint=auto --title \"a  b\" %U");
+        // Another program in its place, quoted when its path needs it.
+        assert_eq!(
+            with_program("\"/Apps/Cursor-0.42.AppImage\" --no-sandbox %U", "/Apps/Cursor 0.45.AppImage"),
+            "\"/Apps/Cursor 0.45.AppImage\" --no-sandbox %U"
+        );
+        assert_eq!(with_program("env A=1 /old/app %U", "/new/app"), "env A=1 /new/app %U");
+    }
+
+    #[test]
+    fn the_electron_check_reads_only_the_start_of_a_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = test_dir::with("electron-read", &[]);
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("bigapp");
+        // Sparse: 64 MiB of zeros that take no disk space.
+        std::fs::File::create(&bin).unwrap().set_len(64 << 20).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rchar = || {
+            std::fs::read_to_string("/proc/self/io")
+                .unwrap()
+                .lines()
+                .find_map(|l| l.strip_prefix("rchar: ")?.trim().parse::<u64>().ok())
+                .unwrap()
+        };
+        let before = rchar();
+        assert!(!is_electron("bigapp %U", d.to_str().unwrap()));
+        // The process's own count: other tests read too, so the limit is generous.
+        let read = rchar() - before;
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(read < 1 << 20, "is_electron read {read} bytes of a 64 MiB program to look at its first line");
     }
 }

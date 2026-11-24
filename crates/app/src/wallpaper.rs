@@ -12,8 +12,8 @@
 //! Lituus restarts it); with awww, Lituus's own process changes the picture, while it runs (in the
 //! background, or the tray).
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -191,7 +191,7 @@ fn read(env: &Env) -> Read {
                     }
                 })
                 .collect(),
-            h.version().map(|v| v.lua()).unwrap_or(true),
+            lituus_hypr::reads_lua(h.version().ok().as_ref(), &lituus_hypr::config_dir()),
         ),
         Err(_) => (Vec::new(), true),
     };
@@ -203,8 +203,16 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
     let weak = weak.clone();
     std::thread::spawn(move || {
         let read = read(&Env::from_env());
-        let _ = weak.clone().upgrade_in_event_loop(move |_| {
-            update(&weak, move |app| loaded(&mut app.wallpapers, read));
+        let _ = weak.clone().upgrade_in_event_loop(move |window| {
+            update(&weak, move |app| {
+                loaded(&mut app.wallpapers, read);
+                forget_unshown(&mut app.wallpapers);
+            });
+            // Only for the page in a window that's shown: the slideshow, in the background or
+            // on another page, makes none.
+            if window.get_page() != "wallpaper" || !slint::ComponentHandle::window(&window).is_visible() {
+                return;
+            }
             // The pictures shown are known only now: the first time the page opens, their
             // thumbnails weren't asked for with the folder's.
             let shown: Vec<PathBuf> =
@@ -229,15 +237,18 @@ pub fn loaded(state: &mut State, read: Read) {
 /// Opens the page: the settings from config.toml, the folder's pictures, and their thumbnails.
 pub fn open(weak: &slint::Weak<MainWindow>, state: &mut State) {
     state.settings = config::load(&state.config_path()).wallpaper;
-    load_folder(weak, state);
+    load_folder(Some(weak), state);
     refresh(weak);
 }
 
-/// Reads the folder and makes the thumbnails of its pictures (and of the pictures shown), on a
-/// thread; each batch of them shows as it's done.
-fn load_folder(weak: &slint::Weak<MainWindow>, state: &mut State) {
+/// Reads the folder, drops the thumbnails of the one before, and makes those of its pictures
+/// (and of the pictures shown), on a thread; each batch of them shows as it's done. In tests (no
+/// window), only reads it.
+fn load_folder(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
     let dir = state.folder_path();
     state.folder = lituus_wallpaper::read_folder(&dir, state.settings.subfolders).ok();
+    forget_unshown(state);
+    let Some(weak) = weak else { return };
     let mut wanted: Vec<PathBuf> = Vec::new();
     if let Some(f) = &state.folder {
         wanted.extend(f.pictures.iter().map(|p| p.path.clone()));
@@ -248,10 +259,45 @@ fn load_folder(weak: &slint::Weak<MainWindow>, state: &mut State) {
 }
 
 thread_local! {
-    /// Thumbnails made so far, by picture: the grid's, and the hero's larger ones.
+    /// Thumbnails made so far, by picture: the grid's, and the hero's larger ones. Only those
+    /// the page shows are kept (`shown_thumbnails`), and none once it's left: 0.6 MB each in the
+    /// grid and 3.7 MB in the hero, for every picture of every folder opened and every one the
+    /// slideshow showed, would otherwise stay until Lituus quits.
     static THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
     static HERO_THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
+    /// The page was rendered last time: leaving it drops its thumbnails.
+    static PAGE_OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The thumbnails being made, (picture, hero's): asked for again before they're done (the
+    /// page left and opened again, or the folder's and the pictures shown at its first open),
+    /// they aren't made twice at once.
+    static MAKING: RefCell<HashSet<(PathBuf, bool)>> = RefCell::new(HashSet::new());
 }
+
+/// The pictures whose thumbnails the page shows: in the grid, the folder's pictures, its
+/// subfolders' first ones, and the pictures shown (the hero shows the grid's until its own is
+/// made); in the hero, the pictures shown.
+fn shown_thumbnails(folder: Option<&Folder>, current: &[(String, PathBuf)]) -> (HashSet<PathBuf>, HashSet<PathBuf>) {
+    let hero: HashSet<PathBuf> = current.iter().map(|(_, p)| p.clone()).collect();
+    let mut grid = hero.clone();
+    if let Some(f) = folder {
+        grid.extend(f.pictures.iter().map(|p| p.path.clone()));
+        grid.extend(f.subfolders.iter().flat_map(|s| s.first.iter().cloned()));
+    }
+    (grid, hero)
+}
+
+/// Drops the thumbnails the page doesn't show any more: another folder's, and those of pictures
+/// no longer shown.
+fn forget_unshown(state: &mut State) {
+    let (grid, hero) = shown_thumbnails(state.folder.as_ref(), &state.current);
+    THUMBS.with(|t| t.borrow_mut().retain(|p, _| grid.contains(p)));
+    HERO_THUMBS.with(|t| t.borrow_mut().retain(|p, _| hero.contains(p)));
+    state.sizes.retain(|p, _| grid.contains(p));
+}
+
+/// How large the cache of thumbnails grows, at most: about 6,000 of the grid's, or 1,500 of the
+/// hero's.
+const CACHE_LIMIT: u64 = 256 << 20;
 
 /// The cache of thumbnails: ~/.cache/lituus/thumbnails.
 fn cache_dir() -> PathBuf {
@@ -267,7 +313,14 @@ type Made = (PathBuf, Option<SharedPixelBuffer<Rgba8Pixel>>, Option<(u32, u32)>)
 
 fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) {
     let store = if hero { &HERO_THUMBS } else { &THUMBS };
-    let wanted: Vec<PathBuf> = store.with(|t| wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect());
+    let wanted: Vec<PathBuf> = store.with(|t| {
+        MAKING.with(|making| {
+            let mut making = making.borrow_mut();
+            let mut wanted: Vec<PathBuf> = wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect();
+            wanted.retain(|p| making.insert((p.clone(), hero)));
+            wanted
+        })
+    });
     let (w, h) = if hero { HERO_THUMB } else { THUMB };
     if wanted.is_empty() {
         return;
@@ -275,6 +328,9 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
     let weak = weak.clone();
     std::thread::spawn(move || {
         let cache = cache_dir();
+        // Cleared out once a run, before the first thumbnails (the others wait for it).
+        static PRUNED: std::sync::Once = std::sync::Once::new();
+        PRUNED.call_once(|| lituus_wallpaper::prune_thumbnails(&cache, CACHE_LIMIT));
         for batch in wanted.chunks(8) {
             let done: Vec<Made> = batch
                 .iter()
@@ -285,16 +341,34 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
                 })
                 .collect();
             let w = weak.clone();
-            let _ = weak.upgrade_in_event_loop(move |_| {
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                // The page was left, or shows another folder, since they were asked for.
+                let open = window.get_page() == "wallpaper";
                 update(&w, move |app| {
+                    MAKING.with(|m| {
+                        let mut m = m.borrow_mut();
+                        for (path, _, _) in &done {
+                            m.remove(&(path.clone(), hero));
+                        }
+                    });
+                    let (grid, shown) = shown_thumbnails(app.wallpapers.folder.as_ref(), &app.wallpapers.current);
+                    let wanted = if hero { shown } else { grid };
                     let store = if hero { &HERO_THUMBS } else { &THUMBS };
                     store.with(|t| {
                         let mut t = t.borrow_mut();
-                        for (path, pixels, size) in done {
+                        for (path, pixels, size) in done.into_iter().filter(|(p, _, _)| open && wanted.contains(p)) {
                             if let Some(size) = size {
                                 app.wallpapers.sizes.insert(path.clone(), size);
                             }
-                            t.insert(path, pixels.map(Image::from_rgba8).unwrap_or_default());
+                            // A failure doesn't take the place of one made before.
+                            match pixels {
+                                Some(pixels) => {
+                                    t.insert(path, Image::from_rgba8(pixels));
+                                }
+                                None => {
+                                    t.entry(path).or_default();
+                                }
+                            }
                         }
                     });
                 })
@@ -356,6 +430,12 @@ fn needs_takeover(state: &State) -> bool {
 /// asking once). `after`: the command after a change runs, with the last picture.
 fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut sets: Vec<Set>, after: bool) {
     let Some(program) = state.program() else { return };
+    // Shown now but gone at hyprpaper's next start, or a file it can't read at all: not set.
+    let unwritable = sets.iter().find_map(|s| lituus_wallpaper::hyprpaper_unwritable(&s.path.display().to_string()));
+    if let (Program::Hyprpaper, Some(why)) = (program, unwritable) {
+        state.message = Some(cant_hold(why));
+        return;
+    }
     if program == Program::Hyprpaper && needs_takeover(state) {
         state.takeover = Some(Pending::Pictures(sets, after));
         return;
@@ -395,8 +475,10 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
         }
         (lituus_wallpaper::hyprpaper_conf(&state.hypr_dir()), entries)
     });
-    let after = if after { state.settings.after.trim().to_owned() } else { String::new() };
+    let command = if after { state.settings.after.trim().to_owned() } else { String::new() };
+    let file = sets.last().map(|s| s.path.clone());
     let env = state.env();
+    let after_env = env.clone();
     let work = move || -> Result<(), String> {
         for set in &sets {
             lituus_wallpaper::set(&env, program, set, &monitors)
@@ -405,9 +487,14 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
         if let Some((path, entries)) = conf {
             write_conf(&path, &entries).map_err(|e| format!("Set, but hyprpaper.conf couldn't be saved: {e}."))?;
         }
-        run_after(&env, &after, sets.last().map(|s| s.path.as_path()))
+        Ok(())
     };
-    run(weak, state, work);
+    run(weak, state, work, Some(Box::new(move || run_after(&after_env, &command, file.as_deref()))));
+}
+
+/// The message for a path hyprpaper.conf can't hold (`hyprpaper_unwritable`).
+fn cant_hold(why: &str) -> String {
+    format!("hyprpaper.conf can't hold a path with {why}: rename it.")
 }
 
 /// Runs the command after a change, if there is one.
@@ -421,25 +508,39 @@ fn run_after(env: &Env, after: &str, file: Option<&Path>) -> Result<(), String> 
     }
 }
 
-/// Does `work` on a thread, then shows its failure, if any, and reads what's shown again; in
-/// tests (no window), at once.
+/// The command after a change, once the picture is set.
+type After = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// Does `work` on a thread, then shows its failure, if any, and reads what's shown again; then
+/// runs `after`, if `work` went well, and shows its failure. The page doesn't wait for `after`,
+/// which may take long or never end. In tests (no window), all at once.
 fn run(
     weak: Option<&slint::Weak<MainWindow>>,
     state: &mut State,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    after: Option<After>,
 ) {
     match weak {
         Some(weak) => {
             let weak = weak.clone();
             std::thread::spawn(move || {
                 let done = work();
-                let w = weak.clone();
-                let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| app.wallpapers.message = done.err()));
+                let set = done.is_ok();
+                show(&weak, done.err());
                 refresh(&weak);
+                if set && let Some(Err(e)) = after.map(|after| after()) {
+                    show(&weak, Some(e));
+                }
             });
         }
-        None => state.message = work().err(),
+        None => state.message = work().and_then(|()| after.map_or(Ok(()), |after| after())).err(),
     }
+}
+
+/// The page's message, from a thread: a failure, or none.
+fn show(weak: &slint::Weak<MainWindow>, message: Option<String>) {
+    let w = weak.clone();
+    let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| app.wallpapers.message = message));
 }
 
 // ---- the slideshow -----------------------------------------------------------------------------
@@ -476,35 +577,44 @@ pub fn next(weak: &slint::Weak<MainWindow>, state: &mut State) {
     std::thread::spawn(move || {
         let done = next_picture(&mut job);
         let w = weak.clone();
+        let failed = done.as_ref().err().cloned();
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&w, move |app| {
+                // Set: the slideshow goes on, whatever the command after it does (one that never
+                // ends stopped it for good).
                 app.wallpapers.changing = false;
-                if let Err(e) = done {
+                if let Some(e) = failed {
                     app.wallpapers.message = Some(e);
                 }
             })
         });
         refresh(&weak);
+        if let Ok(Some(file)) = done
+            && let Err(e) = run_after(&job.env(), job.settings.after.trim(), Some(&file))
+        {
+            show(&weak, Some(e));
+        }
     });
 }
 
-/// Reads what runs and is shown, and with awww sets the folder's next picture on every monitor.
-fn next_picture(job: &mut State) -> Result<(), String> {
+/// Reads what runs and is shown, and with awww sets the folder's next picture on every monitor:
+/// the picture set, if one was.
+fn next_picture(job: &mut State) -> Result<Option<PathBuf>, String> {
     let env = job.env();
     loaded(job, read(&env));
     if job.program() != Some(Program::Awww) {
-        return Ok(());
+        return Ok(None);
     }
     let pictures = sorted(&job.folder_path(), &job.settings)?;
     let now = job.current.first().map(|(_, p)| p.clone());
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     let Some(path) = following(&pictures, now.as_deref(), job.settings.order != "in-order", seed as usize) else {
-        return Ok(());
+        return Ok(None);
     };
     job.target = 0;
     let set = set_for(job, path);
     lituus_wallpaper::set(&env, Program::Awww, &set, &[]).map_err(|e| format!("Couldn't set the picture: {e}."))?;
-    run_after(&env, job.settings.after.trim(), Some(&set.path))
+    Ok(Some(set.path))
 }
 
 /// The folder's pictures in the grid's order.
@@ -533,6 +643,13 @@ fn following(pictures: &[PathBuf], now: Option<&Path>, shuffle: bool, seed: usiz
 /// hyprpaper's slideshow: the folder on every monitor in hyprpaper.conf, which hyprpaper reads
 /// when it starts, so it's started again.
 fn hyprpaper_slideshow(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
+    if let Some(why) = lituus_wallpaper::hyprpaper_unwritable(&state.folder_path().display().to_string()) {
+        // Without the folder in hyprpaper.conf there's no slideshow: it stays off.
+        state.message = Some(cant_hold(why));
+        state.settings.slideshow = false;
+        save(state, "slideshow", false);
+        return;
+    }
     if needs_takeover(state) {
         state.takeover = Some(Pending::Slideshow);
         return;
@@ -563,7 +680,7 @@ fn hyprpaper_slideshow(weak: Option<&slint::Weak<MainWindow>>, state: &mut State
         }
         lituus_wallpaper::start(&env, Program::Hyprpaper).map_err(|e| format!("Couldn't start hyprpaper again: {e}."))
     };
-    run(weak, state, work);
+    run(weak, state, work, None);
 }
 
 /// hyprpaper's splash (Hyprland's text over the picture): written, and hyprpaper started again
@@ -578,15 +695,17 @@ fn hyprpaper_splash(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, o
     let wait = weak.is_some();
     let running = state.status.running == Some(Program::Hyprpaper);
     let work = move || -> Result<(), String> {
-        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let saved = |e: std::io::Error| format!("hyprpaper.conf couldn't be saved: {e}.");
+        // One that can't be read isn't taken for an empty one and written over.
+        let old = lituus_fs::read_or_empty(&path).map_err(saved)?;
         let mut text = lituus_wallpaper::hyprpaper_with_splash(&old, on);
         if !text.contains(MARK) {
             text = format!("{MARK}\n{text}");
         }
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+            std::fs::create_dir_all(dir).map_err(saved)?;
         }
-        std::fs::write(&path, text).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+        lituus_fs::write_atomic(&path, text).map_err(saved)?;
         if !running {
             return Ok(());
         }
@@ -596,7 +715,7 @@ fn hyprpaper_splash(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, o
         }
         lituus_wallpaper::start(&env, Program::Hyprpaper).map_err(|e| format!("Couldn't start hyprpaper again: {e}."))
     };
-    run(weak, state, work);
+    run(weak, state, work, None);
 }
 
 /// A slideshow setting changed: hyprpaper's is written and started again; Lituus's own takes it
@@ -607,9 +726,11 @@ fn slideshow_changed(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) 
     }
 }
 
-/// hyprpaper.conf with the blocks set, and Lituus's mark at the top.
+/// hyprpaper.conf with the blocks set, and Lituus's mark at the top, written whole or not at all
+/// (so hyprpaper never reads half of it, and a full disk doesn't leave it empty).
 fn write_conf(path: &Path, entries: &[HyprpaperEntry]) -> std::io::Result<()> {
-    let old = std::fs::read_to_string(path).unwrap_or_default();
+    // One that can't be read isn't taken for an empty one and written over.
+    let old = lituus_fs::read_or_empty(path)?;
     let mut text = lituus_wallpaper::hyprpaper_conf_text(&old, entries);
     if !text.contains(MARK) {
         text = format!("{MARK}\n{text}");
@@ -617,15 +738,30 @@ fn write_conf(path: &Path, entries: &[HyprpaperEntry]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
-/// The user's hyprpaper.conf kept as hyprpaper.conf.bak, before Lituus writes its first blocks.
-fn take_over(state: &State) -> std::io::Result<()> {
+/// Where the user's hyprpaper.conf is kept before Lituus first writes it: hyprpaper.conf.bak, or
+/// .bak.1 and on when that's taken (by an earlier takeover's copy, or the user's own), as Set up…
+/// does with Hyprland's config.
+fn backup_path(conf: &Path) -> PathBuf {
+    (0u32..)
+        .map(|n| conf.with_extension(if n == 0 { "conf.bak".to_owned() } else { format!("conf.bak.{n}") }))
+        .find(|p| !p.exists())
+        .expect("a free name")
+}
+
+/// The user's hyprpaper.conf kept as `backup_path`, before Lituus writes its first blocks.
+fn take_over(state: &State) -> Result<(), String> {
     let path = lituus_wallpaper::hyprpaper_conf(&state.hypr_dir());
-    std::fs::copy(&path, path.with_extension("conf.bak"))?;
-    let text = std::fs::read_to_string(&path)?;
-    std::fs::write(&path, format!("{MARK}\n{text}"))
+    let backup = backup_path(&path);
+    let kept = |e: std::io::Error| {
+        format!("hyprpaper.conf couldn't be kept as {}: {e}.", backup.file_name().unwrap_or_default().display())
+    };
+    std::fs::copy(&path, &backup).map_err(kept)?;
+    let text = std::fs::read_to_string(&path).map_err(kept)?;
+    lituus_fs::write_atomic(&path, format!("{MARK}\n{text}"))
+        .map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))
 }
 
 fn save(state: &mut State, key: &str, value: impl Into<toml_edit::Value>) {
@@ -938,6 +1074,10 @@ pub fn view(state: &State) -> WallpaperView {
     });
     v.message = s(state.message.clone().unwrap_or_default());
     v.takeover = state.takeover.is_some();
+    if v.takeover {
+        let backup = backup_path(&lituus_wallpaper::hyprpaper_conf(&state.hypr_dir()));
+        v.takeover_backup = s(backup.file_name().unwrap_or_default().to_string_lossy());
+    }
     v.hyprpaper = state.program() == Some(Program::Hyprpaper);
     v.splash = v.hyprpaper
         && lituus_wallpaper::hyprpaper_splash(
@@ -948,9 +1088,16 @@ pub fn view(state: &State) -> WallpaperView {
 
 pub fn render(window: &MainWindow, state: &State) {
     if window.get_page() == "wallpaper" {
+        PAGE_OPEN.set(true);
         // A new model each time: kept as one (as the Input pages do), its rows' thumbnails and
         // lines didn't show their changes in the running app.
         window.set_wallpaper(view(state));
+    } else if PAGE_OPEN.replace(false) {
+        // The page was left: its thumbnails go, with the model that holds them too. Opening it
+        // again takes them from the cache on disk.
+        THUMBS.with(|t| t.borrow_mut().clear());
+        HERO_THUMBS.with(|t| t.borrow_mut().clear());
+        window.set_wallpaper(WallpaperView::default());
     }
 }
 
@@ -971,8 +1118,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             if state.program() == Some(Program::Hyprpaper)
                 && Path::new(arg).extension().is_some_and(|e| e.eq_ignore_ascii_case("gif")) =>
         {
-            state.message =
-                Some("hyprpaper doesn't show GIFs: choose awww under Program for pictures that move.".into());
+            state.message = Some(no_gifs(state));
         }
         "set" => {
             let path = PathBuf::from(arg);
@@ -980,9 +1126,21 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             set_picture(weak, state, vec![set], true);
         }
         "random" => {
-            let pictures: Vec<PathBuf> =
-                state.folder.iter().flat_map(|f| f.pictures.iter().map(|p| p.path.clone())).collect();
-            if !pictures.is_empty() {
+            let hyprpaper = state.program() == Some(Program::Hyprpaper);
+            let pictures: Vec<PathBuf> = state
+                .folder
+                .iter()
+                .flat_map(|f| f.pictures.iter())
+                // Not one that a click would be refused: a GIF, or a path hyprpaper.conf can't hold.
+                .filter(|p| {
+                    !hyprpaper
+                        || (!p.gif() && lituus_wallpaper::hyprpaper_unwritable(&p.path.display().to_string()).is_none())
+                })
+                .map(|p| p.path.clone())
+                .collect();
+            if pictures.is_empty() && hyprpaper && state.folder.iter().any(|f| f.pictures.iter().any(|p| p.gif())) {
+                state.message = Some(no_gifs(state));
+            } else if !pictures.is_empty() {
                 // Not the one shown now, if there's another.
                 let now: Vec<&PathBuf> = state.current.iter().map(|(_, p)| p).collect();
                 let others: Vec<&PathBuf> = pictures.iter().filter(|p| !now.contains(p)).collect();
@@ -1006,11 +1164,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             state.query.clear();
             save(state, "folder", shown);
             let _ = config::set_list(&state.config_path(), "wallpaper", "recent", &recent);
-            if let Some(weak) = weak {
-                load_folder(weak, state);
-            } else {
-                state.folder = lituus_wallpaper::read_folder(&state.folder_path(), state.settings.subfolders).ok();
-            }
+            load_folder(weak, state);
             slideshow_changed(weak, state);
         }
         "choose-folder" => {
@@ -1021,12 +1175,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
         "subfolders" => {
             state.settings.subfolders = !state.settings.subfolders;
             save(state, "subfolders", state.settings.subfolders);
-            match weak {
-                Some(weak) => load_folder(weak, state),
-                None => {
-                    state.folder = lituus_wallpaper::read_folder(&state.folder_path(), state.settings.subfolders).ok()
-                }
-            }
+            load_folder(weak, state);
             slideshow_changed(weak, state);
         }
         "query" => state.query = arg.to_owned(),
@@ -1152,9 +1301,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
                     (Ok(()), Pending::Pictures(sets, after)) => set_picture(weak, state, sets, after),
                     (Ok(()), Pending::Slideshow) => hyprpaper_slideshow(weak, state),
                     (Ok(()), Pending::Splash(on)) => hyprpaper_splash(weak, state, on),
-                    (Err(e), _) => {
-                        state.message = Some(format!("hyprpaper.conf couldn't be kept as hyprpaper.conf.bak: {e}."))
-                    }
+                    (Err(e), _) => state.message = Some(e),
                 }
             }
         }
@@ -1167,6 +1314,16 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             }
         }
         _ => {}
+    }
+}
+
+/// Why a GIF isn't set with hyprpaper, and what shows one: awww, chosen under Program if it's
+/// installed (the menu lists only those).
+fn no_gifs(state: &State) -> String {
+    if state.status.installed.contains(&Program::Awww) {
+        "hyprpaper doesn't show GIFs: choose awww under Program for pictures that move.".into()
+    } else {
+        "hyprpaper doesn't show GIFs: install awww for pictures that move.".into()
     }
 }
 
@@ -1222,12 +1379,25 @@ fn switch(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, to: Program
         }
         let w = weak.clone();
         let _ = weak.upgrade_in_event_loop(move |_| {
+            let started = started.map_err(|e| format!("Couldn't start {}: {e}.", to.name()));
+            let weak = w.clone();
             update(&w, move |app| {
-                app.wallpapers.message = started.err().map(|e| format!("Couldn't start {}: {e}.", to.name()))
+                app.wallpapers.message = started.as_ref().err().cloned();
+                if started.is_ok() {
+                    switched(Some(&weak), &mut app.wallpapers, to);
+                }
             })
         });
         refresh(&weak);
     });
+}
+
+/// Switched to `to`, with the slideshow on: Lituus's own (awww's) stops with awww, so hyprpaper's
+/// takes over, written to hyprpaper.conf (hyprpaper is started again to read it).
+fn switched(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, to: Program) {
+    if to == Program::Hyprpaper && state.settings.slideshow {
+        hyprpaper_slideshow(weak, state);
+    }
 }
 
 /// Reads the programs again in a moment (one just started).
@@ -1279,11 +1449,7 @@ mod tests {
         }
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let script = |cmd: &str, body: &str| {
-            let p = bin.join(cmd);
-            std::fs::write(&p, format!("#!/bin/sh\necho \"{cmd} $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        };
+        let script = |cmd: &str, body: &str| stand_in(&d, cmd, body);
         let alps = home.join("Pictures/Wallpapers/alps.png");
         if program == Some(Program::Awww) {
             script(
@@ -1448,11 +1614,67 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    /// A stand-in command in the test's folder, recording its calls as the others do.
+    /// A stand-in command in the test's folder, recording its calls.
     fn stand_in(d: &Path, command: &str, body: &str) {
         let p = d.join("bin").join(command);
-        std::fs::write(&p, format!("#!/bin/sh\necho \"{command} $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
+        let text = format!(
+            "#!/bin/sh\n[ -n \"$STAND_IN_READY\" ] && exit 0\necho \"{command} $*\" >> {}/calls\n{body}\n",
+            d.display()
+        );
+        std::fs::write(&p, text).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Run once, doing nothing, until it runs: while a test on another thread forks, its child
+        // holds this file open for writing for a moment, and running it fails with "Text file
+        // busy" (N-10). Once it ran, nothing has it open for writing any more.
+        for _ in 0..500 {
+            match std::process::Command::new(&p).env("STAND_IN_READY", "1").status() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(10)),
+                _ => return,
+            }
+        }
+    }
+
+    /// Thumbnails are kept only for what the page shows: the folder's, and the pictures shown;
+    /// another folder's go, and all of them once the page is left.
+    #[test]
+    fn thumbnails_only_for_what_the_page_shows() {
+        use slint::{ComponentHandle, Model};
+        i_slint_backend_testing::init_no_event_loop();
+        let (mut state, d) = state_in("thumbs", Some(Program::Awww));
+        let dir = state.folder_path();
+        let made = |paths: &[PathBuf]| {
+            let pixels = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
+            for store in [&THUMBS, &HERO_THUMBS] {
+                store.with(|t| {
+                    t.borrow_mut().extend(paths.iter().map(|p| (p.clone(), Image::from_rgba8(pixels.clone()))))
+                });
+            }
+        };
+        let kept = |store: &'static std::thread::LocalKey<RefCell<HashMap<PathBuf, Image>>>| {
+            store.with(|t| t.borrow().keys().cloned().collect::<HashSet<PathBuf>>())
+        };
+        // alps.png is on DP-3; the slideshow showed fjord.png before.
+        let (alps, fjord, forest) = (dir.join("alps.png"), dir.join("fjord.png"), dir.join("Nature/forest.png"));
+        made(&[alps.clone(), fjord.clone(), forest.clone()]);
+        state.sizes.insert(fjord.clone(), (48, 27));
+        forget_unshown(&mut state);
+        assert_eq!(kept(&HERO_THUMBS), HashSet::from([alps.clone()]));
+        assert_eq!(kept(&THUMBS), HashSet::from([alps.clone(), fjord, forest.clone()]));
+        // Another folder: the first one's go, but for the picture shown.
+        act_with(None, &mut state, "folder", &dir.join("Nature").display().to_string(), 0.0);
+        assert_eq!(kept(&THUMBS), HashSet::from([alps, forest]));
+        assert!(state.sizes.is_empty());
+        // Leaving the page drops them all, and the page's model that holds them.
+        let window = MainWindow::new().unwrap();
+        window.set_page("wallpaper".into());
+        window.show().unwrap();
+        render(&window, &state);
+        assert_eq!(window.get_wallpaper().tiles.row_count(), 1);
+        window.set_page("wifi".into());
+        render(&window, &state);
+        assert!(kept(&THUMBS).is_empty() && kept(&HERO_THUMBS).is_empty());
+        assert_eq!(window.get_wallpaper().tiles.row_count(), 0);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -1497,17 +1719,14 @@ mod tests {
         let mut job = State { settings: state.settings.clone(), ..Default::default() };
         job.env = state.env.clone();
         job.home = state.home.clone();
-        next_picture(&mut job).unwrap();
         let fjord = state.folder_path().join("fjord.png");
+        // The command after it runs apart (`next`), so a slow one doesn't hold the slideshow up.
+        assert_eq!(next_picture(&mut job).unwrap(), Some(fjord.clone()));
         let c = calls(&d);
-        assert!(
-            c.contains(&format!(
-                "awww img {} --resize crop --transition-type fade --transition-duration 1.5",
-                fjord.display()
-            )),
-            "{c:?}"
+        assert_eq!(
+            c.last().unwrap(),
+            &format!("awww img {} --resize crop --transition-type fade --transition-duration 1.5", fjord.display())
         );
-        assert_eq!(c.last().unwrap(), &format!("matugen image {}", fjord.display()));
         // A click runs it with that picture.
         let alps = state.folder_path().join("alps.png");
         act_with(None, &mut state, "set", &alps.display().to_string(), 0.0);
@@ -1568,6 +1787,121 @@ mod tests {
         let c = calls(&d);
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-3, /w/now.png, cover".to_owned()), "{c:?}");
         assert_eq!(view(&state).everys.row_count(), EVERY.len());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A `#` is written as hyprlang reads it back; a path hyprpaper.conf can't hold at all isn't
+    /// set (it would show now and be gone at hyprpaper's next start).
+    #[test]
+    fn paths_in_hyprpaper_conf() {
+        let (mut state, d) = state_in("hyprpaper-paths", Some(Program::Hyprpaper));
+        stand_in(&d, "pkill", "");
+        let conf = d.join("hypr/hyprpaper.conf");
+        let hash = state.folder_path().join("#1 alps.png");
+        act_with(None, &mut state, "set", &hash.display().to_string(), 0.0);
+        let text = std::fs::read_to_string(&conf).unwrap();
+        assert!(text.contains("/##1 alps.png\n"), "{text}");
+        assert_eq!(lituus_wallpaper::hyprpaper_entries(&text)[0].path, hash.display().to_string());
+        let calls_before = calls(&d).len();
+        act_with(None, &mut state, "set", "/w/$HOME.png", 0.0);
+        assert_eq!(state.message.as_deref(), Some("hyprpaper.conf can't hold a path with a $: rename it."));
+        assert_eq!(calls(&d).len(), calls_before, "{:?}", calls(&d));
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
+        // Nor a slideshow of a folder it can't hold: it stays off.
+        let folder = d.join("home/two##hashes");
+        std::fs::create_dir_all(&folder).unwrap();
+        act_with(None, &mut state, "folder", &folder.display().to_string(), 0.0);
+        act_with(None, &mut state, "slideshow", "", 0.0);
+        assert!(state.message.as_deref().is_some_and(|m| m.contains("two # in a row")), "{:?}", state.message);
+        assert!(!state.settings.slideshow && !config::load(&state.config_path()).wallpaper.slideshow);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Switching from awww to hyprpaper with the slideshow on: hyprpaper's own goes on with it.
+    #[test]
+    fn the_slideshow_goes_on_with_hyprpaper() {
+        let (mut state, d) = state_in("switch", Some(Program::Hyprpaper));
+        stand_in(&d, "pkill", "");
+        state.settings.slideshow = true;
+        switched(None, &mut state, Program::Hyprpaper);
+        let text = std::fs::read_to_string(d.join("hypr/hyprpaper.conf")).unwrap();
+        let entries = lituus_wallpaper::hyprpaper_entries(&text);
+        assert_eq!(entries.len(), 2, "{text}");
+        assert!(entries.iter().all(|e| e.timeout == 1800 && e.path == state.folder_path().display().to_string()));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// hyprpaper doesn't show GIFs: Random doesn't pick one, as a click on it is refused.
+    #[test]
+    fn random_with_hyprpaper_leaves_gifs_out() {
+        let (mut state, d) = state_in("random-gif", Some(Program::Hyprpaper));
+        let dir = state.folder_path();
+        std::fs::write(dir.join("rain.gif"), "").unwrap();
+        state.folder = lituus_wallpaper::read_folder(&dir, false).ok();
+        for _ in 0..12 {
+            act_with(None, &mut state, "random", "", 0.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let c = calls(&d);
+        assert!(c.iter().any(|c| c.starts_with("hyprctl hyprpaper wallpaper")), "{c:?}");
+        assert!(c.iter().all(|c| !c.contains("rain.gif")), "{c:?}");
+        // GIFs only: nothing is set, and the message doesn't send the user to awww, which isn't
+        // installed here.
+        std::fs::create_dir_all(dir.join("gifs")).unwrap();
+        std::fs::write(dir.join("gifs/rain.gif"), "").unwrap();
+        act_with(None, &mut state, "folder", &dir.join("gifs").display().to_string(), 0.0);
+        let before = calls(&d).len();
+        act_with(None, &mut state, "random", "", 0.0);
+        assert_eq!(calls(&d).len(), before);
+        assert_eq!(state.message.as_deref(), Some("hyprpaper doesn't show GIFs: install awww for pictures that move."));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A second takeover (the file put back without Lituus's mark) keeps the first copy.
+    #[test]
+    fn a_second_takeover_keeps_the_first_copy() {
+        let (mut state, d) = state_in("takeover-again", Some(Program::Hyprpaper));
+        let conf = d.join("hypr/hyprpaper.conf");
+        std::fs::create_dir_all(d.join("hypr")).unwrap();
+        let alps = state.folder_path().join("alps.png").display().to_string();
+        for (n, mine) in ["# the first one\n", "# from my dotfiles\n"].into_iter().enumerate() {
+            std::fs::write(&conf, mine).unwrap();
+            act_with(None, &mut state, "set", &alps, 0.0);
+            let backup = if n == 0 { "hyprpaper.conf.bak" } else { "hyprpaper.conf.bak.1" };
+            assert_eq!(view(&state).takeover_backup, backup);
+            act_with(None, &mut state, "takeover-yes", "", 0.0);
+            assert_eq!(std::fs::read_to_string(d.join("hypr").join(backup)).unwrap(), mine);
+        }
+        assert_eq!(std::fs::read_to_string(d.join("hypr/hyprpaper.conf.bak")).unwrap(), "# the first one\n");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// hyprpaper.conf is written through a file beside it: a link into the user's dotfiles stays
+    /// a link, the file keeps its mode, and nothing is left behind.
+    #[test]
+    fn hyprpaper_conf_is_written_whole() {
+        let (mut state, d) = state_in("whole", Some(Program::Hyprpaper));
+        let dotfiles = d.join("dotfiles/hyprpaper.conf");
+        std::fs::create_dir_all(d.join("dotfiles")).unwrap();
+        std::fs::create_dir_all(d.join("hypr")).unwrap();
+        std::fs::write(&dotfiles, format!("{MARK}\nsplash = false\n")).unwrap();
+        std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let conf = d.join("hypr/hyprpaper.conf");
+        std::os::unix::fs::symlink(&dotfiles, &conf).unwrap();
+        let alps = state.folder_path().join("alps.png");
+        act_with(None, &mut state, "set", &alps.display().to_string(), 0.0);
+        assert!(std::fs::symlink_metadata(&conf).unwrap().file_type().is_symlink());
+        let text = std::fs::read_to_string(&dotfiles).unwrap();
+        assert!(text.contains("splash = false") && text.contains(&format!("path = {}", alps.display())), "{text}");
+        assert_eq!(std::fs::metadata(&dotfiles).unwrap().permissions().mode() & 0o777, 0o600);
+        for dir in ["dotfiles", "hypr"] {
+            let names: Vec<String> = std::fs::read_dir(d.join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["hyprpaper.conf"], "{dir}");
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 

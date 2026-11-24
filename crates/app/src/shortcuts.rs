@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use lituus_hypr::{
     Action, Bind, BindConfig, ConfigFile, Hyprland, LiveBind, LuaValue as Value, config_dir, lua_string, modifier_bit,
-    normalized_keys, read_binds,
+    normalized_keys, read_binds, reads_lua,
 };
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -45,6 +45,8 @@ pub struct State {
     message: Option<String>,
     /// Where Hyprland's config is, if not the usual place (tests).
     hypr_dir: Option<PathBuf>,
+    /// Hyprland reads a Lua config, as `reads_lua` decides for every page.
+    lua: bool,
 }
 
 impl State {
@@ -52,9 +54,9 @@ impl State {
         self.hypr_dir.clone().unwrap_or_else(config_dir)
     }
 
-    /// The config is Lua (Hyprland 0.55 and later); else hyprlang.
+    /// The config is Lua (Hyprland 0.55 and later, with a hyprland.lua); else hyprlang.
     fn lua(&self) -> bool {
-        self.dir().join("hyprland.lua").exists()
+        self.lua
     }
 
     fn file(&self) -> ConfigFile {
@@ -63,11 +65,15 @@ impl State {
 
     /// There's a config Lituus can add its part to: Lua's, or hyprlang's (lituus.conf).
     fn editable(&self) -> bool {
-        self.lua() || self.dir().join("hyprland.conf").exists()
+        self.file().main_path().exists()
     }
 
-    /// What Lituus's part does to the config's bind `b`.
+    /// What Lituus's part does to the config's bind `b`. Nothing for a bind whose keys Lituus
+    /// didn't read: it can't be unbound by them.
     fn over(&self, b: &Bind) -> Option<&Option<Bind>> {
+        if b.key.is_empty() {
+            return None;
+        }
         let keys = normalized_keys(&b.keys());
         self.mine.iter().find_map(|m| match m {
             Mine::Over { bind, .. } if m.keys() == keys => Some(bind),
@@ -143,8 +149,9 @@ impl Dialog {
     }
 }
 
-/// What was read, on a thread: the config, Lituus's part, Hyprland's binds.
-pub type Read = Result<(BindConfig, Option<String>, Option<Vec<LiveBind>>, Hyprland), lituus_hypr::Error>;
+/// What was read, on a thread: the config, Lituus's part, Hyprland's binds, and whether the
+/// config is Lua.
+pub type Read = Result<(BindConfig, Option<String>, Option<Vec<LiveBind>>, Hyprland, bool), lituus_hypr::Error>;
 
 /// Reads the config's binds and Hyprland's (on a thread: the files and the socket may take a
 /// moment). Also from the thread that follows Hyprland's events.
@@ -158,14 +165,16 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
 
 fn read(dir: &Path) -> Read {
     let h = Hyprland::from_env()?;
-    let section = ConfigFile::new(dir, dir.join("hyprland.lua").exists()).read_section(SECTION);
-    Ok((read_binds(dir), section, h.binds().ok(), h))
+    let lua = reads_lua(h.version().ok().as_ref(), dir);
+    let section = ConfigFile::new(dir, lua).read_section(SECTION);
+    Ok((read_binds(dir, lua), section, h.binds().ok(), h, lua))
 }
 
 pub fn loaded(state: &mut State, read: Read) {
     state.read = true;
     match read {
-        Ok((mut config, section, live, hypr)) => {
+        Ok((mut config, section, live, hypr, lua)) => {
+            state.lua = lua;
             // Lituus's own file is read as its part, not as the user's binds.
             let own = state.file().path();
             config.binds.retain(|b| b.file != own);
@@ -200,7 +209,7 @@ pub fn loaded(state: &mut State, read: Read) {
 /// Lituus's part becomes `mine`: written to its file and applied with `lua` (none: Hyprland
 /// reads its config again, for a bind of the config's Lituus can't write itself), on a thread.
 fn change(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mine: Vec<Mine>, lua: Option<String>) {
-    state.mine = mine;
+    state.mine = in_file_order(mine);
     state.message = None;
     let lua_config = state.lua();
     let text = shortcut_edit::text(&state.mine, lua_config);
@@ -233,6 +242,26 @@ fn change(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mine: Vec<M
             })
         });
     });
+}
+
+/// Lituus's part in the order it reads back from its file (`shortcut_edit::parse`): the
+/// overrides, then its own that are on, then those that are off. Rows, the dialog and Delete
+/// point at its own by their place here, which mustn't change when the file is read again.
+fn in_file_order(mut mine: Vec<Mine>) -> Vec<Mine> {
+    mine.sort_by_key(|m| match m {
+        Mine::Over { .. } => 0,
+        Mine::Added { on: true, .. } => 1,
+        Mine::Added { on: false, .. } => 2,
+    });
+    mine
+}
+
+/// Another of the config's binds is on the keys of bind `i`: Hyprland's unbind takes every
+/// bind on them, so Lituus can't change or turn off one alone.
+fn shares_keys(state: &State, i: usize) -> bool {
+    let Some(b) = state.config.binds.get(i) else { return false };
+    let keys = normalized_keys(&b.keys());
+    state.config.binds.iter().enumerate().any(|(j, o)| j != i && normalized_keys(&o.keys()) == keys)
 }
 
 /// The Lua that brings back the config's binds on `keys` (none when one can't be written: then
@@ -767,7 +796,8 @@ fn entries(state: &State) -> Vec<Entry> {
                 Mine::Over { bind: None, .. } => false,
             })
     };
-    for l in state.live.iter().flatten().filter(|l| !known(l)) {
+    // The submap Lituus makes while it listens for keys isn't a shortcut.
+    for l in state.live.iter().flatten().filter(|l| !known(l) && l.submap != shortcut_edit::LISTENING) {
         let mods = MODMASK.iter().filter(|(bit, _)| l.modmask & bit != 0).map(|(_, m)| key_name(m));
         let caps = mods.chain(std::iter::once(key_name(&l.key))).collect();
         let title =
@@ -842,7 +872,7 @@ pub fn view(state: &State) -> ShortcutsView {
     }
     v.sub = s(sub);
     let dir = state.dir();
-    let config = if dir.join("hyprland.lua").exists() { dir.join("hyprland.lua") } else { dir.join("hyprland.conf") };
+    let config = state.file().main_path();
     let binds = &state.config.binds;
     v.hero = match main_key(binds) {
         Some((key, n)) => HeroInfo {
@@ -1017,10 +1047,28 @@ fn conflict(state: &State, d: &Dialog) -> Option<Target> {
     taken(state, &base(state, d)?.keys(), d.target)
 }
 
+/// The dialog's form is the bind it began with: saving it changes nothing of Lituus's.
+fn unchanged(state: &State, d: &Dialog) -> bool {
+    let Target::Config(i) = d.target else { return false };
+    let Some(b) = state.config.binds.get(i) else { return false };
+    let new = d.form.bind(b);
+    d.unread && !d.replacing || new.action == b.action && new.flags == b.flags && new.description == b.description
+}
+
 /// Why the dialog can't be saved yet.
 fn problem(state: &State, d: &Dialog) -> Option<&'static str> {
     if d.listening {
         return Some("Press the new shortcut, or Esc");
+    }
+    if let Target::Config(i) = d.target {
+        // Unbinding it would take the wrong keys, or every bind on its keys.
+        if state.config.binds.get(i).is_some_and(|b| b.key.is_empty()) {
+            return Some("Lituus can't read its keys");
+        }
+        let restores = d.use_on && !keys_changed(state, d) && unchanged(state, d);
+        if shares_keys(state, i) && !restores {
+            return Some("Another shortcut in your config has these keys");
+        }
     }
     if d.target == Target::New && d.keys.is_none() {
         return Some("Choose the keys and an action to save");
@@ -1080,8 +1128,16 @@ fn dialog_view(state: &State, d: &Dialog) -> ShortcutDialog {
     }
     let over = config_bind.and_then(|b| state.over(b));
     // Under the keys, when there's something to say about them.
+    let config_index = match d.target {
+        Target::Config(i) => Some(i),
+        _ => None,
+    };
     v.note = s(if d.target == Target::New {
         "It works as soon as you save it"
+    } else if config_bind.is_some_and(|b| b.key.is_empty()) {
+        "Lituus can't change it: your config makes its keys with Lua code Lituus doesn't read"
+    } else if config_index.is_some_and(|i| shares_keys(state, i)) {
+        "Hyprland turns off every shortcut on these keys at once, so Lituus can't change just this one"
     } else if d.unread && !d.replacing {
         "Lituus can't change it: your config makes it with Lua code Lituus doesn't read"
     } else if d.replacing {
@@ -1209,8 +1265,7 @@ fn save(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
             let new = d.form.bind(&b);
             // The config's own version again (or one Lituus can't read, kept): nothing of
             // Lituus's left.
-            let same = d.unread && !d.replacing
-                || new.action == b.action && new.flags == b.flags && new.description == b.description;
+            let same = unchanged(state, &d);
             let (mine, lua) = if !d.use_on {
                 with_over(state, &b, None)
             } else if same {
@@ -1336,9 +1391,25 @@ fn toggle(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, target: Tar
     match target {
         Target::Config(i) => {
             let Some(b) = state.config.binds.get(i).cloned() else { return };
-            let (mine, lua) = match state.over(&b) {
-                Some(None) => without_over(state, &b),
-                _ => with_over(state, &b, None),
+            // Turning it off unbinds its keys: refused when they aren't known, or when another of
+            // the config's binds is on them too, which would go with it.
+            let (mine, lua) = if matches!(state.over(&b), Some(None)) {
+                without_over(state, &b)
+            } else if b.key.is_empty() {
+                state.message = Some(
+                    "Lituus can't turn this one off: your config makes its keys with Lua code Lituus doesn't read."
+                        .into(),
+                );
+                return;
+            } else if shares_keys(state, i) {
+                state.message = Some(format!(
+                    "Your config has more than one shortcut on {}, and Hyprland turns them off together. \
+                     Change them in your config.",
+                    caps(&b).join(" + ")
+                ));
+                return;
+            } else {
+                with_over(state, &b, None)
             };
             change(weak, state, mine, lua);
         }
@@ -1542,13 +1613,19 @@ mod tests {
         d
     }
 
+    /// What the page reads from the config in `d`, for a Hyprland of `version`.
+    fn read_at(d: &Path, version: Option<&lituus_hypr::Version>, live: Option<Vec<LiveBind>>) -> Read {
+        let lua = reads_lua(version, d);
+        let section = ConfigFile::new(d, lua).read_section(SECTION);
+        Ok((read_binds(d, lua), section, live, Hyprland::at(d), lua))
+    }
+
     fn state_with(name: &str, config: &str, live: Option<&str>) -> (State, PathBuf) {
         let d = dir(name);
         std::fs::write(d.join("hyprland.lua"), config).unwrap();
         let mut state = State { hypr_dir: Some(d.clone()), ..Default::default() };
         let live = live.map(|l| serde_json::from_str(l).unwrap());
-        let section = state.file().read_section(SECTION);
-        loaded(&mut state, Ok((read_binds(&d), section, live, Hyprland::at(&d))));
+        loaded(&mut state, read_at(&d, None, live));
         (state, d)
     }
 
@@ -1644,8 +1721,7 @@ mod tests {
     /// Reads the page again, as after Hyprland applied the change (without the live list).
     fn reread(state: &mut State, d: &Path) {
         let query = std::mem::take(&mut state.query);
-        let section = state.file().read_section(SECTION);
-        loaded(state, Ok((read_binds(d), section, None, Hyprland::at(d))));
+        loaded(state, read_at(d, None, None));
         state.query = query;
     }
 
@@ -1725,7 +1801,8 @@ mod tests {
         )
         .unwrap();
         let mut state = State { hypr_dir: Some(d.clone()), ..Default::default() };
-        reread(&mut state, &d);
+        let version = lituus_hypr::Version { version: "0.54.3".into(), ..Default::default() };
+        loaded(&mut state, read_at(&d, Some(&version), None));
         assert!(state.editable());
         let id = row(&view(&state), "Switch split direction").id.to_string();
         act_with(None, &mut state, "toggle", &id);
@@ -1841,6 +1918,150 @@ mod tests {
         act_with(None, &mut state, "restore", &id);
         reread(&mut state, &d);
         assert!(state.mine.is_empty());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Shortcuts lists the config Hyprland reads and writes the file the other pages write: one
+    /// decision for all (`reads_lua`), by Hyprland's version and the config there.
+    #[test]
+    fn shortcuts_and_the_other_pages_agree_on_lua_or_hyprlang() {
+        let version = |v: &str| lituus_hypr::Version { version: v.into(), ..Default::default() };
+        // Hyprland 0.54 with a hyprland.lua written ahead of the upgrade: it reads hyprland.conf.
+        let d = dir("two-ways-054");
+        std::fs::write(d.join("hyprland.conf"), "bind = SUPER, Q, killactive,\n").unwrap();
+        std::fs::write(d.join("hyprland.lua"), "hl.bind(\"SUPER + J\", hl.dsp.layout(\"togglesplit\"))\n").unwrap();
+        let mut state = State { hypr_dir: Some(d.clone()), ..Default::default() };
+        loaded(&mut state, read_at(&d, Some(&version("0.54.2")), None));
+        assert_eq!(state.file(), ConfigFile::new(&d, false));
+        assert_eq!(titles(&view(&state)), ["# WINDOWS", "Close window"]);
+        assert_eq!(view(&state).hero.detail, d.join("hyprland.conf").display().to_string());
+        // Hyprland 0.57 and only a hyprland.conf: its old parser reads that.
+        std::fs::remove_file(d.join("hyprland.lua")).unwrap();
+        loaded(&mut state, read_at(&d, Some(&version("0.57.0")), None));
+        assert_eq!(state.file(), ConfigFile::new(&d, false));
+        let id = row(&view(&state), "Close window").id.to_string();
+        act_with(None, &mut state, "toggle", &id);
+        assert!(std::fs::read_to_string(d.join("lituus.conf")).unwrap().contains("unbind = SUPER, Q\n"));
+        assert!(!d.join("lituus.lua").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A command from a name Lituus followed (a global of another file) is written as it is; one
+    /// it didn't follow isn't written as `nil`: the bind is unread, and Hyprland reloads instead.
+    #[test]
+    fn a_command_lituus_didnt_read_isnt_written_as_nil() {
+        let config = "require(\"vars\")\nlocal browser = os.getenv(\"BROWSER\") or \"firefox\"\n\
+                      hl.bind(\"SUPER + Return\", hl.dsp.exec_cmd(terminal))\n\
+                      hl.bind(\"SUPER + B\", hl.dsp.exec_cmd(browser))\nrequire(\"lituus\")\n";
+        let (mut state, d) = state_with("nil", config, None);
+        std::fs::write(d.join("vars.lua"), "terminal = \"kitty\"\n").unwrap();
+        reread(&mut state, &d);
+        let v = view(&state);
+        assert_eq!(row(&v, "Open Kitty").from, "hyprland.lua · line 3");
+        let unread = row(&v, "Set in your config");
+        assert!(unread.unread);
+        let [kitty, browser] = [0, 1].map(|i| state.config.binds[i].keys());
+        assert_eq!(
+            restore_lua(&state, &kitty).as_deref(),
+            Some("hl.unbind(\"SUPER + Return\") hl.bind(\"SUPER + Return\", hl.dsp.exec_cmd(\"kitty\"))")
+        );
+        assert_eq!(restore_lua(&state, &browser), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A bind whose keys Lituus didn't read can't be turned off or changed: `hl.unbind("")`
+    /// would unbind nothing, and every other such row would show as off.
+    #[test]
+    fn a_bind_without_keys_cant_be_turned_off() {
+        let config = "local mod = os.getenv(\"MOD\")\nhl.bind(mod .. \" + Q\", hl.dsp.window.close())\n\
+                      hl.bind(mod .. \" + M\", hl.dsp.exit())\nrequire(\"lituus\")\n";
+        let (mut state, d) = state_with("nokeys", config, None);
+        let id = row(&view(&state), "Close window").id.to_string();
+        act_with(None, &mut state, "toggle", &id);
+        assert_eq!(state.file().read_section(SECTION), None);
+        assert!(state.message.as_deref().is_some_and(|m| m.contains("can't turn this one off")));
+        reread(&mut state, &d);
+        assert!(row(&view(&state), "Close window").on && row(&view(&state), "Exit Hyprland").on);
+        // The dialog shows it, and doesn't save.
+        act_with(None, &mut state, "open", &id);
+        act_with(None, &mut state, "d-use", "");
+        assert_eq!(view(&state).dialog.problem, "Lituus can't read its keys");
+        act_with(None, &mut state, "d-save", "");
+        assert_eq!(state.file().read_section(SECTION), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Two binds on the same keys (press and release): Hyprland's unbind takes both, so one
+    /// isn't turned off or changed alone, and nothing is written.
+    #[test]
+    fn one_of_two_binds_on_the_same_keys_isnt_turned_off_alone() {
+        let config = "hl.bind(\"mouse:276\", hl.dsp.exec_cmd(\"mic on\"))\n\
+                      hl.bind(\"mouse:276\", hl.dsp.exec_cmd(\"mic off\"), { release = true })\nrequire(\"lituus\")\n";
+        let (mut state, d) = state_with("pair", config, None);
+        act_with(None, &mut state, "toggle", "c0");
+        assert!(state.message.as_deref().is_some_and(|m| m.contains("turns them off together")), "{:?}", state.message);
+        reread(&mut state, &d);
+        let v = view(&state);
+        let on = |id: &str| {
+            use slint::Model;
+            v.rows.iter().find(|r| r.id == id).unwrap().on
+        };
+        assert!(on("c0") && on("c1"));
+        assert_eq!(state.file().read_section(SECTION), None);
+        // Changing one: the dialog says why it can't.
+        act_with(None, &mut state, "open", "c0");
+        assert_eq!(view(&state).dialog.problem, "");
+        act_with(None, &mut state, "d-command", "mic toggle");
+        assert_eq!(view(&state).dialog.problem, "Another shortcut in your config has these keys");
+        act_with(None, &mut state, "d-save", "");
+        assert_eq!(state.file().read_section(SECTION), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The submap Lituus makes while it listens for keys isn't listed as a shortcut.
+    #[test]
+    fn the_listening_submap_isnt_a_shortcut() {
+        let (state, d) = state_with(
+            "pause",
+            "hl.bind(\"SUPER + Q\", hl.dsp.window.close())\n",
+            Some(
+                r#"[{"modmask": 64, "key": "Q"}, {"modmask": 0, "key": "Escape", "submap": "lituus-listening", "dispatcher": "submap", "arg": "reset"}]"#,
+            ),
+        );
+        let v = view(&state);
+        assert_eq!(v.sub, "1 shortcut");
+        assert!(titles(&v).iter().all(|t| t != "# NOT IN YOUR CONFIG"), "{:?}", titles(&v));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Lituus's own shortcuts keep their rows when the file is read back after a change: the
+    /// part is kept in the file's order, so the same row doesn't point at another one after.
+    #[test]
+    fn rows_of_lituus_own_stay_put_when_read_back() {
+        use slint::Model;
+        let (mut state, d) = state_with("order", "require(\"lituus\")\n", None);
+        let firefox = shortcut_edit::Mine::Added {
+            bind: lituus_hypr::parse_lua(r#"hl.bind("SUPER + B", hl.dsp.exec_cmd("firefox"))"#, &d).binds.remove(0),
+            on: true,
+        };
+        let foot = shortcut_edit::Mine::Added {
+            bind: lituus_hypr::parse_lua(r#"hl.bind("SUPER + T", hl.dsp.exec_cmd("foot"))"#, &d).binds.remove(0),
+            on: true,
+        };
+        change(None, &mut state, vec![firefox, foot], None);
+        reread(&mut state, &d);
+        let ids = |state: &State| -> Vec<(String, String)> {
+            view(state)
+                .rows
+                .iter()
+                .filter(|r| !r.id.is_empty())
+                .map(|r| (r.id.to_string(), r.title.to_string()))
+                .collect()
+        };
+        act_with(None, &mut state, "toggle", "a0");
+        let before = ids(&state);
+        reread(&mut state, &d);
+        assert_eq!(ids(&state), before);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

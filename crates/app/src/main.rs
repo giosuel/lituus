@@ -56,7 +56,7 @@ const APP_ID: &str = "ch.giosuel.Lituus";
 const THEME_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
-#[command(name = "lituus", version = env!("APP_VERSION"), about = "Manage Wi-Fi, wired and VPN connections")]
+#[command(name = "lituus", version = env!("APP_VERSION"), about = "Settings app for Hyprland and other desktops without one")]
 struct Cli {
     /// Start without a window and keep running when it's closed, so NetworkManager can ask for
     /// passwords kept in the keyring (for example `exec-once = lituus --background` in
@@ -298,6 +298,8 @@ fn main() -> Result<(), slint::PlatformError> {
             app.tray.is_some() && app.settings.keep_running
         });
         if !background && !in_tray {
+            // The countdown after Apply ends with Lituus: the old display settings go back first.
+            APP.with(|app| displays::revert_on_quit(&mut app.borrow_mut().displays));
             let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow
@@ -4030,14 +4032,15 @@ mod tests {
         let bluetooth = switch("Bluetooth").expect("the Bluetooth switch");
         assert_eq!(visible.accessible_checked(), Some(true));
         assert!(visible.absolute_position().x < bluetooth.absolute_position().x);
+        // In the pill, after its label.
         let left = ElementHandle::find_by_accessible_label(&window, "2:41").next().expect("the time left");
-        assert!(left.absolute_position().x < visible.absolute_position().x);
+        let (at, size) = (visible.absolute_position(), visible.size());
+        assert!(at.x + 40.0 < left.absolute_position().x && left.absolute_position().x < at.x + size.width - 40.0);
         // The old card's chips are gone.
         assert_eq!(ElementHandle::find_by_accessible_label(&window, "Pairable").count(), 0);
 
-        // On the label, beside the switch itself.
-        let (at, size) = (visible.absolute_position(), visible.size());
-        let position = LogicalPosition::new(at.x - 60.0, at.y + size.height / 2.0);
+        // On the label, not the switch drawn in the pill.
+        let position = LogicalPosition::new(at.x + 20.0, at.y + size.height / 2.0);
         window.window().dispatch_event(WindowEvent::PointerMoved { position });
         window.window().dispatch_event(WindowEvent::PointerPressed { position, button: PointerEventButton::Left });
         window.window().dispatch_event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
@@ -4397,9 +4400,9 @@ mod tests {
             let switch = ElementHandle::find_by_accessible_label(&window, label)
                 .find(|e| e.accessible_role() == Some(AccessibleRole::Switch))
                 .expect(label);
-            // On the label, beside the switch itself.
+            // On the label, not the switch drawn in the pill.
             let (at, size) = (switch.absolute_position(), switch.size());
-            click(&window, at.x - 20.0, at.y + size.height / 2.0);
+            click(&window, at.x + 20.0, at.y + size.height / 2.0);
         }
         assert_eq!(*switched.borrow(), ["wifi", "hotspot"]);
 
@@ -5146,5 +5149,517 @@ mod tests {
         drag(&window, &control(&window, "Output volume", AccessibleRole::Slider), 0.3, 0.8);
         let last = *got.borrow().last().expect("the press moves it");
         assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The app picker of Default apps, open with Firefox in it; what it was asked to do. Like the
+    /// app, "Another app…" lists every app and leaves it open, Cancel closes it.
+    fn picker(window: &MainWindow) -> Rc<RefCell<Vec<String>>> {
+        window.set_page("default-apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        window.on_default_apps_act(move |verb, _| {
+            a.borrow_mut().push(verb.to_string());
+            let w = w.unwrap();
+            let v = w.get_default_apps();
+            match verb.as_str() {
+                "picker-all" => w.set_default_apps(super::DefaultAppsView { picker_all: true, ..v }),
+                "picker-close" => w.set_default_apps(super::DefaultAppsView { picker_open: false, ..v }),
+                _ => {}
+            }
+        });
+        window.set_default_apps(picker_view());
+        mock_elapsed_time(Duration::ZERO);
+        acted
+    }
+
+    fn picker_view() -> super::DefaultAppsView {
+        let firefox = super::AppChoice { id: "firefox.desktop".into(), name: "Firefox".into(), ..Default::default() };
+        super::DefaultAppsView {
+            state: "list".into(),
+            picker_open: true,
+            picker_title: "Open web pages with".into(),
+            picker_apps: super::model(vec![firefox]),
+            ..Default::default()
+        }
+    }
+
+    /// Past the window's checks for a focus that went away (150 ms each).
+    fn wait_for_the_focus() {
+        for _ in 0..3 {
+            mock_elapsed_time(Duration::from_millis(200));
+        }
+    }
+
+    /// Esc closes the app picker as long as nothing was done in it.
+    #[test]
+    fn esc_closes_the_app_picker() {
+        let window = window();
+        let acted = picker(&window);
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// After "Another app…" (which goes away) the picker still has the keyboard: Esc closes it.
+    #[test]
+    fn the_app_picker_keeps_the_keyboard_after_another_app() {
+        let window = window();
+        let acted = picker(&window);
+        tab_to(&window, "Another app…");
+        press(&window, " ");
+        wait_for_the_focus();
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-all", "picker-close"]);
+    }
+
+    /// Nor does Tab leave it for the page behind then.
+    #[test]
+    fn tab_stays_in_the_app_picker_after_another_app() {
+        let window = window();
+        let _acted = picker(&window);
+        tab_to(&window, "Another app…");
+        press(&window, " ");
+        wait_for_the_focus();
+        for _ in 0..6 {
+            press(&window, Key::Tab);
+            assert!(ring_on(&window, "Firefox") || ring_on(&window, "Cancel"), "the focus is behind the dialog");
+        }
+    }
+
+    /// A render while a row of the picker has the focus (its rows are built again) leaves the
+    /// keyboard on that row.
+    #[test]
+    fn the_app_picker_keeps_the_keyboard_through_a_render() {
+        let window = window();
+        let acted = picker(&window);
+        tab_to(&window, "Firefox");
+        // default_apps::render builds the picker's apps afresh.
+        window.set_default_apps(picker_view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "Firefox"));
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// A dialog's button that a render takes away while it has the focus: the dialog keeps the
+    /// keyboard (Esc), and the page behind gets none of it.
+    #[test]
+    fn a_dialog_keeps_the_keyboard_when_its_focused_button_goes() {
+        let window = window();
+        let moved = Rc::new(RefCell::new(0));
+        let m = moved.clone();
+        window.on_move_selection(move |_| *m.borrow_mut() += 1);
+        let acted = picker(&window);
+        tab_to(&window, "Another app…");
+        // Gone with the next render, as after "Another app…".
+        window.set_default_apps(super::DefaultAppsView { picker_all: true, ..picker_view() });
+        wait_for_the_focus();
+        press(&window, Key::DownArrow);
+        assert_eq!(*moved.borrow(), 0, "↓ moved the list behind the dialog");
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// When Slint drops the focus of a control that scrolls out of sight, the window takes it:
+    /// its keys (Ctrl K here) keep working.
+    #[test]
+    fn the_window_keeps_its_keys_when_the_focused_row_scrolls_away() {
+        let window = window();
+        window.set_page("wifi".into());
+        let section = super::Section { title: "AVAILABLE".into(), rows: super::model(wifi_rows(30, 0)) };
+        window.set_sections(super::model(vec![section]));
+        let opened = Rc::new(RefCell::new(0));
+        let o = opened.clone();
+        window.on_palette_open(move || *o.borrow_mut() += 1);
+        tab_to(&window, "Network 0, WPA2 · 5 GHz");
+        let row = ElementHandle::find_by_accessible_label(&window, "Network 3, WPA2 · 5 GHz").next().unwrap();
+        row.scroll(0.0, -3000.0);
+        // Slint drops the focus at the next pointer event.
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 400.0) });
+        assert!(!ring_on(&window, "Network 0, WPA2 · 5 GHz"), "the row didn't scroll away");
+        wait_for_the_focus();
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        press(&window, "k");
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        assert_eq!(*opened.borrow(), 1, "Ctrl K went nowhere");
+    }
+
+    /// Set up… (D-44) is a dialog like the others: Tab stays in it, and the focus goes back to
+    /// Set up… after it.
+    #[test]
+    fn the_setup_dialog_gives_the_focus_back_to_set_up() {
+        let window = window();
+        window.set_page("shortcuts".into());
+        window.set_shortcuts(super::ShortcutsView { state: "list".into(), not_loaded: true, ..Default::default() });
+        let w = window.as_weak();
+        window.global::<super::Setup>().on_open(move || w.unwrap().global::<super::Setup>().set_shown(true));
+        tab_to(&window, "Set up…");
+        press(&window, Key::Return);
+        assert!(window.global::<super::Setup>().get_shown());
+        tab_to(&window, "Not now");
+        for _ in 0..4 {
+            press(&window, Key::Tab);
+            assert!(ring_on(&window, "Not now") || ring_on(&window, "Add the line"), "the focus is behind the dialog");
+        }
+        tab_to(&window, "Not now");
+        press(&window, Key::Return);
+        assert!(!window.global::<super::Setup>().get_shown());
+        mock_elapsed_time(Duration::ZERO);
+        assert!(ring_on(&window, "Set up…"));
+    }
+
+    /// Clicks a palette row's slider, then presses ↓, a letter and Esc: what the palette got of
+    /// them, and its search text. `rebuilt`: the change replaced the rows, as a render does.
+    fn keys_after_a_click_on_a_palette_slider(rebuilt: bool) -> (Vec<String>, String) {
+        let window = window();
+        let got = Rc::new(RefCell::new(Vec::<String>::new()));
+        let g = got.clone();
+        window.on_palette_key(move |key| g.borrow_mut().push(key.to_string()));
+        let view = || super::PaletteView {
+            open: true,
+            rows: super::model(vec![super::PaletteRow {
+                kind: "slider".into(),
+                id: "repeat-delay".into(),
+                title: "Repeat delay".into(),
+                pre: "Repeat delay".into(),
+                value: 0.5,
+                maximum: 1.0,
+                step: 0.1,
+                selected: true,
+                ..Default::default()
+            }]),
+            keys: super::model(vec![super::Hint::new("Esc", "Close")]),
+            ..Default::default()
+        };
+        window.set_palette_view(view());
+        let w = window.as_weak();
+        window.on_palette_set(move |_, _| {
+            if rebuilt {
+                w.unwrap().set_palette_view(view());
+            }
+        });
+        let slider = control(&window, "Repeat delay", AccessibleRole::Slider);
+        let (p, s) = (slider.absolute_position(), slider.size());
+        click(&window, p.x + s.width * 0.3, p.y + s.height / 2.0);
+        wait_for_the_focus();
+        press(&window, Key::DownArrow);
+        press(&window, "d");
+        press(&window, Key::Escape);
+        let got = got.borrow().clone();
+        (got, window.get_palette_query().to_string())
+    }
+
+    /// A click on a palette row's slider leaves the keyboard with the palette: ↑↓ and Esc still
+    /// reach it, and typing goes to the search.
+    #[test]
+    fn the_palette_keeps_the_keyboard_after_a_click_on_its_slider() {
+        assert_eq!(
+            keys_after_a_click_on_a_palette_slider(false),
+            (vec!["down".to_owned(), "esc".into()], "d".to_owned())
+        );
+    }
+
+    /// Also when the change rebuilt the row, and the slider that took the focus is gone.
+    #[test]
+    fn the_palette_keeps_the_keyboard_after_its_slider_is_rebuilt() {
+        assert_eq!(
+            keys_after_a_click_on_a_palette_slider(true),
+            (vec!["down".to_owned(), "esc".into()], "d".to_owned())
+        );
+    }
+
+    /// Shortcuts with two of the user's own (Open Kitty, Close window); what was done to them.
+    fn shortcuts_with_two_rows(window: &MainWindow) -> Rc<RefCell<Vec<String>>> {
+        let acted = Rc::new(RefCell::new(Vec::new()));
+        let a = acted.clone();
+        window.on_shortcuts_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        window.set_page("shortcuts".into());
+        let row = |id: &str, title: &str| super::ShortcutRow {
+            id: id.into(),
+            title: title.into(),
+            keys: super::model(vec![SharedString::from("Super"), "Q".into()]),
+            on: true,
+            can_delete: true,
+            ..Default::default()
+        };
+        window.set_shortcuts(super::ShortcutsView {
+            state: "list".into(),
+            editable: true,
+            rows: super::model(vec![
+                super::ShortcutRow { label: "APPS".into(), ..Default::default() },
+                row("c0", "Open Kitty"),
+                row("c1", "Close window"),
+            ]),
+            ..Default::default()
+        });
+        mock_elapsed_time(Duration::from_millis(50));
+        acted
+    }
+
+    /// When the shortcut dialog stops listening, the box that had the keyboard goes: the dialog
+    /// takes it back, so the next Esc closes it (it went nowhere before).
+    #[test]
+    fn the_shortcut_dialog_keeps_the_keyboard_after_listening() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        let mut view = window.get_shortcuts();
+        view.dialog = super::ShortcutDialog { open: true, listening: true, ..Default::default() };
+        window.set_shortcuts(view.clone());
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Escape);
+        // The listening box takes the press (and reports the release, as it does every key's).
+        assert!(acted.borrow().iter().any(|a| a == "d-stop "));
+        // The app stops listening, as d-stop does.
+        view.dialog.listening = false;
+        window.set_shortcuts(view);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Escape);
+        assert_eq!(acted.borrow().last().map(String::as_str), Some("d-cancel "));
+    }
+
+    /// A shortcut's ⋯ menu is worked from the keyboard: Enter opens it, ↓ and Enter choose from
+    /// it, and the focus is back on ⋯ after it.
+    #[test]
+    fn a_shortcuts_menu_is_worked_from_the_keyboard() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        tab_to(&window, "More for Open Kitty");
+        press(&window, Key::Return);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::DownArrow);
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["toggle c0"]);
+        assert!(ring_on(&window, "More for Open Kitty"));
+        // Esc closes it without a choice, Delete… is the last one.
+        press(&window, Key::Return);
+        press(&window, Key::Escape);
+        press(&window, Key::Return);
+        for _ in 0..5 {
+            press(&window, Key::DownArrow);
+        }
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["toggle c0", "delete c0"]);
+    }
+
+    /// While the menu is open the keys are its own: Tab and Enter don't reach the rows behind it.
+    #[test]
+    fn an_open_shortcuts_menu_keeps_the_keys_from_the_page() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        tab_to(&window, "More for Open Kitty");
+        press(&window, Key::Return);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Tab);
+        // The menu keeps the focus too: the window doesn't take it back.
+        wait_for_the_focus();
+        press(&window, Key::Tab);
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["open c0"]);
+    }
+
+    /// "Add a port" (a bridge's or a bond's): Tab reaches a device that can be one, and Enter
+    /// adds it; one that can't isn't a stop.
+    #[test]
+    fn a_port_is_added_from_the_keyboard() {
+        let window = window();
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let c = chosen.clone();
+        window.on_editor_port_chosen(move |interface| c.borrow_mut().push(interface.to_string()));
+        window.set_editor_open(true);
+        mock_elapsed_time(Duration::ZERO);
+        mock_elapsed_time(Duration::from_millis(300));
+        window.set_editor_options(super::EditorOptions {
+            candidates: super::model(vec![
+                super::PortCandidateUi {
+                    interface: "wlp2s0".into(),
+                    meta: "Wi-Fi".into(),
+                    blocked: "Wi-Fi can't be a port.".into(),
+                    ..Default::default()
+                },
+                super::PortCandidateUi { interface: "enp3s0".into(), meta: "Ethernet".into(), ..Default::default() },
+            ]),
+            ..Default::default()
+        });
+        window.set_editor_ports_open(true);
+        mock_elapsed_time(Duration::from_millis(50));
+        assert_eq!(tab_to(&window, "enp3s0, Ethernet"), 1, "the blocked device was a stop");
+        press(&window, Key::Return);
+        assert_eq!(*chosen.borrow(), ["enp3s0"]);
+    }
+
+    /// The app's icon is a button the keyboard reaches: it opens the icon chooser.
+    #[test]
+    fn an_apps_icon_is_a_button() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, _| a.borrow_mut().push(verb.to_string()));
+        window.set_apps(an_app("firefox", "Firefox"));
+        control(&window, "Change icon", AccessibleRole::Button).invoke_accessible_default_action();
+        tab_to(&window, "Change icon");
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["icon-open", "icon-open"]);
+    }
+
+    /// In the icon chooser the search has the keyboard when it opens, and Tab reaches the icons
+    /// it found: Enter picks one.
+    #[test]
+    fn an_icon_is_chosen_from_the_keyboard() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        let icon =
+            |id: &str| super::AppChoice { id: id.into(), name: id.into(), letter: "F".into(), ..Default::default() };
+        window.set_apps(super::AppsView {
+            icon_open: true,
+            icon_title: "Firefox's icon".into(),
+            icon_results: super::model(vec![icon("firefox"), icon("firefox-esr")]),
+            ..an_app("firefox", "Firefox")
+        });
+        mock_elapsed_time(Duration::ZERO);
+        press(&window, "f");
+        assert_eq!(*acted.borrow(), ["icon-query f"]);
+        tab_to(&window, "firefox-esr");
+        press(&window, Key::Return);
+        assert_eq!(acted.borrow().last().unwrap(), "icon-pick firefox-esr");
+    }
+
+    /// The hero's pill switches are what a screen reader hears when they have the focus: a
+    /// switch with its name and state (the switch drawn in them is only a picture).
+    #[test]
+    fn a_pill_switch_is_announced_as_a_switch() {
+        let window = window();
+        let switched = Rc::new(RefCell::new(0));
+        let s = switched.clone();
+        window.on_wifi_switched(move || *s.borrow_mut() += 1);
+        window.set_wifi_available(true);
+        window.set_wifi_on(true);
+        let switches: Vec<ElementHandle> = ElementHandle::find_by_accessible_label(&window, "Wi-Fi")
+            .filter(|e| e.accessible_role() == Some(AccessibleRole::Switch))
+            .collect();
+        assert_eq!(switches.len(), 1, "one switch named Wi-Fi");
+        assert_eq!(switches[0].accessible_checked(), Some(true));
+        // Tab reaches that switch itself: the ring, 2 px around the control with the focus, is
+        // around it.
+        let (p, ps) = (switches[0].absolute_position(), switches[0].size());
+        let on_it = (0..60).any(|_| {
+            press(&window, Key::Tab);
+            ElementHandle::find_by_element_id(&window, "Focusable::ring").next().is_some_and(|ring| {
+                let (r, rs) = (ring.absolute_position(), ring.size());
+                (r.x + 4.0 - p.x).abs() < 0.5
+                    && (r.y + 4.0 - p.y).abs() < 0.5
+                    && (rs.width - ps.width - 8.0).abs() < 0.5
+            })
+        });
+        assert!(on_it, "the switch never had the focus");
+        switches[0].invoke_accessible_default_action();
+        assert_eq!(*switched.borrow(), 1);
+    }
+
+    /// Apps' filter chips say which one is on, to a screen reader too; a category is a value,
+    /// not a filter.
+    #[test]
+    fn a_filter_chip_says_whether_its_on() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let filter = |id: &str, label: &str, selected: bool| super::AppFilter {
+            id: id.into(),
+            label: label.into(),
+            selected,
+            ..Default::default()
+        };
+        window.set_apps(super::AppsView {
+            filters: super::model(vec![filter("all", "All", false), filter("changed", "Changed", true)]),
+            category_lines: super::model(vec![super::ChipLine { items: super::model(vec!["Graphics".into()]) }]),
+            ..an_app("blender", "Blender")
+        });
+        let chip = |label: &str| control(&window, label, AccessibleRole::Button);
+        assert_eq!((chip("All").accessible_checkable(), chip("All").accessible_checked()), (Some(true), Some(false)));
+        assert_eq!(chip("Changed").accessible_checked(), Some(true));
+        assert_eq!(chip("Graphics").accessible_checkable(), Some(false));
+    }
+
+    /// Wallpaper from the keyboard: a folder used before, from the folder button's menu, and the
+    /// monitors a picture goes on (Enter picks one, Ctrl+Enter adds another, as Ctrl+click does).
+    #[test]
+    fn wallpapers_folders_and_monitors_are_chosen_from_the_keyboard() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("wallpaper".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_wallpaper_act(move |verb, arg, value| a.borrow_mut().push(format!("{verb} {arg} {value}")));
+        let monitor = |name: &str, x: f32| super::WallpaperMonitor {
+            name: name.into(),
+            model: "Dell U2720Q".into(),
+            x,
+            w: 0.5,
+            h: 1.0,
+            ..Default::default()
+        };
+        let view = || super::WallpaperView {
+            state: "list".into(),
+            aspect: 3.5,
+            folder: "~/Pictures".into(),
+            recent: super::model(vec![SharedString::from("~/Pictures"), "~/Wallpapers".into()]),
+            monitors: super::model(vec![monitor("DP-3", 0.0), monitor("DP-5", 0.5)]),
+            ..Default::default()
+        };
+        window.set_wallpaper(view());
+        tab_to(&window, "Folder");
+        press(&window, Key::Return);
+        press(&window, Key::DownArrow);
+        press(&window, Key::Return);
+        // Include pictures in subfolders keeps the menu open; Esc closes it.
+        press(&window, Key::Return);
+        press(&window, Key::DownArrow);
+        press(&window, Key::DownArrow);
+        press(&window, " ");
+        press(&window, Key::Escape);
+        assert!(ring_on(&window, "Folder"));
+        tab_to(&window, "DP-3, Dell U2720Q");
+        press(&window, Key::Return);
+        tab_to(&window, "DP-5, Dell U2720Q");
+        // A render builds the monitors again: the focus stays on DP-5.
+        window.set_wallpaper(view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "DP-5, Dell U2720Q"));
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        press(&window, Key::Return);
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        assert_eq!(*acted.borrow(), ["folder ~/Wallpapers 0", "subfolders  0", "target  1", "target-add  2"]);
+    }
+
+    /// A wallpaper's tile keeps the focus through a render, which builds the tiles again (after
+    /// Random, Tab went to a tile, and the next render dropped the focus to the window).
+    #[test]
+    fn a_wallpaper_tile_keeps_the_focus_through_a_render() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("wallpaper".into());
+        let view = || super::WallpaperView {
+            state: "list".into(),
+            aspect: 1.8,
+            folder: "~/Pictures".into(),
+            tiles: super::model(vec![super::WallpaperTile {
+                id: "/home/u/Pictures/teal.png".into(),
+                name: "teal.png".into(),
+                sub: "320 × 180".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        window.set_wallpaper(view());
+        tab_to(&window, "Random");
+        press(&window, Key::Tab);
+        assert!(ring_on(&window, "teal.png, 320 × 180"));
+        window.set_wallpaper(view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "teal.png, 320 × 180"), "the focus went with the old tile");
     }
 }

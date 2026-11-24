@@ -9,14 +9,19 @@
 mod hyprpaper;
 mod pictures;
 
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub use hyprpaper::{
     Entry as HyprpaperEntry, conf_text as hyprpaper_conf_text, entries as hyprpaper_entries,
-    fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, with_splash as hyprpaper_with_splash,
+    fit_mode as hyprpaper_fit_mode, splash as hyprpaper_splash, unwritable as hyprpaper_unwritable,
+    with_splash as hyprpaper_with_splash,
 };
-pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, read_folder, thumbnail};
+pub use pictures::{Folder, Picture, Subfolder, dimensions, is_picture, prune_thumbnails, read_folder, thumbnail};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -297,8 +302,10 @@ pub fn set(env: &Env, program: Program, set: &Set, monitors: &[String]) -> Resul
         Program::Hyprpaper => {
             // hyprpaper's empty monitor is its fallback; Lituus names each monitor instead.
             let targets = if set.monitors.is_empty() { monitors.to_vec() } else { set.monitors.clone() };
+            // hyprctl splits "monitor, path, fit" at each comma without a `\` before it.
+            let path = set.path.display().to_string().replace(',', "\\,");
             for m in targets {
-                let arg = format!("{m}, {}, {}", set.path.display(), set.fill.hyprctl());
+                let arg = format!("{m}, {path}, {}", set.fill.hyprctl());
                 let out = env.run("hyprctl", &["hyprpaper", "wallpaper", &arg])?;
                 if out.contains("failed") || out.contains("error") {
                     return Err(Error::Refused(out.trim().to_owned()));
@@ -309,12 +316,18 @@ pub fn set(env: &Env, program: Program, set: &Set, monitors: &[String]) -> Resul
     }
 }
 
-/// Starts the program, in the background, detached from Lituus.
+/// Starts the program, in the background, detached from Lituus: in a process group of its own,
+/// so Ctrl+C in the terminal Lituus was started from doesn't stop it too, and waited for on a
+/// thread, so it doesn't stay behind as a zombie when it ends (stopped to start it again, or to
+/// switch) while Lituus runs.
 pub fn start(env: &Env, program: Program) -> Result<(), Error> {
     if env.find(program.daemon()).is_none() {
         return Err(Error::NotInstalled(program.name()));
     }
-    busy_retry(|| env.command(program.daemon()).stdout(Stdio::null()).stderr(Stdio::null()).spawn())?;
+    let mut daemon = busy_retry(|| {
+        env.command(program.daemon()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn()
+    })?;
+    std::thread::spawn(move || daemon.wait());
     Ok(())
 }
 
@@ -346,9 +359,48 @@ pub fn after_command(template: &str, file: &Path) -> String {
     template.replace("{file}", &quoted)
 }
 
-/// Runs the command after a change through the shell, and waits for it.
+/// Runs the command after a change through the shell, and waits for the shell: not for what it
+/// leaves running (`waybar &`), which keeps the shell's output open for as long as it runs. If it
+/// fails, the error is what it wrote to stderr.
 pub fn run_after(env: &Env, template: &str, file: &Path) -> Result<(), Error> {
-    env.run("/bin/sh", &["-c", &after_command(template, file)]).map(|_| ())
+    let (mut reader, writer) = std::io::pipe()?;
+    let mut child = {
+        let mut shell = env.command("/bin/sh");
+        // A process group of its own, as `start`'s: what it leaves running isn't stopped by Ctrl+C
+        // in the terminal Lituus was started from.
+        shell.args(["-c", &after_command(template, file)]).stdout(Stdio::null()).stderr(writer).process_group(0);
+        busy_retry(|| shell.spawn())?
+        // `shell`, with this end of the pipe, goes here: only the shell and what it starts keep it.
+    };
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let (ended, end) = std::sync::mpsc::channel();
+    let kept = said.clone();
+    // Read to the end, however long what was left running writes: a full pipe would stop it, and
+    // a closed one end it.
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+                    let room = 4096usize.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = ended.send(());
+    });
+    if child.wait()?.success() {
+        return Ok(());
+    }
+    // What the shell wrote is read at once, unless something it left running holds the pipe: a
+    // moment for it then.
+    let _ = end.recv_timeout(Duration::from_millis(200));
+    let text = String::from_utf8_lossy(&said.lock().unwrap_or_else(|e| e.into_inner())).trim().to_owned();
+    Err(Error::Refused(text))
 }
 
 /// The line that starts it with Hyprland, in Lua or in hyprlang.
@@ -377,11 +429,31 @@ mod tests {
         std::fs::create_dir_all(d.join("bin")).unwrap();
         for (command, body) in scripts {
             let p = d.join("bin").join(command);
-            std::fs::write(&p, format!("#!/bin/sh\necho \"$0 $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/sh\n[ -n \"$STAND_IN_READY\" ] && exit 0\necho \"$0 $*\" >> {}/calls\n{body}\n",
+                    d.display()
+                ),
+            )
+            .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ready(&p);
         }
         let env = Env { path: vec![d.join("bin")], runtime_dir: Some(d.join("run")), signature: Some("sig".into()) };
         (env, d)
+    }
+
+    /// Runs a stand-in just written, doing nothing, until it runs: while a test on another thread
+    /// forks, its child holds this file open for writing for a moment, and running it fails with
+    /// "Text file busy" (N-10). Once it ran, nothing has it open for writing any more.
+    fn ready(script: &Path) {
+        for _ in 0..500 {
+            match Command::new(script).env("STAND_IN_READY", "1").status() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                _ => return,
+            }
+        }
     }
 
     fn calls(d: &Path) -> Vec<String> {
@@ -461,6 +533,40 @@ mod tests {
     }
 
     #[test]
+    fn a_command_that_leaves_something_running_returns() {
+        let (env, d) = stand_ins("background", &[]);
+        let start = std::time::Instant::now();
+        run_after(&env, "/bin/sleep 12 & true", Path::new("/w/a.jpg")).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", start.elapsed());
+        // One that fails says what it wrote, though what it left running still writes.
+        let failed = run_after(
+            &env,
+            "(/bin/sleep 1; echo later >&2) & echo 'no such scheme' >&2; exit 1",
+            Path::new("/w/a.jpg"),
+        );
+        assert!(matches!(&failed, Err(Error::Refused(text)) if text == "no such scheme"), "{failed:?}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", start.elapsed());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn hyprpaper_gets_a_comma_in_a_path_escaped() {
+        let (env, d) = stand_ins("comma", &[("hyprctl", "")]);
+        let pic = Set {
+            path: "/w/Trip, 2024.jpg".into(),
+            monitors: vec![],
+            fill: Fill::Cover,
+            transition: String::new(),
+            duration: 0.0,
+            fps: 0,
+            bar_colour: String::new(),
+        };
+        set(&env, Program::Hyprpaper, &pic, &["DP-3".into()]).unwrap();
+        assert_eq!(calls(&d), ["hyprctl hyprpaper wallpaper DP-3, /w/Trip\\, 2024.jpg, cover"]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
     fn nothing_installed() {
         let (env, d) = stand_ins("none", &[]);
         assert_eq!(status(&env), Status::default());
@@ -470,6 +576,46 @@ mod tests {
             "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"awww-daemon\") end)"
         );
         assert_eq!(autostart_line(Program::Hyprpaper, false), "exec-once = hyprpaper");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The process group of a process (`/proc/<pid>/stat`'s fifth field, after the name).
+    fn group(stat: &str) -> String {
+        stat.rsplit_once(')').unwrap().1.split_whitespace().nth(2).unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_started_program_is_detached_and_reaped() {
+        let (env, d) = stand_ins(
+            "start",
+            &[(
+                "hyprpaper",
+                // Only the stand-ins are on the PATH.
+                r#"echo $$ > "${0%/bin/*}/pid"; /bin/sleep 0.5"#,
+            )],
+        );
+        start(&env, Program::Hyprpaper).unwrap();
+        let mut pid = String::new();
+        for _ in 0..100 {
+            pid = std::fs::read_to_string(d.join("pid")).unwrap_or_default().trim().to_owned();
+            if !pid.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!pid.is_empty(), "{:?}", calls(&d));
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        // A process group of its own, not Lituus's.
+        let stat = std::fs::read_to_string(proc.join("stat")).unwrap();
+        assert_ne!(group(&stat), group(&std::fs::read_to_string("/proc/self/stat").unwrap()), "{stat}");
+        // Gone once it ended: waited for, not a zombie.
+        for _ in 0..100 {
+            if !proc.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!proc.exists(), "{:?}", std::fs::read_to_string(proc.join("stat")));
         std::fs::remove_dir_all(&d).unwrap();
     }
 

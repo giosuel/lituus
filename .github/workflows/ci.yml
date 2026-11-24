@@ -1,4 +1,5 @@
-# Continuous integration for every PR into main and every push to main.
+# Continuous integration for every PR into main and every push to main, and for each release's
+# tagged commit before it's published (release.yml calls it).
 #
 # Only the aggregate "CI result" job needs to be required, so jobs can be added
 # or renamed without touching the ruleset.
@@ -11,12 +12,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+# A PR's new push cancels its older run. Every other run has a group of its own commit: with one
+# group for main, each merge cancelled the run still waiting, and merges in a row went unchecked.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -99,6 +103,8 @@ jobs:
         run: desktop-file-validate packaging/linux/ch.giosuel.Lituus.desktop
       - name: appstreamcli validate
         run: appstreamcli validate --no-net packaging/linux/ch.giosuel.Lituus.metainfo.xml
+      - name: The release notes a tag message makes (scripts/set-version.sh)
+        run: scripts/set-version-test.sh
 
   nix:
     name: nix (flake)
@@ -129,10 +135,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      # bash for pipefail: under sh a missing Hyprland would pass as head's success.
       - name: Hyprland version
+        shell: bash
         run: Hyprland --version | head -1
       - name: test lituus-hypr
         run: cargo test --locked -p lituus-hypr
+        env:
+          LITUUS_REQUIRE_HYPRLAND: 1
 
   ci-result:
     name: CI result

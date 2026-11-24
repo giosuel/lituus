@@ -1,6 +1,6 @@
 ---
 title: Lituus
-description: The settings app for Hyprland and other desktops without one. Network, Bluetooth, sound and displays, written in Rust.
+description: The settings app for Hyprland and other desktops without one. Network, Bluetooth, displays, sound, input, wallpaper, apps and more, written in Rust.
 template: splash
 editUrl: false
 ---
@@ -12,7 +12,7 @@ import { Card, CardGrid, Aside } from '@astrojs/starlight/components';
 <div class="vc-hero">
   <img class="vc-hero__mark" src="/favicon.svg" alt="" />
   <h1>Your desktop's settings,<br /><span class="vc-gradient">one window.</span></h1>
-  <p class="vc-lead">Lituus is the settings app <strong>Hyprland</strong> doesn't come with: network, Bluetooth, sound and displays, with the depth of KDE's settings, in a native app written in Rust. It drives NetworkManager, BlueZ, PipeWire and Hyprland, so their own tools keep working alongside it.</p>
+  <p class="vc-lead">Lituus is the settings app <strong>Hyprland</strong> doesn't come with: network, Bluetooth, displays, sound, input, wallpaper, apps and default apps, and your system, in one native app written in Rust. It drives NetworkManager, BlueZ, PipeWire and Hyprland, so their own tools keep working alongside it.</p>
   <div class="vc-badges">
     <a href="https://github.com/giosuel/lituus/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/giosuel/lituus/ci.yml?branch=main&label=CI" alt="CI status" /></a>
     <img src="https://img.shields.io/badge/Linux-x64%20%7C%20arm64-5cc8b0" alt="Linux, x64 and arm64" />
@@ -31,7 +31,7 @@ import { Card, CardGrid, Aside } from '@astrojs/starlight/components';
 </div>
 
 <Aside type="caution" title="In development">
-Lituus is new: the first release, 0.1.0, is on its way. Network and Bluetooth are the most tried parts; sound and displays are newer.
+Lituus is new and still at 0.x, so expect changes between releases. Network and Bluetooth are the most tried parts; the other pages are newer.
 </Aside>
 
 <h2 class="vc-section">Settings, without the desktop environment</h2>
@@ -39,22 +39,34 @@ Lituus is new: the first release, 0.1.0, is on its way. Network and Bluetooth ar
 
 <CardGrid>
   <Card title="Network" icon="rocket">
-    Wi-Fi, wired and VPNs: connect in a keystroke, and edit every setting, from WPA Enterprise to IPv6, DNS and routes. WireGuard and OpenVPN files, a hotspot, passwords in your keyring.
+    Wi-Fi, wired and VPNs: connect in a keystroke, and edit every setting, from WPA Enterprise to IPv6, DNS and routes. WireGuard, OpenVPN and Cisco AnyConnect with web sign-in, a hotspot, passwords in your keyring. [Network](/guide/network/)
   </Card>
   <Card title="Bluetooth" icon="setting">
-    Pairing with every kind of code, battery levels, headset audio, sending and receiving files, and a phone's internet.
-  </Card>
-  <Card title="Sound" icon="seti:audio">
-    The output and input in use, a volume per app and where it plays, ports, balance and profiles, live with PipeWire.
+    Pairing with every kind of code, battery levels, headset audio, sending and receiving files, and a phone's internet. [Bluetooth](/guide/bluetooth/)
   </Card>
   <Card title="Displays" icon="laptop">
-    Drag monitors into place, set modes, scale, HDR and VRR, and keep it or it goes back by itself. Workspaces on monitors, and profiles that switch when you plug in.
+    Drag monitors into place, set modes, scale, HDR and VRR, and keep it or it goes back by itself. Workspaces on monitors, and profiles that switch when you plug in. [Displays](/guide/displays/)
   </Card>
-  <Card title="Your wallpaper's colours" icon="seti:image">
-    Reads matugen palettes, ML4W's included, and recolours itself live when you change wallpaper. Five built-in themes otherwise.
+  <Card title="Sound" icon="seti:audio">
+    The output and input in use, a volume per app and where it plays, ports, balance and sound cards' profiles, live with PipeWire. [Sound](/guide/sound/)
+  </Card>
+  <Card title="Input" icon="seti:config">
+    Keyboard layouts, Caps Lock and the Compose key, mice and touchpads, and Hyprland's shortcuts in words, changed in a dialog. [Input](/guide/input/)
+  </Card>
+  <Card title="Wallpaper" icon="seti:image">
+    Pictures from a folder on each monitor, with awww or hyprpaper: transitions, a slideshow, and a command after each change. [Wallpaper](/guide/wallpaper/)
+  </Card>
+  <Card title="Apps and default apps" icon="window">
+    What your launcher shows and how each app starts, edited as your own copy; AppImages and websites as apps; which app opens links and files. [Apps](/guide/apps/) · [Default apps](/guide/default-apps/)
+  </Card>
+  <Card title="System" icon="information">
+    Hardware, storage and distribution, package updates for pacman, the AUR, DNF, zypper, APT, XBPS, Flatpak and Snap, and renaming the computer. [System](/guide/system/)
+  </Card>
+  <Card title="Your wallpaper's colours" icon="moon">
+    Takes its accent from the colours matugen makes from your wallpaper, ML4W's included, and follows each change. Five built-in themes otherwise, dark and light. [Settings](/guide/settings/)
   </Card>
   <Card title="Made for Hyprland" icon="approve-check">
-    A normal window with the class <code>ch.giosuel.Lituus</code> for window rules, keyboard-driven (<kbd>Ctrl</kbd> <kbd>K</kbd> finds any setting), with a tray icon and quick popup. Its own Hyprland file, never yours.
+    A normal window with the class <code>ch.giosuel.Lituus</code> for window rules, keyboard first (<kbd>Ctrl</kbd> <kbd>K</kbd> finds any page, setting or action), with a tray icon and quick popup. Its own Hyprland file, never yours. [The window](/guide/window/)
   </Card>
 </CardGrid>
 
@@ -65,7 +77,7 @@ Lituus is new: the first release, 0.1.0, is on its way. Network and Bluetooth ar
   <div class="vc-step">
     <span class="vc-step__n">1</span>
     <h3>Install it</h3>
-    <p>From the AUR, as a <code>.deb</code> or <code>.rpm</code>, or as an AppImage, for x86-64 and ARM64. See <a href="/install/">Installing</a>.</p>
+    <p>From the AUR, as a <code>.deb</code> or <code>.rpm</code>, an AppImage, a Flatpak or a Nix flake, for x86-64 and ARM64. See <a href="/install/">Installing</a>.</p>
   </div>
   <div class="vc-step">
     <span class="vc-step__n">2</span>
@@ -75,7 +87,7 @@ Lituus is new: the first release, 0.1.0, is on its way. Network and Bluetooth ar
   <div class="vc-step">
     <span class="vc-step__n">3</span>
     <h3>Set it up</h3>
-    <p>Pick a network, pair your headphones, place your monitors. Lituus picks up what you already have; for Displays, add one line to your config (see <a href="/guide/displays/">Displays</a>).</p>
+    <p>Pick a network, pair your headphones, place your monitors. Lituus picks up what you already have; for the pages that write to Hyprland, <strong>Set up…</strong> adds one line to your config (see <a href="/guide/hyprland/#lituuss-own-file">Hyprland</a>).</p>
   </div>
 </div>
 

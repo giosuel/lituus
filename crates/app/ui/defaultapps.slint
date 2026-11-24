@@ -229,6 +229,8 @@ component PickerRow inherits Focusable {
     callback chosen();
     height: 44px;
     border-radius: 9px;
+    // Each render builds the picker's rows again: the new one takes the focus back.
+    focus-key: "picker:" + root.app.id;
     background: self.has-hover || self.has-focus ? Theme.accent-soft-bg : transparent;
     accessible-role: list-item;
     accessible-label: root.app.name;

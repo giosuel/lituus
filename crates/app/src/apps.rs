@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
+use lituus_system::terminal::Terminal;
 use lituus_xdg::Dirs;
 use lituus_xdg::desktop::{self, App};
 use lituus_xdg::edit::{self, DesktopFile, ENTRY};
+use lituus_xdg::exec;
 use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::{
@@ -28,6 +30,9 @@ type Drawn = (Option<SystemTime>, SharedPixelBuffer<Rgba8Pixel>);
 /// show them at 28, the selection at 36, the hero at 20. The details' 56 px one is loaded from
 /// its file, for the one app selected.
 const LIST_ICON: f32 = 36.0;
+
+/// The details' icon, and the icon picker's (36).
+const DETAILS_ICON: f32 = 56.0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Problem {
@@ -65,6 +70,9 @@ pub struct State {
     pub add: Option<AddForm>,
     /// Choosing an icon: for the app being added, or the selected one.
     pub icon: Option<IconPicker>,
+    /// Counts the reads started and the changes made to `data`: a read's result is used only
+    /// when nothing happened after it started, so a slow read never puts back an older list.
+    generation: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -151,18 +159,57 @@ fn slug(name: &str) -> String {
     s.split('-').filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
 }
 
+/// `base` with -2, -3… until `taken` says no: so adding never replaces a file of the same name.
+fn free_name(base: &str, ext: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut name = format!("{base}.{ext}");
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}-{n}.{ext}");
+        n += 1;
+    }
+    name
+}
+
+/// A folder of Lituus's own to extract into, new each time: in $XDG_RUNTIME_DIR (only the user's),
+/// made with 0700 and failing if the name is there already, so nothing another user put in a
+/// shared /tmp is used.
+fn private_dir(name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    (0..100).find_map(|_| {
+        let dir = base.join(format!("lituus-{name}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).ok().map(|()| dir)
+    })
+}
+
+/// An AppImage of type 2, the kind whose runtime extracts files on `--appimage-extract`: an ELF
+/// program with "AI" and 2 at byte 8. Anything else would just start, with those arguments.
+fn is_appimage(path: &Path) -> bool {
+    use std::io::Read;
+    let mut start = [0u8; 11];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut start)).is_ok()
+        && start.starts_with(b"\x7fELF")
+        && start[8..] == *b"AI\x02"
+}
+
 /// An AppImage's own desktop file and icon, extracted into a folder: (name, comment, categories,
-/// icon file). The AppImage is made executable first.
+/// icon file). The AppImage is made executable first (for its owner, as a download isn't).
 fn read_appimage(path: &Path, icons_dir: &Path) -> Option<(String, String, Vec<String>, Option<PathBuf>)> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = path.metadata().ok()?.permissions();
     if perms.mode() & 0o100 == 0 {
-        perms.set_mode(perms.mode() | 0o755);
+        perms.set_mode(perms.mode() | 0o100);
         std::fs::set_permissions(path, perms).ok()?;
     }
-    let tmp = std::env::temp_dir().join(format!("lituus-appimage-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).ok()?;
+    if !is_appimage(path) {
+        return None;
+    }
+    let tmp = private_dir("appimage")?;
     for pattern in ["*.desktop", ".DirIcon"] {
         let _ = std::process::Command::new(path)
             .args(["--appimage-extract", pattern])
@@ -184,8 +231,14 @@ fn read_appimage(path: &Path, icons_dir: &Path) -> Option<(String, String, Vec<S
         .ok()
         .filter(|p| p.starts_with(root.canonicalize().unwrap_or_default()) && p.is_file())
         .and_then(|p| {
-            let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "png".into());
-            let to = icons_dir.join(format!("{}.{ext}", slug(&app.name)));
+            let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| {
+                // .DirIcon has no extension: an SVG is text that says so near its start.
+                let start = std::fs::read(&p).unwrap_or_default();
+                let svg = String::from_utf8_lossy(&start[..start.len().min(1024)]).contains("<svg");
+                (if svg { "svg" } else { "png" }).into()
+            });
+            let base = Some(slug(&app.name)).filter(|s| !s.is_empty()).unwrap_or_else(|| "lituus-app".into());
+            let to = icons_dir.join(free_name(&base, &ext, |n| icons_dir.join(n).symlink_metadata().is_ok()));
             std::fs::create_dir_all(icons_dir).ok()?;
             std::fs::copy(&p, &to).ok()?;
             Some(to)
@@ -261,11 +314,28 @@ fn read(dirs: Dirs, scale: f32, known: &HashMap<PathBuf, Drawn>) -> Data {
     Data { dirs, apps, icons, theme, problems, electron, drawn, scale }
 }
 
+fn is_svg(file: &Path) -> bool {
+    file.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+}
+
+/// usvg's options for an icon: an `<image>` in it is drawn from data in the file itself, never
+/// from a file it names. Any icon theme or desktop file can name one, and a FIFO there would hang
+/// the read, /dev/zero fill the memory.
+fn svg_options() -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    options
+}
+
 /// An icon's pixels, at most `side` square: an SVG drawn at that size, a bigger picture made
 /// smaller. None for what can't be read here; the window's thread then tries its file.
-fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
-        let tree = resvg::usvg::Tree::from_data(&std::fs::read(file).ok()?, &resvg::usvg::Options::default()).ok()?;
+pub(crate) fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    // Not a FIFO or a device, which a read would wait on or never finish.
+    if !file.is_file() {
+        return None;
+    }
+    if is_svg(file) {
+        let tree = resvg::usvg::Tree::from_data(&std::fs::read(file).ok()?, &svg_options()).ok()?;
         let size = tree.size();
         let scale = side as f32 / size.width().max(size.height());
         let (w, h) = ((size.width() * scale).round().max(1.0) as u32, (size.height() * scale).round().max(1.0) as u32);
@@ -287,6 +357,16 @@ fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     };
     let rgba = picture.to_rgba8();
     Some(SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
+
+/// An icon's file as a picture for the window, `side` pixels at most. An SVG is drawn here with
+/// `svg_options`: Slint's own loader would read the files it names, on the window's thread, and
+/// takes no options.
+pub(crate) fn icon_image(file: &Path, side: u32) -> Image {
+    if is_svg(file) || !file.is_file() {
+        return draw_icon(file, side).map(Image::from_rgba8).unwrap_or_default();
+    }
+    Image::load_from_path(file).unwrap_or_default()
 }
 
 /// What's wrong with the apps, found by looking at their files.
@@ -341,20 +421,32 @@ fn newer_appimage(program: &str) -> Option<PathBuf> {
 /// Reads the apps and draws their icons, on a thread; icons drawn before are kept.
 pub fn open(weak: &slint::Weak<MainWindow>) {
     let scale = weak.upgrade().map(|w| slint::ComponentHandle::window(&w).scale_factor()).unwrap_or(1.0);
-    let known = APP.with(|app| {
-        app.borrow().apps.data.as_ref().filter(|d| d.scale == scale).map(|d| d.drawn.clone()).unwrap_or_default()
-    });
+    APP.with(|app| read_on_thread(weak, &mut app.borrow_mut().apps, Dirs::from_env(), scale));
+}
+
+fn read_on_thread(weak: &slint::Weak<MainWindow>, state: &mut State, dirs: Dirs, scale: f32) {
+    let known = state.data.as_ref().filter(|d| d.scale == scale).map(|d| d.drawn.clone()).unwrap_or_default();
+    let generation = next_generation(state);
     let weak = weak.clone();
     std::thread::spawn(move || {
-        let data = read(Dirs::from_env(), scale, &known);
+        let data = read(dirs, scale, &known);
         let w = weak.clone();
-        let _ = weak.upgrade_in_event_loop(move |_| {
-            update(&w, move |app| {
-                app.apps.data = Some(data);
-                app.apps.images.clear();
-            })
-        });
+        let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| landed(&mut app.apps, generation, data)));
     });
+}
+
+/// A read starts, or `data` changes: the reads started before are out of date.
+fn next_generation(state: &mut State) -> u64 {
+    state.generation += 1;
+    state.generation
+}
+
+/// A read's result, started at `generation`: shown only when the list didn't change since.
+fn landed(state: &mut State, generation: u64, data: Data) {
+    if generation == state.generation {
+        state.data = Some(data);
+        state.images.clear();
+    }
 }
 
 pub fn status(state: &State) -> String {
@@ -363,23 +455,68 @@ pub fn status(state: &State) -> String {
 
 // ---- what the buttons do ------------------------------------------------------------------------
 
-fn reload(state: &mut State) {
-    if let Some(d) = &mut state.data {
-        let dirs = d.dirs.clone();
-        *d = read(dirs, d.scale, &d.drawn);
+/// After a change to the apps `ids`: they are read again at once, one file each, so the page
+/// shows the change; the whole list (every app, its program and icon) is read on a thread, as
+/// `open` does, and not on the window's.
+fn reload(weak: &slint::Weak<MainWindow>, state: &mut State, ids: &[String]) {
+    refresh(state, ids);
+    if weak.upgrade().is_some()
+        && let Some(d) = &state.data
+    {
+        let (dirs, scale) = (d.dirs.clone(), d.scale);
+        read_on_thread(weak, state, dirs, scale);
     }
+}
+
+/// The apps `ids` read again from their files, in place: an app gone, added, or changed.
+fn refresh(state: &mut State, ids: &[String]) {
+    next_generation(state);
     state.images.clear();
+    let Some(d) = &mut state.data else { return };
+    let path = std::env::var("PATH").unwrap_or_default();
+    let side = (LIST_ICON * d.scale).round().max(1.0) as u32;
+    for id in ids {
+        let at = d.apps.iter().position(|a| &a.id == id);
+        d.icons.remove(id);
+        d.electron.remove(id);
+        let problem_at = d.problems.iter().position(|(i, _)| i == id);
+        d.problems.retain(|(i, _)| i != id);
+        let Some(app) = desktop::find(&d.dirs, id) else {
+            if let Some(i) = at {
+                d.apps.remove(i);
+            }
+            continue;
+        };
+        if let Some(file) = desktop::icon_file(&d.dirs, &d.theme, &app.icon) {
+            let modified = file.metadata().and_then(|m| m.modified()).ok();
+            if !d.drawn.get(&file).is_some_and(|(m, _)| *m == modified)
+                && let Some(pixels) = draw_icon(&file, side)
+            {
+                d.drawn.insert(file.clone(), (modified, pixels));
+            }
+            d.icons.insert(id.clone(), file);
+        }
+        d.electron.insert(id.clone(), app.flatpak.is_empty() && edit::is_electron(&app.exec, &path));
+        for (n, p) in problems(std::slice::from_ref(&app), &d.icons, &path).into_iter().enumerate() {
+            let i = problem_at.map_or(d.problems.len(), |i| (i + n).min(d.problems.len()));
+            d.problems.insert(i, p);
+        }
+        match at {
+            Some(i) => d.apps[i] = app,
+            None => d.apps.push(app),
+        }
+    }
 }
 
 /// Changes the selected app's own copy.
-fn change(state: &mut State, edit_: impl FnOnce(&mut DesktopFile)) {
-    let (Some(d), Some(id)) = (&state.data, &state.selected) else { return };
-    let Some(app) = d.apps.iter().find(|a| &a.id == id) else { return };
-    match edit::change(&d.dirs, id, &app.path, edit_) {
+fn change(weak: &slint::Weak<MainWindow>, state: &mut State, edit_: impl FnOnce(&mut DesktopFile)) {
+    let (Some(d), Some(id)) = (&state.data, state.selected.clone()) else { return };
+    let Some(app) = d.apps.iter().find(|a| a.id == id) else { return };
+    match edit::change(&d.dirs, &id, &app.path, edit_) {
         Ok(_) => state.message.clear(),
         Err(e) => state.message = format!("Couldn't save your copy of {}: {e}.", app.name),
     }
-    reload(state);
+    reload(weak, state, &[id]);
 }
 
 fn selected_app(state: &State) -> Option<&App> {
@@ -449,85 +586,92 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
                     }
                 }
             }
-            reload(state);
+            reload(weak, state, &ids);
         }
         "show-all" => {
+            let mut ids = Vec::new();
             if let Some(d) = &state.data {
                 for a in d.apps.iter().filter(|a| a.no_display && a.own) {
                     let _ = edit::change(&d.dirs, &a.id, &a.path, |f| f.set(ENTRY, "NoDisplay", None));
+                    ids.push(a.id.clone());
                 }
             }
-            reload(state);
+            reload(weak, state, &ids);
         }
-        "shown" => {
-            let hidden = selected_app(state).is_some_and(|a| a.no_display);
-            change(state, |f| f.set_bool("NoDisplay", !hidden));
-        }
-        "name" if !arg.trim().is_empty() => change(state, |f| f.set(ENTRY, "Name", Some(arg.trim()))),
-        "comment" => change(state, |f| f.set(ENTRY, "Comment", Some(arg.trim()).filter(|c| !c.is_empty()))),
-        "exec" if !arg.trim().is_empty() => change(state, |f| f.set(ENTRY, "Exec", Some(arg.trim()))),
-        "keywords" => change(state, |f| {
+        // The switches turn what the file says, which the page may not show yet.
+        "shown" => change(weak, state, |f| {
+            let hidden = f.get(ENTRY, "NoDisplay").as_deref() == Some("true");
+            f.set_bool("NoDisplay", !hidden);
+        }),
+        "name" if !arg.trim().is_empty() => change(weak, state, |f| f.set(ENTRY, "Name", Some(arg.trim()))),
+        "comment" => change(weak, state, |f| f.set(ENTRY, "Comment", Some(arg.trim()).filter(|c| !c.is_empty()))),
+        "exec" if !arg.trim().is_empty() => change(weak, state, |f| f.set(ENTRY, "Exec", Some(arg.trim()))),
+        "keywords" => change(weak, state, |f| {
             let l = edit::list(&split_list(arg));
             f.set(ENTRY, "Keywords", Some(l.as_str()).filter(|l| !l.is_empty()))
         }),
-        "wm-class" => change(state, |f| f.set(ENTRY, "StartupWMClass", Some(arg.trim()).filter(|c| !c.is_empty()))),
-        "terminal" => {
-            let on = !selected_app(state).is_some_and(|a| a.terminal);
-            change(state, |f| f.set_bool("Terminal", on));
+        "wm-class" => {
+            change(weak, state, |f| f.set(ENTRY, "StartupWMClass", Some(arg.trim()).filter(|c| !c.is_empty())))
         }
-        "gpu" => {
-            let on = !selected_app(state).is_some_and(|a| a.gpu);
-            change(state, |f| f.set_bool("PrefersNonDefaultGPU", on));
-        }
-        "wayland" => {
-            let Some(app) = selected_app(state).cloned() else { return };
-            let on = !app.exec.contains(edit::WAYLAND_FLAG);
-            change(state, |f| {
-                f.set(ENTRY, "Exec", Some(&edit::with_wayland(&app.exec, on)));
-                for (id, _, exec) in &app.actions {
-                    f.set(&format!("Desktop Action {id}"), "Exec", Some(&edit::with_wayland(exec, on)));
+        "terminal" => change(weak, state, |f| {
+            let on = f.get(ENTRY, "Terminal").as_deref() != Some("true");
+            f.set_bool("Terminal", on);
+        }),
+        "gpu" => change(weak, state, |f| {
+            let on = f.get(ENTRY, "PrefersNonDefaultGPU").as_deref() != Some("true");
+            f.set_bool("PrefersNonDefaultGPU", on);
+        }),
+        // The commands and categories come from the file too: an older list would put back
+        // what it had before a change.
+        "wayland" => change(weak, state, |f| {
+            let exec = f.get(ENTRY, "Exec").unwrap_or_default();
+            let on = !exec.contains(edit::WAYLAND_FLAG);
+            f.set(ENTRY, "Exec", Some(&edit::with_wayland(&exec, on)));
+            for group in f.actions() {
+                if let Some(exec) = f.get(&group, "Exec") {
+                    f.set(&group, "Exec", Some(&edit::with_wayland(&exec, on)));
                 }
-            });
-        }
-        "category-add" if !arg.trim().is_empty() => {
-            let Some(mut cats) = selected_app(state).map(|a| a.categories.clone()) else { return };
+            }
+        }),
+        "category-add" if !arg.trim().is_empty() => change(weak, state, |f| {
+            let mut cats = split_list(&f.get(ENTRY, "Categories").unwrap_or_default());
             for c in split_list(arg) {
                 let c = category_key(&c);
                 if !cats.contains(&c) {
                     cats.push(c);
                 }
             }
-            change(state, |f| f.set(ENTRY, "Categories", Some(&edit::list(&cats))));
-        }
-        "category-remove" => {
-            let Some(mut cats) = selected_app(state).map(|a| a.categories.clone()) else { return };
+            f.set(ENTRY, "Categories", Some(&edit::list(&cats)));
+        }),
+        "category-remove" => change(weak, state, |f| {
+            let mut cats = split_list(&f.get(ENTRY, "Categories").unwrap_or_default());
             cats.retain(|c| category_label(c) != arg && c != arg);
-            change(state, |f| f.set(ENTRY, "Categories", Some(edit::list(&cats).as_str()).filter(|l| !l.is_empty())));
-        }
+            f.set(ENTRY, "Categories", Some(edit::list(&cats).as_str()).filter(|l| !l.is_empty()));
+        }),
         "action-exec" => {
             if let Some((id, exec)) = arg.split_once('\u{1f}')
                 && !exec.trim().is_empty()
             {
-                change(state, |f| f.set(&format!("Desktop Action {id}"), "Exec", Some(exec.trim())));
+                change(weak, state, |f| f.set(&format!("Desktop Action {id}"), "Exec", Some(exec.trim())));
             }
         }
         "restore" => {
-            if let (Some(d), Some(id)) = (&state.data, &state.selected) {
-                if let Err(e) = edit::restore(&d.dirs, id) {
-                    state.message = format!("Couldn't restore it: {e}.");
-                }
-                reload(state);
+            let (Some(d), Some(id)) = (&state.data, state.selected.clone()) else { return };
+            if let Err(e) = edit::restore(&d.dirs, &id) {
+                state.message = format!("Couldn't restore it: {e}.");
             }
+            reload(weak, state, &[id]);
         }
         "launch" => {
-            if let Some(a) = selected_app(state) {
-                launch(a);
+            let Some(app) = selected_app(state).cloned() else { return };
+            if let Err(e) = launch(&app) {
+                state.message = format!("Couldn't open {}: {e}.", app.name);
             }
         }
         "fix" => {
             let Some((id, verb)) = arg.split_once('\u{1f}') else { return };
             state.selected = Some(id.to_owned());
-            fix(state, id, verb);
+            fix(weak, state, id, verb);
         }
         _ => {}
     }
@@ -549,7 +693,9 @@ fn add_or_icon(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, ar
             let Some(f) = &mut state.add else { return true };
             f.program = arg.trim().to_owned();
             f.program_note.clear();
-            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage")) && path.is_file() {
+            if f.program.contains('%') {
+                f.program_note = PERCENT_NOTE.into();
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage")) && path.is_file() {
                 f.program_note = "Reading the AppImage…".into();
                 let icons_dir = state.data.as_ref().map(|d| d.dirs.data_home.join("icons")).unwrap_or_default();
                 let weak = weak.clone();
@@ -633,7 +779,7 @@ fn add_or_icon(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, ar
                 f.browser = index;
             }
         }
-        "add-save" => add_save(state),
+        "add-save" => add_save(weak, state),
         "icon-open" => {
             let for_add = arg == "add";
             let query = if for_add {
@@ -654,7 +800,7 @@ fn add_or_icon(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, ar
                 p.results = results;
             }
         }
-        "icon-pick" => set_icon(state, arg),
+        "icon-pick" => set_icon(weak, state, arg),
         "icon-file" => {
             let weak = weak.clone();
             std::thread::spawn(move || {
@@ -664,7 +810,7 @@ fn add_or_icon(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, ar
                 let w = weak.clone();
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     update(&w, |app| match chosen {
-                        Ok(Some(p)) => set_icon(&mut app.apps, &p.display().to_string()),
+                        Ok(Some(p)) => set_icon(&w, &mut app.apps, &p.display().to_string()),
                         Ok(None) => {}
                         Err(e) => app.apps.message = format!("{e}."),
                     })
@@ -684,33 +830,70 @@ fn expand_home(path: &str) -> String {
 }
 
 /// An icon chosen: for the app being added, or the selected app's (in its own copy).
-fn set_icon(state: &mut State, icon: &str) {
+fn set_icon(weak: &slint::Weak<MainWindow>, state: &mut State, icon: &str) {
     let for_add = state.icon.take().is_some_and(|p| p.for_add);
     if for_add {
         if let Some(f) = &mut state.add {
             f.icon = icon.to_owned();
         }
     } else {
-        change(state, |f| f.set(ENTRY, "Icon", Some(icon)));
+        change(weak, state, |f| f.set(ENTRY, "Icon", Some(icon)));
     }
 }
 
+/// The new app's file id: from its name, a website's from its address, with -2, -3… when an app
+/// or a file in an applications folder has it already, so adding never replaces the user's file
+/// or hides a package's (two websites on one host are two apps); "lituus-app" for a name with no
+/// letter a file name can take.
+fn new_id(d: &Data, f: &AddForm) -> String {
+    let base = if f.website {
+        let host = slug(&site(&f.address).0);
+        if host.is_empty() { "lituus-web".to_owned() } else { format!("lituus-web-{host}") }
+    } else {
+        Some(slug(&f.name)).filter(|s| !s.is_empty()).unwrap_or_else(|| "lituus-app".into())
+    };
+    free_name(&base, "desktop", |id| {
+        d.apps.iter().any(|a| a.id == id)
+            || d.dirs.applications().iter().any(|dir| dir.join(id).symlink_metadata().is_ok())
+    })
+}
+
+/// The window class of a website's app window, in the `chrome-…-Default` form Lituus writes: the
+/// address's host (without its port) and its path with each `/` as `_`, as Chromium names the
+/// window on X11 ("mail.google.com__mail_u_0" for https://mail.google.com/mail/u/0), not only
+/// the host. Brave, Vivaldi and Edge have prefixes of their own.
+fn wm_class(address: &str) -> String {
+    let rest = address.trim().split_once("://").map_or(address.trim(), |(_, r)| r);
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.split(':').next().unwrap_or_default();
+    format!("chrome-{host}__{}-Default", path.trim_end_matches('/').replace('/', "_"))
+}
+
+/// What the Program field says under it when the path has a `%`: launchers read it as a field
+/// code, and GLib refuses the spec's `%%` in a program's path.
+const PERCENT_NOTE: &str =
+    "Launchers can't start a program whose path has a % in it. Rename the file or its folder first.";
+
 /// Writes the new app's desktop file to ~/.local/share/applications, and selects it.
-fn add_save(state: &mut State) {
+fn add_save(weak: &slint::Weak<MainWindow>, state: &mut State) {
     let (Some(f), Some(d)) = (state.add.clone(), &state.data) else { return };
     let mut file = DesktopFile::parse("[Desktop Entry]\nType=Application");
-    let id;
     if f.website {
-        let (host, _) = site(&f.address);
         let Some((_, browser)) = browsers(d).get(f.browser).cloned() else { return };
-        id = format!("lituus-web-{}.desktop", slug(&host));
-        file.set(ENTRY, "Exec", Some(&format!("{browser} --app={}", f.address)));
-        file.set(ENTRY, "StartupWMClass", Some(&format!("chrome-{host}__-Default")));
+        // The address is one argument, quoted, with a `%` in it as `%%`: a launcher would read
+        // `%3A` as a field code.
+        let command = format!("{} {}", exec::quote(&browser), exec::quote(&format!("--app={}", f.address)));
+        file.set(ENTRY, "Exec", Some(&command));
+        file.set(ENTRY, "StartupWMClass", Some(&wm_class(&f.address)));
         file.set(ENTRY, "Categories", Some("Network;WebApps;"));
     } else {
-        id = format!("{}.desktop", slug(&f.name));
         let program = expand_home(&f.program);
-        file.set(ENTRY, "Exec", Some(&shell_word(&program)));
+        if program.contains('%') {
+            state.message = PERCENT_NOTE.into();
+            return;
+        }
+        file.set(ENTRY, "Exec", Some(&exec::quote(&program)));
         file.set(ENTRY, "Categories", Some(&format!("{};", ADD_CATEGORIES[f.category].0)));
         file.set_bool("Terminal", f.terminal);
         if !f.comment.is_empty() {
@@ -721,20 +904,27 @@ fn add_save(state: &mut State) {
     if !f.icon.is_empty() {
         file.set(ENTRY, "Icon", Some(&f.icon));
     }
+    let id = new_id(d, &f);
     let path = edit::own_path(&d.dirs, &id);
-    let r = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, file.text()));
+    // A new file only: never over one that came since the id was chosen.
+    let r = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
+        if path.symlink_metadata().is_ok() {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "a file with its name came meanwhile"));
+        }
+        lituus_fs::write_atomic(&path, file.text())
+    });
     match r {
         Ok(()) => {
             state.add = None;
-            state.selected = Some(id);
+            state.selected = Some(id.clone());
             state.message.clear();
         }
         Err(e) => state.message = format!("Couldn't add {}: {e}.", f.name),
     }
-    reload(state);
+    reload(weak, state, &[id]);
 }
 
-fn fix(state: &mut State, id: &str, verb: &str) {
+fn fix(weak: &slint::Weak<MainWindow>, state: &mut State, id: &str, verb: &str) {
     let Some(d) = &state.data else { return };
     let Some(app) = d.apps.iter().find(|a| a.id == id).cloned() else { return };
     match verb {
@@ -749,7 +939,7 @@ fn fix(state: &mut State, id: &str, verb: &str) {
                 state.message = format!("Couldn't remove {}: {e}.", app.name);
             }
             state.selected = None;
-            reload(state);
+            reload(weak, state, &[app.id]);
         }
         // The package's new file, with the user's values for the page's keys.
         "rebase" => {
@@ -757,24 +947,27 @@ fn fix(state: &mut State, id: &str, verb: &str) {
             let Ok(new) = std::fs::read_to_string(pkg) else { return };
             let own = DesktopFile::parse(&own);
             let mut file = DesktopFile::parse(&new);
-            for key in [
-                "Name",
-                "Comment",
-                "Icon",
-                "Exec",
-                "Terminal",
-                "Categories",
-                "Keywords",
-                "StartupWMClass",
-                "NoDisplay",
-                "PrefersNonDefaultGPU",
-            ] {
-                file.set(ENTRY, key, own.get(ENTRY, key).as_deref());
+            // The keys the copy has. One it hasn't may be one the package added since (often a
+            // fix, as a StartupWMClass), so the package's stays; a switch it hasn't is off.
+            for key in ["Name", "Comment", "Icon", "Exec", "Categories", "Keywords", "StartupWMClass"] {
+                if let Some(value) = own.get(ENTRY, key) {
+                    file.set(ENTRY, key, Some(&value));
+                }
             }
-            if let Err(e) = std::fs::write(&app.path, file.text()) {
+            for key in ["Terminal", "NoDisplay", "PrefersNonDefaultGPU"] {
+                file.set(ENTRY, key, own.get(ENTRY, key).filter(|v| v == "true").as_deref());
+            }
+            // The quick actions' commands, for the actions the new file still has.
+            let actions = file.actions();
+            for group in own.actions().into_iter().filter(|g| actions.contains(g)) {
+                if let Some(exec) = own.get(&group, "Exec") {
+                    file.set(&group, "Exec", Some(&exec));
+                }
+            }
+            if let Err(e) = edit::change(&d.dirs, id, &app.path, |f| *f = file) {
                 state.message = format!("Couldn't save your copy: {e}.");
             }
-            reload(state);
+            reload(weak, state, &[app.id]);
         }
         "show" => state.filter = "all".into(),
         "icon" => {
@@ -783,26 +976,54 @@ fn fix(state: &mut State, id: &str, verb: &str) {
         }
         other => {
             if let Some(path) = other.strip_prefix("use:") {
-                let new = app.exec.replacen(&edit::program(&app.exec), &shell_word(path), 1);
                 state.selected = Some(id.to_owned());
-                change(state, |f| f.set(ENTRY, "Exec", Some(&new)));
+                change(weak, state, |f| {
+                    let exec = f.get(ENTRY, "Exec").unwrap_or_default();
+                    f.set(ENTRY, "Exec", Some(&edit::with_program(&exec, path)));
+                });
             }
         }
     }
 }
 
-fn shell_word(text: &str) -> String {
-    if text.contains(' ') { format!("\"{text}\"") } else { text.to_owned() }
+/// What Open runs: the app's command as a launcher runs it with no file, in a terminal when its
+/// file asks for one.
+fn launch_argv(app: &App, terminal: Option<&Terminal>) -> Vec<String> {
+    let mut argv = exec::argv(&app.exec, &app.name, &app.icon, &app.path);
+    if let Some(t) = terminal.filter(|_| app.terminal && !argv.is_empty()) {
+        argv.splice(0..0, t.argv.iter().cloned());
+    }
+    argv
 }
 
-/// Starts an app as a launcher would: its command without the field codes.
-fn launch(app: &App) {
-    let exec: Vec<&str> = app.exec.split_whitespace().filter(|w| !(w.len() == 2 && w.starts_with('%'))).collect();
-    let _ = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{} >/dev/null 2>&1 &", exec.join(" ")))
-        .stdin(std::process::Stdio::null())
-        .spawn();
+/// Starts an app as a launcher would. Its words are run as they are, with no shell between (a `$`
+/// in a path is a `$`), in a process group of their own, so a Ctrl+C in the terminal Lituus was
+/// started from doesn't reach it; and waited for on a thread, so it isn't left a zombie.
+fn launch(app: &App) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let terminal = if app.terminal {
+        let env = lituus_system::updates::Env::from_env();
+        let dirs = lituus_system::terminal::Dirs::from_env(&env.home);
+        let terminal =
+            lituus_system::terminal::default_terminal(&env, &dirs, std::env::var("TERMINAL").ok().as_deref());
+        Some(terminal.ok_or_else(|| std::io::Error::other("there's no terminal to run it in"))?)
+    } else {
+        None
+    };
+    let argv = launch_argv(app, terminal.as_ref());
+    let Some((program, args)) = argv.split_first() else { return Ok(()) };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 // ---- the page -----------------------------------------------------------------------------------
@@ -920,7 +1141,9 @@ fn rows(state: &State) -> Vec<(String, Vec<App>)> {
     };
     let mut apps: Vec<App> = d.apps.iter().filter(|a| keep(a) && matches(a, &state.query)).cloned().collect();
     apps.sort_by_key(|a| a.name.to_lowercase());
-    if matches!(state.filter.as_str(), "" | "all") && state.query.is_empty() && state.checked.is_empty() {
+    // In sections also while apps are checked: the rows mustn't move under the pointer between
+    // one Ctrl+click and the next.
+    if matches!(state.filter.as_str(), "" | "all") && state.query.is_empty() {
         let mut out: Vec<(String, Vec<App>)> = Vec::new();
         for (i, (_, title)) in SECTIONS.iter().enumerate() {
             let in_it: Vec<App> = apps.iter().filter(|a| section_of(a) == i).cloned().collect();
@@ -954,13 +1177,11 @@ fn choice_large(state: &mut State, app: &App) -> AppChoice {
     app_choice(app, icon)
 }
 
-/// A picture loaded from its file, once.
+/// A picture loaded from its file, once, for the details and the icon picker.
 fn loaded(state: &mut State, file: &Path) -> Image {
-    state
-        .images
-        .entry(format!("icon:{}", file.display()))
-        .or_insert_with(|| Image::load_from_path(file).unwrap_or_default())
-        .clone()
+    let scale = state.data.as_ref().map_or(1.0, |d| d.scale);
+    let side = (DETAILS_ICON * scale).round().max(1.0) as u32;
+    state.images.entry(format!("icon:{}", file.display())).or_insert_with(|| icon_image(file, side)).clone()
 }
 
 fn app_choice(app: &App, icon: Image) -> AppChoice {
@@ -1089,7 +1310,7 @@ pub fn view(state: &mut State) -> AppsView {
         "hidden" => format!("HIDDEN · {hidden}"),
         "added" => "ADDED BY YOU".to_owned(),
         "problems" => format!("PROBLEMS · {}", problems.len()),
-        _ if !state.query.is_empty() || !state.checked.is_empty() => "ALL APPS, A–Z".to_owned(),
+        _ if !state.query.is_empty() => "ALL APPS, A–Z".to_owned(),
         _ => String::new(),
     });
     let selecting = !state.checked.is_empty();
@@ -1271,6 +1492,7 @@ fn add_view(state: &mut State, v: &mut AppsView) {
             desktop::icon_file(&d.dirs, &d.theme, &f.icon)
         };
         let own_dir = lituus_xdg::shorten_home(&d.dirs.data_home.join("applications"));
+        let id = new_id(d, &f);
         v.add_open = true;
         v.add_website = f.website;
         v.add_program = s(&f.program);
@@ -1303,10 +1525,14 @@ fn add_view(state: &mut State, v: &mut AppsView) {
         } else if f.name.is_empty() {
             String::new()
         } else {
-            format!("Saved as {own_dir}/{}.desktop", slug(&f.name))
+            format!("Saved as {own_dir}/{id}")
         });
         v.add_can_save = !f.name.is_empty()
-            && if f.website { !f.address.is_empty() && !browsers.is_empty() } else { !f.program.is_empty() };
+            && if f.website {
+                !f.address.is_empty() && !browsers.is_empty()
+            } else {
+                !f.program.is_empty() && !f.program.contains('%')
+            };
     }
     if let Some(p) = state.icon.clone() {
         let current = if p.for_add {
@@ -1648,5 +1874,412 @@ mod tests {
         assert_eq!(category_label("X-GNOME-SystemSettings"), "GNOME system settings");
         assert_eq!(category_key("Web browser"), "WebBrowser");
         assert_eq!(category_key("Internet"), "Network");
+    }
+
+    /// An empty folder for a test.
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lituus-apps-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    /// The page, with the user's apps in `root`/home and the system's in `root`/usr.
+    fn state_in(root: &Path) -> State {
+        let dirs = Dirs {
+            data_home: root.join("home/.local/share"),
+            data_dirs: vec![root.join("usr/share")],
+            ..Default::default()
+        };
+        State { data: Some(read(dirs, 1.0, &HashMap::new())), ..Default::default() }
+    }
+
+    /// Add an app › a program and its name › Add.
+    fn add_program(state: &mut State, program: &Path, name: &str) {
+        let weak = slint::Weak::default();
+        act(&weak, state, "add-open", "");
+        act(&weak, state, "add-program", &program.display().to_string());
+        act(&weak, state, "add-name", name);
+        act(&weak, state, "add-save", "");
+    }
+
+    const CHROMIUM: &str = "[Desktop Entry]\nType=Application\nName=Chromium\nExec=/usr/bin/chromium %U\n";
+
+    #[test]
+    fn an_added_program_with_a_space_in_its_path_can_start() {
+        let root = test_root("space");
+        write(&root, "My Apps/tool.sh", "#!/bin/sh\n");
+        let mut state = state_in(&root);
+        add_program(&mut state, &root.join("My Apps/tool.sh"), "Tool");
+        let text = std::fs::read_to_string(root.join("home/.local/share/applications/tool.desktop")).unwrap();
+        assert!(text.contains(&format!("Exec=\"{}\"\n", root.join("My Apps/tool.sh").display())), "{text}");
+        let d = state.data.as_ref().unwrap();
+        assert!(d.problems.is_empty(), "{:?}", d.problems);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_added_programs_path_is_escaped_as_the_spec_says() {
+        let root = test_root("escape");
+        write(&root, "Odd Apps/a \"pro\" $tool.sh", "#!/bin/sh\n");
+        let mut state = state_in(&root);
+        add_program(&mut state, &root.join("Odd Apps/a \"pro\" $tool.sh"), "Odd");
+        let text = std::fs::read_to_string(root.join("home/.local/share/applications/odd.desktop")).unwrap();
+        // In quotes, " and $ get a backslash, which a desktop file's string writes as two.
+        let exec = format!("Exec=\"{}/Odd Apps/a \\\\\"pro\\\\\" \\\\$tool.sh\"\n", root.display());
+        assert!(text.contains(&exec), "{text}");
+        // A % can't be written in a program's path at all: the dialog says so.
+        act(&slint::Weak::default(), &mut state, "add-open", "");
+        act(&slint::Weak::default(), &mut state, "add-program", "/opt/50%off/run");
+        let v = view(&mut state);
+        assert!(!v.add_can_save && v.add_program_note == PERCENT_NOTE);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn using_a_newer_appimage_keeps_the_quotes_right() {
+        let root = test_root("newer");
+        write(&root, "Apps/Cursor 0.45.AppImage", "");
+        let gone = root.join("Apps/Cursor-0.42.AppImage");
+        write(
+            &root,
+            "home/.local/share/applications/cursor.desktop",
+            &format!("[Desktop Entry]\nType=Application\nName=Cursor\nExec=\"{}\" %U\n", gone.display()),
+        );
+        let mut state = state_in(&root);
+        let newer = root.join("Apps/Cursor 0.45.AppImage");
+        let d = state.data.as_ref().unwrap();
+        assert!(
+            matches!(&d.problems[..], [(_, Problem::NotFound { newer: Some(n), .. })] if *n == newer),
+            "{:?}",
+            d.problems
+        );
+        act(&slint::Weak::default(), &mut state, "fix", &format!("cursor.desktop\u{1f}use:{}", newer.display()));
+        let text = std::fs::read_to_string(root.join("home/.local/share/applications/cursor.desktop")).unwrap();
+        assert!(text.contains(&format!("Exec=\"{}\" %U\n", newer.display())), "{text}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn adding_never_replaces_the_users_file() {
+        let root = test_root("clash");
+        let own = "home/.local/share/applications/firefox.desktop";
+        write(&root, own, "[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox --my-profile %u\n");
+        write(&root, "bin/ff", "#!/bin/sh\n");
+        let mut state = state_in(&root);
+        act(&slint::Weak::default(), &mut state, "add-open", "");
+        act(&slint::Weak::default(), &mut state, "add-name", "Firefox");
+        // The dialog says where it really goes.
+        assert_eq!(
+            view(&mut state).add_footer,
+            format!(
+                "Saved as {}",
+                lituus_xdg::shorten_home(&root.join("home/.local/share/applications/firefox-2.desktop"))
+            )
+        );
+        add_program(&mut state, &root.join("bin/ff"), "Firefox");
+        assert!(std::fs::read_to_string(root.join(own)).unwrap().contains("--my-profile"));
+        assert_eq!(state.selected.as_deref(), Some("firefox-2.desktop"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn adding_never_takes_over_a_packages_app() {
+        let root = test_root("shadow");
+        write(
+            &root,
+            "usr/share/applications/obsidian.desktop",
+            "[Desktop Entry]\nType=Application\nName=Obsidian\nExec=/usr/bin/obsidian %U\nMimeType=x-scheme-handler/obsidian;\n",
+        );
+        write(&root, "Apps/Obsidian.AppImage.sh", "#!/bin/sh\n");
+        let mut state = state_in(&root);
+        add_program(&mut state, &root.join("Apps/Obsidian.AppImage.sh"), "Obsidian");
+        let apps = &state.data.as_ref().unwrap().apps;
+        // The package's app is still there, with what it opens; the added one is another app.
+        assert!(apps.iter().any(|a| a.opens("x-scheme-handler/obsidian")), "{apps:?}");
+        assert_eq!(apps.iter().filter(|a| a.name == "Obsidian").count(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn two_websites_on_one_host() {
+        let root = test_root("host");
+        write(&root, "usr/share/applications/chromium.desktop", CHROMIUM);
+        let mut state = state_in(&root);
+        let weak = slint::Weak::default();
+        for (address, name) in
+            [("https://mail.google.com/mail/u/0", "Mail"), ("https://mail.google.com/mail/u/1", "Work mail")]
+        {
+            act(&weak, &mut state, "add-open", "");
+            act(&weak, &mut state, "add-mode", "1");
+            act(&weak, &mut state, "add-address", address);
+            act(&weak, &mut state, "add-name", name);
+            act(&weak, &mut state, "add-save", "");
+        }
+        let apps = &state.data.as_ref().unwrap().apps;
+        let mut own: Vec<(&str, &str)> =
+            apps.iter().filter(|a| a.own).map(|a| (a.id.as_str(), a.name.as_str())).collect();
+        own.sort();
+        assert_eq!(
+            own,
+            [("lituus-web-mail-google-com-2.desktop", "Work mail"), ("lituus-web-mail-google-com.desktop", "Mail")]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_name_without_ascii_letters() {
+        let root = test_root("name");
+        write(&root, "bin/notes", "#!/bin/sh\n");
+        let mut state = state_in(&root);
+        add_program(&mut state, &root.join("bin/notes"), "Блокнот");
+        assert!(!root.join("home/.local/share/applications/.desktop").exists(), "written as \".desktop\"");
+        assert!(state.data.as_ref().unwrap().apps.iter().any(|a| a.name == "Блокнот" && a.id == "lituus-app.desktop"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_percent_in_a_websites_address() {
+        let root = test_root("percent");
+        write(&root, "usr/share/applications/chromium.desktop", CHROMIUM);
+        let mut state = state_in(&root);
+        let weak = slint::Weak::default();
+        act(&weak, &mut state, "add-open", "");
+        act(&weak, &mut state, "add-mode", "1");
+        act(
+            &weak,
+            &mut state,
+            "add-address",
+            "https://teams.microsoft.com/l/channel/19%3Aabc%40thread.skype/General?q=a&b=c",
+        );
+        act(&weak, &mut state, "add-save", "");
+        let text =
+            std::fs::read_to_string(root.join("home/.local/share/applications/lituus-web-teams-microsoft-com.desktop"))
+                .unwrap();
+        // The spec: a literal % is %%, and an argument with a reserved character (? and &) is quoted.
+        assert!(
+            text.contains("Exec=/usr/bin/chromium \"--app=https://teams.microsoft.com/l/channel/19%%3Aabc%%40thread.skype/General?q=a&b=c\"\n"),
+            "{text}"
+        );
+        // Open runs the address as it was typed.
+        let app = &state.data.as_ref().unwrap().apps.iter().find(|a| a.own).unwrap().clone();
+        assert_eq!(
+            launch_argv(app, None),
+            [
+                "/usr/bin/chromium",
+                "--app=https://teams.microsoft.com/l/channel/19%3Aabc%40thread.skype/General?q=a&b=c"
+            ]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_websites_window_class_has_its_path() {
+        // Chromium on X11 names the window from the host and the path, each / as _.
+        assert_eq!(wm_class("https://web.whatsapp.com/"), "chrome-web.whatsapp.com__-Default");
+        assert_eq!(wm_class("https://mail.google.com/mail/u/0?x=1#inbox"), "chrome-mail.google.com__mail_u_0-Default");
+        assert_eq!(wm_class("http://127.0.0.1:9/mail/u/0/"), "chrome-127.0.0.1__mail_u_0-Default");
+    }
+
+    #[test]
+    fn open_runs_the_commands_own_words() {
+        let root = test_root("launch");
+        let log = root.join("log");
+        // Through a shell, `$tool` in the argument would be expanded, and `my.sh` would run.
+        for name in ["my$tool.sh", "my.sh"] {
+            write(
+                &root,
+                &format!("bin/{name}"),
+                &format!("printf '%s %s\\n' '{name}' \"$#\" >> '{}'\n", log.display()),
+            );
+        }
+        let script = exec::quote(&root.join("bin/my$tool.sh").display().to_string());
+        let app = App { exec: format!("/bin/sh {script} %U"), ..Default::default() };
+        launch(&app).unwrap();
+        let start = std::time::Instant::now();
+        let ran = || std::fs::read_to_string(&log).unwrap_or_default();
+        while !ran().ends_with('\n') && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(ran(), "my$tool.sh 0\n");
+        // In a terminal when the file asks for one.
+        let terminal = Terminal { name: "kitty".into(), argv: vec!["kitty".into()] };
+        let htop = App { exec: "htop %U".into(), terminal: true, ..Default::default() };
+        assert_eq!(launch_argv(&htop, Some(&terminal)), ["kitty", "htop"]);
+        assert_eq!(launch_argv(&App { terminal: false, ..htop }, Some(&terminal)), ["htop"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn checking_apps_keeps_the_list_as_it_is() {
+        let root = test_root("check");
+        for (id, name, category) in [("a", "Blender", "Graphics"), ("b", "Vim", "Utility"), ("c", "Files", "System")] {
+            write(
+                &root,
+                &format!("usr/share/applications/{id}.desktop"),
+                &format!("[Desktop Entry]\nType=Application\nName={name}\nExec=sh\nCategories={category};\n"),
+            );
+        }
+        let mut state = state_in(&root);
+        let weak = slint::Weak::default();
+        let shown = |state: &State| -> Vec<(String, Vec<String>)> {
+            rows(state).into_iter().map(|(title, apps)| (title, apps.into_iter().map(|a| a.name).collect())).collect()
+        };
+        let before = shown(&state);
+        assert_eq!(
+            before.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["GRAPHICS AND VIDEO", "ACCESSORIES", "SYSTEM"]
+        );
+        // A Ctrl+click: the rows stay where they are for the next one.
+        act(&weak, &mut state, "select", "a.desktop");
+        act(&weak, &mut state, "check", "c.desktop");
+        assert_eq!(shown(&state), before);
+        assert_eq!(view(&mut state).list_title, "");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_change_undone_leaves_no_copy() {
+        let root = test_root("undo");
+        write(
+            &root,
+            "usr/share/applications/obsidian.desktop",
+            "[Desktop Entry]\nType=Application\nName=Obsidian\nExec=sh %U\n",
+        );
+        let mut state = state_in(&root);
+        let weak = slint::Weak::default();
+        let own = root.join("home/.local/share/applications/obsidian.desktop");
+        act(&weak, &mut state, "select", "obsidian.desktop");
+        act(&weak, &mut state, "name", "Obsidian"); // Enter, nothing changed
+        assert!(!own.exists());
+        act(&weak, &mut state, "shown", "");
+        assert!(own.exists());
+        act(&weak, &mut state, "shown", ""); // hidden, then shown again
+        assert!(!own.exists());
+        let v = view(&mut state);
+        assert!(v.shown && !v.can_restore && v.hero_line == "0 hidden");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebase_keeps_quick_action_changes_and_new_keys() {
+        let root = test_root("rebase");
+        write(
+            &root,
+            "usr/share/applications/app.desktop",
+            "[Desktop Entry]\nType=Application\nName=App\nExec=sh %U\nActions=new;\nStartupWMClass=app-new\n\n[Desktop Action new]\nName=New\nExec=sh --new\n",
+        );
+        write(
+            &root,
+            "home/.local/share/applications/app.desktop",
+            "[Desktop Entry]\nType=Application\nName=My App\nExec=sh %U\nActions=new;\n\n[Desktop Action new]\nName=New\nExec=sh --new --private\n",
+        );
+        let mut state = state_in(&root);
+        act(&slint::Weak::default(), &mut state, "fix", "app.desktop\u{1f}rebase");
+        let text = std::fs::read_to_string(root.join("home/.local/share/applications/app.desktop")).unwrap();
+        assert!(text.contains("Name=My App"));
+        assert!(text.contains("Exec=sh --new --private"), "{text}");
+        assert!(text.contains("StartupWMClass=app-new"), "{text}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_read_that_ends_after_a_change_does_not_undo_it() {
+        let root = test_root("race");
+        write(
+            &root,
+            "usr/share/applications/obsidian.desktop",
+            "[Desktop Entry]\nType=Application\nName=Obsidian\nExec=electron obsidian %U\n",
+        );
+        let mut state = state_in(&root);
+        let dirs = state.data.as_ref().unwrap().dirs.clone();
+        let weak = slint::Weak::default();
+        // apps::open's thread starts reading now…
+        let started = next_generation(&mut state);
+        let (stale, older) = (read(dirs.clone(), 1.0, &HashMap::new()), read(dirs, 1.0, &HashMap::new()));
+        act(&weak, &mut state, "select", "obsidian.desktop");
+        act(&weak, &mut state, "exec", "electron obsidian --my-flag %U");
+        let own = root.join("home/.local/share/applications/obsidian.desktop");
+        assert!(std::fs::read_to_string(&own).unwrap().contains("--my-flag"));
+        // …and its result arrives after the change: the page keeps showing the change.
+        landed(&mut state, started, stale);
+        assert_eq!(view(&mut state).exec, "electron obsidian --my-flag %U");
+        // A switch changes what the file has, even with a list older than the file.
+        state.data = Some(older);
+        act(&weak, &mut state, "wayland", "");
+        let text = std::fs::read_to_string(&own).unwrap();
+        assert!(text.contains("Exec=electron --ozone-platform-hint=auto obsidian --my-flag %U"), "{text}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // An SVG icon that names another file: an `<image>` of it.
+    fn icon_naming(href: &Path) -> String {
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><image width="8" height="8" xlink:href="{}"/></svg>"##,
+            href.display()
+        )
+    }
+
+    const RED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#f00"/></svg>"##;
+
+    #[test]
+    fn an_svg_icon_does_not_load_files_it_names() {
+        let root = test_root("svg");
+        write(&root, "elsewhere/red.svg", RED);
+        write(&root, "icon.svg", &icon_naming(&root.join("elsewhere/red.svg")));
+        // The lists' icons, drawn on the reading thread…
+        let pixels = draw_icon(&root.join("icon.svg"), 8).unwrap();
+        assert_eq!(pixels.as_slice()[0].a, 0, "the icon drew a file from elsewhere: {:?}", pixels.as_slice()[0]);
+        // …and the details', the icon picker's and Default apps', on the window's.
+        let pixels = icon_image(&root.join("icon.svg"), 8).to_rgba8().unwrap();
+        assert_eq!(pixels.as_slice()[0].a, 0, "the window drew a file from elsewhere: {:?}", pixels.as_slice()[0]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_svg_icon_naming_a_fifo_does_not_hang() {
+        let root = test_root("fifo");
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("pipe.png");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        write(&root, "icon.svg", &icon_naming(&fifo));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let icon = root.join("icon.svg");
+        let fifo_icon = fifo.clone();
+        let thread = std::thread::spawn(move || {
+            let _ = draw_icon(&icon, 8);
+            let _ = icon_image(&icon, 8);
+            // The FIFO itself as an icon (a theme can have one by any name).
+            let _ = icon_image(&fifo_icon, 8);
+            let _ = tx.send(());
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        if !done {
+            // Lets the blocked reader go: a writer that opens and closes gives it the end.
+            use std::os::unix::fs::OpenOptionsExt;
+            for _ in 0..50 {
+                if std::fs::OpenOptions::new().write(true).custom_flags(0o4000).open(&fifo).is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        thread.join().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(done, "an icon was still reading the FIFO after 5 s");
+    }
+
+    #[test]
+    fn reading_a_program_that_isnt_an_appimage_does_not_run_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_root("appimage");
+        let ran = root.join("ran");
+        write(&root, "x.AppImage", &format!("#!/bin/sh\ntouch '{}'\n", ran.display()));
+        let program = root.join("x.AppImage");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_appimage(&program, &root.join("icons")).is_none());
+        // Executable for its owner, not readable by others; and not started.
+        assert_eq!(program.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(!ran.exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

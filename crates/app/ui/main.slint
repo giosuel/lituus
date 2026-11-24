@@ -380,13 +380,44 @@ export component MainWindow inherits Window {
         init => { self.focus(); }
         // It has the focus when no control does; not a stop of its own for Tab.
         focus-on-tab-navigation: false;
+        // With a dialog or the editor open, the focus only gets here by falling out of it (a
+        // button that went away, a dialog's handler giving it to the window): that doesn't count
+        // as held, so the window gives it back to the dialog (take-keys) unless a control in it
+        // takes it first.
+        focus-gained => { Focus.held = !root.modal-open && !root.editor-open; }
         key-pressed(event) => {
-            // The confirmation dialog is over everything: Esc cancels it, and the page gets no keys.
-            if root.confirm-open && event.text == Key.Escape { root.confirm-cancelled(); return accept; }
-            if root.confirm-open { return reject; }
+            // The palette is over everything, the dialogs included: Ctrl K and Esc close it as
+            // they do from its search, and the search gets the keyboard back.
+            if root.palette-view.open {
+                if event.modifiers.control && (event.text == "k" || event.text == "K") { root.palette-key("close"); }
+                else if event.text == Key.Escape { root.palette-key("esc"); }
+                root.take-keys();
+                return accept;
+            }
+            // A dialog or the editor has the keyboard while it's open. Esc still closes the ones
+            // it always closed from here; any other key gives the keyboard back to it, and the
+            // page behind gets none, not even Tab.
+            if root.modal-open || root.editor-open {
+                if event.text == Key.Escape {
+                    // The confirmation dialog is over everything.
+                    if root.confirm-open { root.confirm-cancelled(); }
+                    else if root.editor-open && root.editor-routes != "" { root.editor-routes-done(false); }
+                    else if root.editor-open && root.editor-ports-open { root.editor-port-chosen(""); }
+                    else if root.editor-open { root.editor-back(); }
+                    else if root.bt-pair-open { root.bt-act("pair-cancel", ""); }
+                    else if root.bt-adapter-open { root.bt-act("adapter-close", ""); }
+                    else if root.bt-rename-open { root.bt-act("rename-cancel", ""); }
+                    else if root.add-open { root.add-cancelled(); }
+                    else if root.share-open { root.share-closed(); }
+                    else if root.hostname-open { root.hostname-cancelled(); }
+                    else if root.join-open { root.join-cancelled(); }
+                }
+                root.take-keys();
+                return accept;
+            }
             if event.modifiers.control && (event.text == "k" || event.text == "K") { root.palette-open(); return accept; }
             // From the page (or no control) to the sidebar's pages; the sidebar sends it back.
-            if event.text == Key.F6 && !root.modal-open && !root.editor-open { root.nav-list-focus-requests += 1; return accept; }
+            if event.text == Key.F6 { root.nav-list-focus-requests += 1; return accept; }
             // The Keyboard page: Alt+↑↓ moves the selected layout, Del removes it.
             if root.page == "keyboard" && event.modifiers.alt && event.text == Key.UpArrow { root.input-act("layout-up", "", 0); return accept; }
             if root.page == "keyboard" && event.modifiers.alt && event.text == Key.DownArrow { root.input-act("layout-down", "", 0); return accept; }
@@ -397,20 +428,9 @@ export component MainWindow inherits Window {
             if event.text == "/" && root.show-search { root.search-focus-requests += 1; return accept; }
             if event.text == Key.DownArrow { root.follow-selection = true; root.move-selection(1); return accept; }
             if event.text == Key.UpArrow { root.follow-selection = true; root.move-selection(-1); return accept; }
-            if event.text == Key.Escape && root.editor-open && root.editor-routes != "" { root.editor-routes-done(false); return accept; }
-            if event.text == Key.Escape && root.editor-open { root.editor-back(); return accept; }
-            if root.editor-open { return reject; }
-            if event.text == Key.Escape && root.bt-pair-open { root.bt-act("pair-cancel", ""); return accept; }
-            if event.text == Key.Escape && root.bt-adapter-open { root.bt-act("adapter-close", ""); return accept; }
-            if event.text == Key.Escape && root.bt-rename-open { root.bt-act("rename-cancel", ""); return accept; }
-            if root.bt-pair-open || root.bt-adapter-open || root.bt-rename-open { return reject; }
             if root.page == "bluetooth" && (event.text == "p" || event.text == "s") { root.bt-act("key", event.text); return accept; }
-            if event.text == Key.Escape && root.add-open { root.add-cancelled(); return accept; }
-            if event.text == Key.Escape && root.share-open { root.share-closed(); return accept; }
-            if event.text == Key.Escape && root.hostname-open { root.hostname-cancelled(); return accept; }
-            if event.text == "e" && root.has-details && !root.join-open { root.editor-from-details = true; root.action("edit"); return accept; }
-            if event.text == Key.Return && !root.join-open { root.editor-from-details = false; root.activate-selected(); return accept; }
-            if event.text == Key.Escape && root.join-open { root.join-cancelled(); return accept; }
+            if event.text == "e" && root.has-details { root.editor-from-details = true; root.action("edit"); return accept; }
+            if event.text == Key.Return { root.editor-from-details = false; root.activate-selected(); return accept; }
             reject
         }
 
@@ -437,7 +457,7 @@ export component MainWindow inherits Window {
                 min-width: 790px;
                 // Where F6 from the sidebar starts: Tab goes on from here to the page's first
                 // control.
-                page-start := FocusScope { height: 0; focus-on-tab-navigation: false; focus-on-click: false; }
+                page-start := FocusScope { height: 0; focus-on-tab-navigation: false; focus-on-click: false; focus-gained => { Focus.held = true; } }
                 page-body := VerticalLayout {
                     vertical-stretch: 1;
                     padding: 18px;
@@ -507,6 +527,7 @@ export component MainWindow inherits Window {
                                             vertical-alignment: center;
                                             single-line: true;
                                             accessible-label: root.search-placeholder;
+                                            changed has-focus => { if self.has-focus { Focus.held = true; } }
                                             edited => { root.search(self.text); }
                                             key-pressed(event) => {
                                                 if event.text == Key.Escape { self.text = ""; root.search(""); keys.focus(); return accept; }
@@ -971,7 +992,7 @@ export component MainWindow inherits Window {
     // its own buttons (the time after Apply runs out, NetworkManager withdraws its question, a
     // choice in "Add a connection" opens the editor): the window's keys get it back, and then the
     // control that had the focus before the dialog opened, if there was one.
-    property <bool> modal-open: root.confirm-open || root.join-open || root.add-open || root.hostname-open || root.share-open
+    property <bool> modal-open: root.confirm-open || Setup.shown || root.join-open || root.add-open || root.hostname-open || root.share-open
         || root.bt-pair-open || root.bt-adapter-open || root.bt-rename-open || root.files.sending || root.files.incoming
         || (root.page == "displays" && (root.displays.keep-open || root.displays.config-open))
         || (root.page == "keyboard" && root.keyboard.add-open) || (root.page == "mouse" && root.mouse.own-open)
@@ -981,6 +1002,24 @@ export component MainWindow inherits Window {
         || (root.page == "apps" && (root.apps.add-open || root.apps.icon-open))
         || root.palette-view.open;
     changed modal-open => { if !self.modal-open { keys.focus(); Focus.give-back(); } }
+    // The editor's own dialogs (its routes, Add a port).
+    property <bool> editor-dialog-open: root.editor-open && (root.editor-routes != "" || root.editor-ports-open);
+
+    // Gives the keyboard to what's on top: the palette, a dialog, the editor, or else the page
+    // (the window's keys). For when the focus went away with a control, or fell out of what has
+    // it to the window: the page behind a dialog never gets the keys.
+    property <int> palette-focus-requests;
+    function take-keys() {
+        if root.palette-view.open {
+            root.palette-focus-requests += 1;
+        } else if root.modal-open || root.editor-dialog-open {
+            Focus.to-dialog();
+        } else if root.editor-open {
+            editor.take-focus();
+        } else {
+            keys.focus();
+        }
+    }
 
     // The control with the focus can go away (a dialog closes, a button isn't offered any more),
     // and Slint drops the focus with it: no key would arrive anywhere. While a control has the
@@ -992,10 +1031,17 @@ export component MainWindow inherits Window {
             if Focus.answer != Focus.probe {
                 Focus.on-control = false;
                 Focus.key = "";
-                if root.editor-open { editor.take-focus(); } else { keys.focus(); }
+                root.take-keys();
             }
             Focus.probe += 1;
         }
+    }
+    // Slint also drops the focus of a control it hides or that scrolls out of sight, and nothing
+    // takes it (Focus.held): the window does, so its keys (Ctrl K, F6, Esc) keep working.
+    Timer {
+        interval: 150ms;
+        running: !Focus.held;
+        triggered => { root.take-keys(); }
     }
 
     // The confirmation dialog, over everything. Nothing is typed in it, so a click beside it
@@ -1295,7 +1341,16 @@ export component MainWindow inherits Window {
             Rectangle {
                 height: 30px;
                 horizontal-stretch: 1;
-                TextInput { text: root.share-password; read-only: true; color: Theme.text; font-family: "JetBrains Mono"; font-size: Type.body; vertical-alignment: center; single-line: true; }
+                TextInput {
+                    text: root.share-password;
+                    read-only: true;
+                    color: Theme.text;
+                    font-family: "JetBrains Mono";
+                    font-size: Type.body;
+                    vertical-alignment: center;
+                    single-line: true;
+                    changed has-focus => { if self.has-focus { Focus.held = true; } }
+                }
             }
         }
         DialogButtons {
@@ -1326,15 +1381,18 @@ export component MainWindow inherits Window {
         view: root.apps;
         act(verb, arg) => { root.apps-act(verb, arg); }
     }
+    // It stays open after "Another app…" (and its rows are built again at each render): the
+    // keyboard stays with it.
     if root.page == "default-apps" && root.default-apps.picker-open: AppPickerDialog {
         view: root.default-apps;
-        act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
+        act(verb, arg) => { root.default-apps-act(verb, arg); }
     }
     if root.page == "default-apps" && root.default-apps.sources-open: SourcesDialog {
         view: root.default-apps;
         act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
     }
     if root.page == "wallpaper" && root.wallpaper.takeover: WallpaperTakeoverDialog {
+        backup: root.wallpaper.takeover-backup;
         act(verb, arg, value) => { root.wallpaper-act(verb, arg, value); }
     }
     if root.page == "shortcuts" && root.shortcuts.dialog.open: ShortcutEditDialog {
@@ -1395,6 +1453,7 @@ export component MainWindow inherits Window {
     if root.palette-view.open: CommandPalette {
         view: root.palette-view;
         query <=> root.palette-query;
+        focus-requests: root.palette-focus-requests;
         init => { self.focus-search(); }
         edited(text) => { root.palette-edited(text); }
         key(k) => { root.palette-key(k); }

@@ -322,10 +322,15 @@ export component AppsPage inherits VerticalLayout {
                 spacing: 10px;
                 if root.view.has-app: HorizontalLayout {
                     spacing: 14px;
-                    // Click the icon to change it.
-                    Rectangle {
+                    // Click the icon (or Space, Enter) to change it.
+                    Focusable {
                         width: 60px;
                         height: 60px;
+                        border-radius: 14px;
+                        accessible-role: button;
+                        accessible-label: "Change icon";
+                        accessible-action-default => { root.act("icon-open", ""); }
+                        activated => { root.act("icon-open", ""); }
                         AppTile { app: root.view.app; size: 56px; }
                         Rectangle {
                             x: parent.width - 20px;
@@ -336,7 +341,6 @@ export component AppsPage inherits VerticalLayout {
                             background: Theme.surface;
                             Icon { name: "pencil"; tint: Theme.muted; size: 11px; }
                         }
-                        TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-open", ""); } }
                     }
                     VerticalLayout {
                         alignment: center;
@@ -540,11 +544,15 @@ export component AddAppDialog inherits Modal {
         label: "Name";
         HorizontalLayout {
             spacing: 8px;
-            Rectangle {
+            Focusable {
                 width: 38px;
                 height: 38px;
+                border-radius: 10px;
+                accessible-role: button;
+                accessible-label: "Change icon";
+                accessible-action-default => { root.act("icon-open", "add"); }
+                activated => { root.act("icon-open", "add"); }
                 AppTile { app: root.view.add-icon; size: 34px; x: 2px; y: 2px; }
-                TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-open", "add"); } }
             }
             TextField { value: root.view.add-name; text <=> root.name; label: "Name"; committed => { root.act("add-name", self.text); } }
         }
@@ -603,18 +611,27 @@ export component IconDialog inherits Modal {
     label: root.view.icon-title;
     dismissed => { root.act("icon-close", ""); }
     DialogTitle { text: root.view.icon-title; }
-    TextField { value: root.view.icon-query; label: "Search icons"; placeholder: "An icon's name"; edited => { root.act("icon-query", self.text); } }
+    TextField { value: root.view.icon-query; label: "Search icons"; placeholder: "An icon's name"; autofocus: true; edited => { root.act("icon-query", self.text); } }
     Text { text: root.view.icon-note; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     icons := Rectangle {
         property <int> columns: 6;
         height: ceil(root.view.icon-results.length / self.columns) * 84px;
-        for r[i] in root.view.icon-results: Rectangle {
+        // Tab reaches each icon found; Space or Enter picks it. Built again with each search, so
+        // the icon with the focus keeps it by its key.
+        for r[i] in root.view.icon-results: Focusable {
             x: mod(i, icons.columns) * icons.width / icons.columns;
             y: floor(i / icons.columns) * 84px;
             width: icons.width / icons.columns - 6px;
             height: 78px;
             border-radius: 10px;
-            background: r.selected ? Theme.accent-soft-bg : area.has-hover ? Theme.hover : transparent;
+            focus-key: "icon:" + r.id;
+            background: r.selected ? Theme.accent-soft-bg : self.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: r.name;
+            accessible-checkable: true;
+            accessible-checked: r.selected;
+            accessible-action-default => { root.act("icon-pick", r.id); }
+            activated => { root.act("icon-pick", r.id); }
             VerticalLayout {
                 padding: 6px;
                 spacing: 6px;
@@ -622,7 +639,6 @@ export component IconDialog inherits Modal {
                 HorizontalLayout { alignment: center; AppTile { app: r; size: 36px; } }
                 Text { text: r.name; color: Theme.muted; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; overflow: elide; }
             }
-            area := TouchArea { mouse-cursor: pointer; clicked => { root.act("icon-pick", r.id); } }
         }
     }
     HorizontalLayout {
