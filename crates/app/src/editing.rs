@@ -79,6 +79,8 @@ pub struct EditorState {
     pub failure: Option<String>,
     /// The form goes to the window on the next render.
     reset: bool,
+    /// Just opened (or saved): the window's DNS fields still have the last editor's text.
+    fresh: bool,
     wg_key: Option<String>,
     wg_shown: bool,
     banner: String,
@@ -197,6 +199,7 @@ impl EditorState {
             note: None,
             failure: None,
             reset: true,
+            fresh: true,
             wg_key: None,
             wg_shown: false,
             banner: String::new(),
@@ -764,7 +767,8 @@ pub fn render(window: &MainWindow, app: &mut App) {
     let errors = state.errors();
     if std::mem::take(&mut state.reset) {
         let form = window.get_editor_form();
-        window.set_editor_form(to_ui(state, (form.ip4.dns_input, form.ip6.dns_input)));
+        let inputs = dns_inputs(state, (form.ip4.dns_input, form.ip6.dns_input));
+        window.set_editor_form(to_ui(state, inputs));
         window.set_editor_tab(state.tab.id().into());
         window.set_editor_options(EditorOptions {
             zones: strings(state.zones.iter().map(|z| if z.is_empty() { "Default".to_owned() } else { z.clone() })),
@@ -917,6 +921,13 @@ pub fn render(window: &MainWindow, app: &mut App) {
     };
     window.set_editor_footer(footer.into());
     window.set_editor_footer_tone(tone.into());
+}
+
+/// What the DNS fields show when the form goes to the window: the text being typed, which isn't
+/// part of the form, except in an editor that just opened. Its fields start empty, or a server
+/// half-typed for one connection would be saved with the next.
+fn dns_inputs(state: &mut EditorState, typed: (SharedString, SharedString)) -> (SharedString, SharedString) {
+    if std::mem::take(&mut state.fresh) { Default::default() } else { typed }
 }
 
 /// The form as the window has it now.
@@ -1410,6 +1421,16 @@ mod tests {
         let state = EditorState::new(None, settings, Vec::new(), None, None);
         assert_eq!(state.form.wg.private_key, conf.private_key);
         assert_eq!(state.errors().total(state.kind), 0);
+    }
+
+    /// A server typed in one editor isn't in the next one's field, nor saved with it.
+    #[test]
+    fn a_new_editor_starts_with_empty_dns_fields() {
+        let snap = home();
+        let mut state = EditorState::new(None, Settings::new(), Vec::new(), Some(&snap), Some(Kind::Ethernet));
+        let typed = || (SharedString::from("1.0.0.1"), SharedString::from("2606:4700::1111"));
+        assert_eq!(dns_inputs(&mut state, typed()), Default::default());
+        assert_eq!(dns_inputs(&mut state, typed()), typed(), "in the same editor, typing goes on");
     }
 
     /// A DNS server still in its field when Apply is pressed is added, as Enter would; one of the
