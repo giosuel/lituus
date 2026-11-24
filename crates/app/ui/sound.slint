@@ -4,7 +4,7 @@
 // (src/sound.rs); everything the user does goes back through `act(verb, id, value)`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, CardTitle, Banner, Scroll, Focusable, Focus } from "controls.slint";
+import { Button, IconButton, Switch, CardTitle, Notice, Scroll, Focusable, Focus } from "controls.slint";
 import { ViewSwitcher, Select } from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 
@@ -216,7 +216,7 @@ export component SoundPage inherits VerticalLayout {
         spacing: 14px;
         bar-inset: -16px;
         // What the server turned down, above what it's about.
-        if root.page.state == "list" && root.page.error != "": Banner {
+        if root.page.state == "list" && root.page.error != "": Notice {
             vertical-stretch: 0;
             tone: "danger";
             text: root.page.error;
@@ -239,7 +239,7 @@ export component SoundPage inherits VerticalLayout {
                         preferred-width: 756px;
                         max-width: 756px;
                         horizontal-stretch: 1;
-                        CardTitle { text: "Output"; height: 30px; }
+                        CardTitle { text: "Output"; }
                         if root.page.outputs-names.length == 0: Text { text: "No speakers, headphones or other output."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
                         if root.page.outputs-names.length > 0: SettingRow {
                             label: "Output device";
@@ -313,7 +313,7 @@ export component SoundPage inherits VerticalLayout {
                         preferred-width: 756px;
                         max-width: 756px;
                         horizontal-stretch: 1;
-                        CardTitle { text: "Input"; height: 30px; }
+                        CardTitle { text: "Input"; }
                         if root.page.inputs-names.length == 0: Text { text: "No microphone or other input."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
                         if root.page.inputs-names.length > 0: SettingRow {
                             label: "Input device";
@@ -434,7 +434,7 @@ export component SoundPage inherits VerticalLayout {
                     preferred-width: 756px;
                     max-width: 756px;
                     horizontal-stretch: 1;
-                    CardTitle { text: "Sound cards"; height: 30px; }
+                    CardTitle { text: "Sound cards"; }
                     for c[i] in root.page.cards: SettingRow {
                         label: c.name;
                         description: "Profile: which outputs and inputs it offers";

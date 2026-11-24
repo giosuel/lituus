@@ -6,8 +6,8 @@
 // back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, Focusable, SectionLabel, CardTitle, Scroll, Badge, Link, IconTile } from "controls.slint";
-import { TextField, Modal, SelectButton } from "dialogs.slint";
+import { Button, Focusable, SectionLabel, CardTitle, Scroll, Badge, Link, IconTile, Notice } from "controls.slint";
+import { TextField, Modal, SelectButton , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, HeroSubject, Card, ScrollCard, EmptyState, DividerRow } from "shell.slint";
 
 /// An app: its desktop file id, name, a line about it ("Flatpak · app.zen_browser.zen"), and
@@ -162,21 +162,7 @@ export component DefaultAppsPage inherits VerticalLayout {
             clicked => { root.act("sources-open", ""); }
         }
     }
-    if root.view.banner != "": Rectangle {
-        height: banner-text.preferred-height + 20px;
-        border-radius: 8px;
-        border-width: 1px;
-        border-color: Theme.border2;
-        banner-text := Text {
-            x: 36px;
-            width: parent.width - 48px;
-            text: root.view.banner;
-            color: Theme.text;
-            font-size: Type.body;
-            wrap: word-wrap;
-        }
-        Icon { x: 12px; y: 11px; name: "info"; tint: Theme.muted; }
-    }
+    if root.view.banner != "": Notice { text: root.view.banner; dismissible: false; }
     if root.view.error != "": Text { text: root.view.error; color: Theme.danger; font-size: Type.body; wrap: word-wrap; }
     if root.view.state == "list": HorizontalLayout {
         spacing: 14px;
@@ -190,7 +176,7 @@ export component DefaultAppsPage inherits VerticalLayout {
                     padding: 18px;
                     padding-top: 14px;
                     spacing: 0;
-                    CardTitle { text: "Everyday"; height: 30px; }
+                    CardTitle { text: "Everyday"; }
                     for k[i] in root.view.everyday: KindLine { kind: k; first: i == 0; narrow: root.narrow; act(v, a) => { root.act(v, a); } }
                 }
             }
@@ -199,7 +185,7 @@ export component DefaultAppsPage inherits VerticalLayout {
                     padding: 18px;
                     padding-top: 14px;
                     spacing: 0;
-                    CardTitle { text: "Media and documents"; height: 30px; }
+                    CardTitle { text: "Media and documents"; }
                     for k[i] in root.view.media: KindLine { kind: k; first: i == 0; narrow: root.narrow; act(v, a) => { root.act(v, a); } }
                 }
             }
@@ -210,7 +196,7 @@ export component DefaultAppsPage inherits VerticalLayout {
                 padding: 18px;
                 padding-top: 14px;
                 spacing: 0;
-                CardTitle { text: "By file type"; height: 34px; }
+                CardTitle { text: "By file type"; }
                 TextField {
                     icon: "search";
                     height: Size.field;
@@ -272,7 +258,7 @@ export component AppPickerDialog inherits Modal {
     card-width: 460px;
     label: root.view.picker-title;
     dismissed => { root.act("picker-close", ""); }
-    Text { text: root.view.picker-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+    DialogTitle { text: root.view.picker-title; }
     Text { text: root.view.picker-hint; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     Scroll {
         height: min(root.view.picker-apps.length * 46px + 8px, 440px);
@@ -297,7 +283,7 @@ export component SourcesDialog inherits Modal {
     card-width: 600px;
     label: "Where default apps come from";
     dismissed => { root.act("sources-close", ""); }
-    Text { text: "Where default apps come from"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Where default apps come from"; }
     Text {
         text: "Apps look in these files, first one first: the first that names an app for a file type wins. Lituus reads them the same way, so the page shows what really opens.";
         color: Theme.muted;
@@ -327,8 +313,7 @@ export component SourcesDialog inherits Modal {
             }
         }
     }
-    HorizontalLayout {
-        alignment: end;
+    DialogButtons {
         Button { label: "Close"; button-height: Size.button-dialog; clicked => { root.act("sources-close", ""); } }
     }
 }

@@ -4,7 +4,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, SectionLabel, Scroll, Focusable, Switch, Badge, Viewport } from "controls.slint";
-import { TextField, Select, CheckBox, Modal, Segmented, SelectButton } from "dialogs.slint";
+import { TextField, Select, CheckBox, Modal, Segmented, SelectButton , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
 
@@ -195,16 +195,14 @@ export component WallpaperTakeoverDialog inherits Modal {
     card-width: 480px;
     label: "Write hyprpaper.conf?";
     dismissed => { root.act("takeover-no", "", 0); }
-    Text { text: "Write hyprpaper.conf?"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Write hyprpaper.conf?"; }
     Text {
         text: "hyprpaper shows the pictures in hyprpaper.conf when it starts, and forgets the ones it's told while it runs. Lituus writes a block for each monitor you set; the rest of your file stays as it is, and the file as it is now is kept as hyprpaper.conf.bak.";
         color: Theme.muted;
         font-size: Type.body;
         wrap: word-wrap;
     }
-    HorizontalLayout {
-        alignment: end;
-        spacing: 8px;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.act("takeover-no", "", 0); } }
         Button { label: "Write it"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.act("takeover-yes", "", 0); } }
     }

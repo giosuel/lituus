@@ -5,8 +5,8 @@
 // done goes back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, Switch, SectionLabel, Scroll, Focusable, Badge, Chip, Link } from "controls.slint";
-import { TextField, Modal, Segmented, CheckBox, Select } from "dialogs.slint";
+import { Button, IconButton, Switch, SectionLabel, Scroll, Focusable, Badge, Chip, Link, Notice, CardFooter } from "controls.slint";
+import { TextField, Modal, Segmented, CheckBox, Select , DialogTitle} from "dialogs.slint";
 import { Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 import { AppChoice, AppTile } from "defaultapps.slint";
 
@@ -19,6 +19,8 @@ export struct AppAction { id: string, name: string, exec: string }
 export struct AppChange { label: string, old: string, new: string }
 /// A button that fixes a problem.
 export struct AppFix { verb: string, label: string }
+/// A line of category chips: a long list wraps onto several.
+export struct ChipLine { items: [string] }
 /// A problem: which app (id), what, why, and the buttons that fix it.
 export struct AppProblem { id: string, title: string, text: string, fixes: [AppFix], app: AppChoice }
 export struct AppsView {
@@ -50,6 +52,7 @@ export struct AppsView {
     exec-note: string,
     terminal: bool,
     categories: [string],
+    category-lines: [ChipLine],
     keywords: string,
     actions: [AppAction],
     wm-class: string,
@@ -157,24 +160,20 @@ component Field inherits HorizontalLayout {
 }
 
 
+/// A problem in the list of others: the app's tile, what's wrong, and its fixes.
 component ProblemBox inherits Rectangle {
     in property <AppProblem> problem;
-    in property <bool> big;
     callback act(string, string);
     border-radius: 10px;
-    border-width: root.big ? 1px : 0;
-    border-color: Theme.warn-border;
-    background: root.big ? Theme.warn-bg : transparent;
     height: inner.preferred-height;
     inner := HorizontalLayout {
-        padding: root.big ? 14px : 6px;
+        padding: 6px;
         spacing: 12px;
-        if root.big: Icon { name: "warning"; tint: Theme.warn-text; size: 16px; y: 2px; }
-        if !root.big: AppTile { app: root.problem.app; size: 28px; }
+        AppTile { app: root.problem.app; size: 28px; }
         VerticalLayout {
             spacing: 6px;
             horizontal-stretch: 1;
-            Text { text: root.problem.title; color: root.big ? Theme.warn-text : Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
+            Text { text: root.problem.title; color: Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
             Text { text: root.problem.text; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
             HorizontalLayout {
                 spacing: 8px;
@@ -349,7 +348,19 @@ export component AppsPage inherits VerticalLayout {
                     }
                     VerticalLayout { alignment: start; Button { label: "Open"; horizontal-stretch: 0; clicked => { root.act("launch", ""); } } }
                 }
-                if root.view.has-app && root.view.problem.title != "": ProblemBox { problem: root.view.problem; big: true; act(v, a) => { root.act(v, a); } }
+                if root.view.has-app && root.view.problem.title != "": Notice {
+                    tone: "warn";
+                    title: root.view.problem.title;
+                    text: root.view.problem.text;
+                    dismissible: false;
+                    for f[i] in root.view.problem.fixes: Button {
+                        label: f.label;
+                        kind: i == 0 ? "primary" : "secondary";
+                        button-height: Size.button-row;
+                        horizontal-stretch: 0;
+                        clicked => { root.act("fix", root.view.problem.id + "\u{1f}" + f.verb); }
+                    }
+                }
                 if root.view.has-app && root.view.changes.length > 0: Rectangle {
                     border-radius: 10px;
                     border-width: 1px;
@@ -412,16 +423,30 @@ export component AppsPage inherits VerticalLayout {
                         }
                         Field {
                             label: "Categories";
-                            HorizontalLayout {
+                            // Lines of chips, + Add at the end of the last (none: on its own).
+                            VerticalLayout {
                                 spacing: 6px;
-                                alignment: start;
-                                for c in root.view.categories: Chip { text: c; removable: true; removed => { root.act("category-remove", c); } }
-                                TextField {
-                                    width: 150px;
-                                    height: 28px;
-                                    label: "Add a category";
-                                    placeholder: "+ Add";
-                                    accepted => { root.act("category-add", self.text); self.text = ""; }
+                                for line[l] in root.view.category-lines: HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    for c in line.items: Chip { text: c; removable: true; removed => { root.act("category-remove", c); } }
+                                    if l == root.view.category-lines.length - 1: TextField {
+                                        width: 150px;
+                                        height: 28px;
+                                        label: "Add a category";
+                                        placeholder: "+ Add";
+                                        accepted => { root.act("category-add", self.text); self.text = ""; }
+                                    }
+                                }
+                                if root.view.category-lines.length == 0: HorizontalLayout {
+                                    alignment: start;
+                                    TextField {
+                                        width: 150px;
+                                        height: 28px;
+                                        label: "Add a category";
+                                        placeholder: "+ Add";
+                                        accepted => { root.act("category-add", self.text); self.text = ""; }
+                                    }
                                 }
                             }
                             Text { text: "Where launchers with sections put it."; color: Theme.faint; font-size: Type.note; }
@@ -453,12 +478,7 @@ export component AppsPage inherits VerticalLayout {
                     for p in root.view.other-problems: ProblemBox { problem: p; act(v, a) => { root.act(v, a); } }
                     Rectangle { vertical-stretch: 1; }
                 }
-                Rectangle { height: 1px; background: Theme.border; }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Icon { name: "info"; tint: Theme.faint; size: 14px; y: 2px; }
-                    Text { text: root.view.footer; color: Theme.faint; font-size: Type.note; wrap: word-wrap; horizontal-stretch: 1; }
-                }
+                CardFooter { text: root.view.footer; }
             }
         }
     }
@@ -477,7 +497,7 @@ export component AddAppDialog inherits Modal {
     card-width: 620px;
     label: "Add an app";
     dismissed => { root.act("add-close", ""); }
-    Text { text: "Add an app"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Add an app"; }
     Text {
         text: root.view.add-website ? "A website in a window of its own, with its own place in the launcher." : "For a program your package manager didn't install: an AppImage, a script, a game.";
         color: Theme.muted;
@@ -556,7 +576,7 @@ export component IconDialog inherits Modal {
     card-width: 620px;
     label: root.view.icon-title;
     dismissed => { root.act("icon-close", ""); }
-    Text { text: root.view.icon-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: root.view.icon-title; }
     TextField { text: root.view.icon-query; label: "Search icons"; placeholder: "An icon's name"; edited => { root.act("icon-query", self.text); } }
     Text { text: root.view.icon-note; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     icons := Rectangle {

@@ -4,7 +4,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, CardTitle, SectionLabel, FieldLabel, Scroll, Focusable } from "controls.slint";
-import { Segmented, ViewSwitcher, Tabs, Select, TextField, CheckBox, Modal } from "dialogs.slint";
+import { Segmented, ViewSwitcher, Tabs, Select, TextField, CheckBox, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, Card, ScrollCard, LoadBanner, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
 
@@ -299,8 +299,6 @@ export component DisplaysPage inherits VerticalLayout {
     pure callback snap(int, float, float, float, bool) -> DragSnap;
     spacing: 14px;
 
-    if root.view.not-loaded && root.view.state == "list": LoadBanner { line: root.view.load-line; }
-
     // The hero (with the monitors) takes what the window's height leaves the settings, up to
     // 720 px, the same on each of the settings' tabs, so the monitors don't change size with
     // them. Workspaces and Profiles stop at 420 px: their lists need the room in a tall window.
@@ -310,9 +308,9 @@ export component DisplaysPage inherits VerticalLayout {
         // settings scroll; the banner takes its height from the hero's, so the settings keep theirs.
         // Hyprland not running: only the title and its line, as the other pages' heroes with an
         // empty state. While loading it keeps its height, so nothing jumps when the monitors come.
-        property <length> smallest: root.view.state == "not-running" ? 136px : clamp(root.window-height - 400px, 236px, 330px) - (root.view.not-loaded ? 44px : 0);
+        property <length> smallest: root.view.state == "not-running" ? 136px : clamp(root.window-height - 400px, 236px, 330px) - (root.view.not-loaded ? 76px : 0);
         property <bool> grows: root.view.state != "not-running";
-        property <length> tall: grows ? clamp(root.window-height - 396px - (root.view.not-loaded ? 44px : 0), smallest, root.page-tab == 0 ? 720px : 420px) : smallest;
+        property <length> tall: grows ? clamp(root.window-height - 396px - (root.view.not-loaded ? 76px : 0), smallest, root.page-tab == 0 ? 720px : 420px) : smallest;
         min-height: smallest;
         preferred-height: tall;
         max-height: tall;
@@ -357,6 +355,7 @@ export component DisplaysPage inherits VerticalLayout {
             }
         }
     }
+    if root.view.not-loaded && root.view.state == "list": LoadBanner { }
 
     // The settings scroll in a short window; the bar with Apply stays below them.
     if root.view.state == "list": Scroll {
@@ -784,7 +783,7 @@ export component KeepDialog inherits Modal {
     callback revert();
     label: "Keep these display settings?";
     dismissed => { root.revert(); }
-    Text { text: "Keep these display settings?"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Keep these display settings?"; }
     Text { text: "If a screen stays black, do nothing: the old settings come back by themselves."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     Rectangle {
         height: 6px;
@@ -793,9 +792,7 @@ export component KeepDialog inherits Modal {
         Rectangle { x: 0; width: parent.width * root.view.keep-fraction; border-radius: 3px; background: Theme.accent; }
     }
     Text { text: "Going back in " + root.view.keep-seconds + " s"; color: Theme.muted; font-size: Type.note; }
-    HorizontalLayout {
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Go back now"; button-height: Size.button-dialog; clicked => { root.revert(); } }
         Button { label: "Keep"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.keep(); } }
     }
@@ -809,7 +806,7 @@ export component ConfigDialog inherits Modal {
     card-spacing: 12px;
     label: "Config file";
     dismissed => { root.closed(); }
-    Text { text: "Config file"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Config file"; }
     Text { text: root.view.config-path + ", with the changes not applied yet"; color: Theme.muted; font-size: Type.note; font-family: "JetBrains Mono"; }
     // The code scrolls both ways, with a bar for each when it doesn't fit.
     Rectangle {
@@ -858,9 +855,7 @@ export component ConfigDialog inherits Modal {
             position <=> code-flick.content-x;
         }
     }
-    HorizontalLayout {
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Copy"; button-height: Size.button-dialog; clicked => { code.select-all(); code.copy(); } }
         Button { label: "Close"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }

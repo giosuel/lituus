@@ -1,6 +1,7 @@
 //! Lituus's own file next to the user's Hyprland config: `lituus.lua`, which hyprland.lua loads
 //! with `require("lituus")` (Hyprland puts its config folder on Lua's path), or `lituus.conf`
-//! with `source =` before Hyprland 0.55. The user's own config is only read, never written.
+//! with `source =` before Hyprland 0.55. The user's own config is only read, never written,
+//! except by Set up… (D-44): after asking, it adds the load line at the end, with a copy first.
 //! Each page that writes to it has a part of its own, from its first line ("-- Written by Lituus
 //! (Displays).") to the next page's, and writes only that part.
 
@@ -39,6 +40,45 @@ impl ConfigFile {
     /// The line the user's config needs to load Lituus's file.
     pub fn load_line(&self) -> String {
         if self.lua { "require(\"lituus\")".to_owned() } else { "source = ~/.config/hypr/lituus.conf".to_owned() }
+    }
+
+    /// The comment and the line Set up… adds at the end of the user's config (D-44).
+    pub fn load_lines(&self) -> (String, String) {
+        let comment = if self.lua { "--" } else { "#" };
+        (format!("{comment} Lituus's settings (Displays, Input, Shortcuts)"), self.load_line())
+    }
+
+    /// Where Set up… keeps a copy of the user's config first: hyprland.lua.bak, or .bak.1 and on
+    /// when that's taken (the user's own copy, or an earlier one).
+    pub fn backup_path(&self) -> PathBuf {
+        let name = file_name(&self.main_path());
+        (0u32..)
+            .map(|n| self.dir.join(if n == 0 { format!("{name}.bak") } else { format!("{name}.bak.{n}") }))
+            .find(|p| !p.exists())
+            .expect("a free name")
+    }
+
+    /// Adds the load line at the end of the user's main config, after copying it to
+    /// `backup_path` (D-44: only from the dialog that asks first). It appends to the file where
+    /// it is, so a config that's a link into the user's dotfiles stays a link. Returns the copy.
+    pub fn add_load_line(&self) -> std::io::Result<PathBuf> {
+        use std::io::Write;
+        let main = self.main_path();
+        let text = std::fs::read_to_string(&main)?;
+        let backup = self.backup_path();
+        std::fs::copy(&main, &backup)?;
+        let (comment, line) = self.load_lines();
+        // One empty line before it.
+        let gap = match () {
+            _ if text.is_empty() || text.ends_with("\n\n") => "",
+            _ if text.ends_with('\n') => "\n",
+            _ => "\n\n",
+        };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&main)?
+            .write_all(format!("{gap}{comment}\n{line}\n").as_bytes())?;
+        Ok(backup)
     }
 
     /// Whether the user's config loads Lituus's file: a `require("lituus")` in a Lua file of the
@@ -148,6 +188,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn set_up_adds_the_line_at_the_end_after_a_copy() {
+        let d = dir("setup-lua");
+        let file = ConfigFile::new(&d, true);
+        std::fs::write(file.main_path(), "hl.config({ general = { gaps_in = 4 } })").unwrap();
+        assert!(!file.loaded());
+        let backup = file.add_load_line().unwrap();
+        assert_eq!(backup, d.join("hyprland.lua.bak"));
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "hl.config({ general = { gaps_in = 4 } })");
+        assert_eq!(
+            std::fs::read_to_string(file.main_path()).unwrap(),
+            "hl.config({ general = { gaps_in = 4 } })\n\n-- Lituus's settings (Displays, Input, Shortcuts)\nrequire(\"lituus\")\n"
+        );
+        assert!(file.loaded());
+        // A copy that's already there is kept.
+        assert_eq!(file.backup_path(), d.join("hyprland.lua.bak.1"));
+    }
+
+    #[test]
+    fn set_up_writes_a_source_line_for_hyprlang() {
+        let d = dir("setup-conf");
+        let file = ConfigFile::new(&d, false);
+        std::fs::write(file.main_path(), "monitor = , preferred, auto, 1\n").unwrap();
+        file.add_load_line().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(file.main_path()).unwrap(),
+            "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = ~/.config/hypr/lituus.conf\n"
+        );
+        assert!(file.loaded());
+    }
+
+    #[test]
+    fn set_up_keeps_a_linked_config_a_link() {
+        let d = dir("setup-link");
+        let dotfiles = dir("setup-link-dotfiles").join("hyprland.lua");
+        std::fs::write(&dotfiles, "-- mine\n").unwrap();
+        std::os::unix::fs::symlink(&dotfiles, d.join("hyprland.lua")).unwrap();
+        let file = ConfigFile::new(&d, true);
+        file.add_load_line().unwrap();
+        assert!(std::fs::symlink_metadata(file.main_path()).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&dotfiles).unwrap().ends_with("require(\"lituus\")\n"));
+        // No config at all: nothing to add it to.
+        assert!(ConfigFile::new(dir("setup-none"), true).add_load_line().is_err());
     }
 
     #[test]

@@ -3,8 +3,8 @@
 // user does goes back through one callback, `act(verb, argument)`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars, Battery, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus } from "controls.slint";
-import { TextField, Segmented, CheckBox, FormRow, Modal } from "dialogs.slint";
+import { Button, IconButton, Switch, SectionLabel, FieldLabel, Notice, Scroll, Focusable, Focus } from "controls.slint";
+import { TextField, Segmented, CheckBox, FormRow, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Details, DetailsPane } from "details.slint";
 import { HeroInfo, EmptyState } from "shell.slint";
 
@@ -152,7 +152,7 @@ export component BluetoothPage inherits HorizontalLayout {
         VerticalLayout {
             padding: 10px;
             spacing: 10px;
-            if root.page.state == "list" && root.page.message != "": Banner {
+            if root.page.state == "list" && root.page.message != "": Notice {
                 tone: root.page.message-tone;
                 title: root.page.message-title;
                 text: root.page.message;
@@ -269,7 +269,7 @@ export component BtPairDialog inherits Modal {
     dismissed => { root.cancelled(); }
     VerticalLayout {
         spacing: 4px;
-        Text { text: root.pair.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+        DialogTitle { text: root.pair.title; }
         Text { text: root.pair.text; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     }
     if root.pair.mode != "display": DeviceCard {
@@ -321,10 +321,7 @@ export component BtPairDialog inherits Modal {
         text: root.pair.always;
     }
     if root.pair.mode == "service": Text { text: "Marks it as trusted; you can change this in its details."; color: Theme.muted; font-size: Type.note; x: 28px; }
-    HorizontalLayout {
-        padding-top: 6px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: root.pair.mode == "service" ? "Deny" : "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         if root.pair.accept != "": Button {
             label: root.pair.accept;
@@ -349,7 +346,7 @@ export component BtAdapterDialog inherits Modal {
     card-width: 560px;
     label: "Bluetooth adapter";
     dismissed => { root.cancelled(); }
-    Text { text: "Bluetooth adapter"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Bluetooth adapter"; }
     VerticalLayout {
         spacing: 12px;
         FormRow {
@@ -376,10 +373,7 @@ export component BtAdapterDialog inherits Modal {
             CheckBox { checked <=> root.pairable; text: "New devices can ask to pair"; label: "Pairable"; }
         }
     }
-    HorizontalLayout {
-        padding-top: 6px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         Button { label: "Save"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.saved(); } }
     }
@@ -394,13 +388,10 @@ export component BtRenameDialog inherits Modal {
     card-width: 420px;
     label: title;
     dismissed => { root.cancelled(); }
-    Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+    DialogTitle { text: root.title; }
     TextField { text <=> root.name; autofocus: true; label: "Name"; accepted => { root.saved(); } }
     Text { text: root.hint; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
-    HorizontalLayout {
-        padding-top: 6px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         Button { label: "Save"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.saved(); } }
     }

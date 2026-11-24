@@ -4,8 +4,8 @@
 // whenever it changes (see src/editor.rs) and sends back the errors.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, AddButton, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus, FocusTrap, Chip } from "controls.slint";
-import { TextField, Segmented, CheckBox, Select, FormRow, Modal } from "dialogs.slint";
+import { Button, IconButton, AddButton, SectionLabel, FieldLabel, Notice, Scroll, Focusable, Focus, FocusTrap, Chip } from "controls.slint";
+import { TextField, Segmented, CheckBox, Select, FormRow, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 
 export struct AddressRow { address: string, prefix: string }
 export struct RouteRow { dest: string, prefix: string, gateway: string, metric: string }
@@ -723,7 +723,7 @@ export component Editor inherits Rectangle {
                 padding-top: 22px;
                 spacing: 18px;
                 alignment: start;
-                if root.options.banner != "": Banner { text: root.options.banner; dismissible: false; }
+                if root.options.banner != "": Notice { text: root.options.banner; dismissible: false; }
                 if root.tab == "general": VerticalLayout {
                     spacing: 18px;
                     FormRow {
@@ -1393,7 +1393,7 @@ export component Editor inherits Rectangle {
         card-spacing: 12px;
         label: "Add a port";
         dismissed => { root.port-chosen(""); }
-        Text { text: "Add a port to " + (root.form.virt.interface == "" ? root.form.name : root.form.virt.interface); color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        DialogTitle { text: "Add a port to " + (root.form.virt.interface == "" ? root.form.name : root.form.virt.interface); }
         Text { text: "The device becomes part of it, with a small connection of its own."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
         if root.options.candidates.length == 0: Text { text: "No other wired devices to add."; color: Theme.faint; font-size: Type.body; }
         for c in root.options.candidates: Rectangle {
@@ -1426,9 +1426,7 @@ export component Editor inherits Rectangle {
                 clicked => { root.port-chosen(c.interface); }
             }
         }
-        HorizontalLayout {
-            padding-top: 6px;
-            alignment: end;
+        DialogButtons {
             Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.port-chosen(""); } }
         }
     }
@@ -1441,7 +1439,7 @@ export component Editor inherits Rectangle {
         label: v6 ? "IPv6 routes" : "IPv4 routes";
         // A click beside it would lose the routes typed in it.
         dismissed => { root.routes-done(false); }
-        Text { text: (v6 ? "IPv6 routes · " : "IPv4 routes · ") + root.form.name; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        DialogTitle { text: (v6 ? "IPv6 routes · " : "IPv4 routes · ") + root.form.name; }
         Text { text: "Extra routes added when this connection is up."; color: Theme.muted; font-size: Type.body; }
         if (v6 ? root.form.ip6.routes.length : root.form.ip4.routes.length) == 0: Text {
             text: "No extra routes yet.";
@@ -1464,10 +1462,7 @@ export component Editor inherits Rectangle {
         if v6: CheckBox { checked <=> root.form.ip6.ignore-auto-routes; text: "Ignore routes from the network"; }
         if !v6: CheckBox { checked <=> root.form.ip4.never-default; text: "Use this connection only for resources on its network"; }
         if v6: CheckBox { checked <=> root.form.ip6.never-default; text: "Use this connection only for resources on its network"; }
-        HorizontalLayout {
-            padding-top: 6px;
-            spacing: 8px;
-            alignment: end;
+        DialogButtons {
             Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.routes-done(false); } }
             Button { label: "Done"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.routes-done(true); } }
         }

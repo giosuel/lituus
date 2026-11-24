@@ -13,7 +13,8 @@ use lituus_xdg::edit::{self, DesktopFile, ENTRY};
 use slint::{Image, ModelRc, SharedString, VecModel};
 
 use crate::{
-    AppAction, AppChange, AppChoice, AppFilter, AppFix, AppProblem, AppRow, AppSection, AppsView, MainWindow, update,
+    AppAction, AppChange, AppChoice, AppFilter, AppFix, AppProblem, AppRow, AppSection, AppsView, ChipLine, MainWindow,
+    update,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1090,7 +1091,14 @@ pub fn view(state: &mut State) -> AppsView {
     v.gpu = a.gpu;
     v.electron = d.electron.get(&a.id).copied().unwrap_or(false);
     v.wayland = a.exec.contains(edit::WAYLAND_FLAG);
-    v.categories = model(a.categories.iter().map(|c| s(category_label(c))).collect());
+    let labels: Vec<String> = a.categories.iter().map(|c| category_label(c)).collect();
+    v.categories = model(labels.iter().map(s).collect());
+    v.category_lines = model(
+        chip_lines(&labels, CHIP_LINE)
+            .into_iter()
+            .map(|l| ChipLine { items: model(l.iter().map(s).collect()) })
+            .collect(),
+    );
     v.keywords = s(a.keywords.join("; "));
     v.actions =
         model(a.actions.iter().map(|(id, name, exec)| AppAction { id: s(id), name: s(name), exec: s(exec) }).collect());
@@ -1258,8 +1266,50 @@ pub fn render(window: &MainWindow, state: &mut State) {
     }
 }
 
+/// About how many characters of chips fit on a line of the details at their narrowest.
+const CHIP_LINE: usize = 44;
+
+/// Chips in lines of about `width` characters (each chip's padding and × counted as 4), so a long
+/// list wraps instead of making the details wider than their card; a longer chip gets a line.
+fn chip_lines(labels: &[String], width: usize) -> Vec<Vec<String>> {
+    let mut lines: Vec<Vec<String>> = Vec::new();
+    let mut used = 0;
+    for label in labels {
+        let n = label.chars().count() + 4;
+        match lines.last_mut() {
+            Some(line) if used + n <= width => line.push(label.clone()),
+            _ => {
+                lines.push(vec![label.clone()]);
+                used = 0;
+            }
+        }
+        used += n;
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_category_lists_wrap() {
+        let labels = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            super::chip_lines(&labels(&["Graphics", "3D graphics"]), 44),
+            [labels(&["Graphics", "3D graphics"])]
+        );
+        let gnome =
+            labels(&["GNOME", "GTK", "Settings", "Desktop settings", "GNOME settings panel", "Unity settings panel"]);
+        assert_eq!(
+            super::chip_lines(&gnome, 44),
+            [
+                labels(&["GNOME", "GTK", "Settings"]),
+                labels(&["Desktop settings", "GNOME settings panel"]),
+                labels(&["Unity settings panel"])
+            ]
+        );
+        assert!(super::chip_lines(&[], 44).is_empty());
+    }
+
     use super::*;
     use slint::Model;
 

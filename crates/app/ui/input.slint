@@ -7,8 +7,8 @@
 // they show comes from Rust (src/input.rs); everything done goes back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, AddButton, Switch, CardTitle, SectionLabel, Scroll, Focusable, Focus, Banner } from "controls.slint";
-import { Segmented, Select, TextField, Modal } from "dialogs.slint";
+import { Button, IconButton, AddButton, Switch, CardTitle, SectionLabel, Scroll, Focusable, Focus, Notice } from "controls.slint";
+import { Segmented, Select, TextField, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, LoadBanner, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
 
@@ -137,8 +137,8 @@ component BarBanners inherits VerticalLayout {
     in property <InputBar> bar;
     callback act(string);
     spacing: 8px;
-    if root.bar.tone == "danger": Banner { tone: "danger"; text: root.bar.text; dismissible: false; }
-    if root.bar.tone == "warn": Banner {
+    if root.bar.tone == "danger": Notice { tone: "danger"; text: root.bar.text; dismissible: false; }
+    if root.bar.tone == "warn": Notice {
         tone: "warn";
         text: "Hyprland's settings differ from " + root.bar.path + ": something later in your config sets them too.";
         action: root.bar.can-save ? "Save to config file" : "";
@@ -318,7 +318,7 @@ component TypingCard inherits ScrollCard {
         padding-top: 14px;
         spacing: 0;
         alignment: start;
-        CardTitle { text: "Typing"; height: 34px; }
+        CardTitle { text: "Typing"; }
         SettingRow {
             label: "Repeat delay";
             differs: root.view.delay-differs;
@@ -363,7 +363,7 @@ component KeysCard inherits ScrollCard {
         padding-top: 14px;
         spacing: 0;
         alignment: start;
-        CardTitle { text: "Keys"; height: 34px; }
+        CardTitle { text: "Keys"; }
         SettingRow {
             label: "Caps Lock acts as";
             first: true;
@@ -403,7 +403,6 @@ export component KeyboardPage inherits VerticalLayout {
     callback act(string, string, float);
     spacing: 14px;
 
-    if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { line: root.view.bar.load-line; }
     Hero {
         title: "Keyboard";
         sub: root.view.state == "list" ? ChangeLine.text(root.view.bar, "Every keyboard uses these layouts") : "";
@@ -437,6 +436,7 @@ export component KeyboardPage inherits VerticalLayout {
             clicked => { root.act("revert", "", 0); }
         }
     }
+    if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { }
     if root.view.state == "list" && (root.view.bar.tone == "danger" || root.view.bar.tone == "warn"): BarBanners {
         bar: root.view.bar;
         act(verb) => { root.act(verb, "", 0); }
@@ -518,7 +518,6 @@ export component MousePage inherits VerticalLayout {
     callback act(string, string, float);
     spacing: 14px;
 
-    if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { line: root.view.bar.load-line; }
     Hero {
         title: "Mouse & touchpad";
         sub: ChangeLine.text(root.view.bar, root.view.sub);
@@ -541,6 +540,7 @@ export component MousePage inherits VerticalLayout {
             clicked => { root.act("revert", "", 0); }
         }
     }
+    if root.view.bar.not-loaded && root.view.state == "list": LoadBanner { }
     if root.view.state == "list" && (root.view.bar.tone == "danger" || root.view.bar.tone == "warn"): BarBanners {
         bar: root.view.bar;
         act(verb) => { root.act(verb, "", 0); }
@@ -632,7 +632,7 @@ export component AddLayoutDialog inherits Modal {
     card-width: 560px;
     label: "Add a layout";
     dismissed => { root.closed(); }
-    Text { text: "Add a layout"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: "Add a layout"; }
     Text { text: "It goes last; drag it to the top to have it at login."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     TextField {
         label: "Search layouts";
@@ -675,8 +675,7 @@ export component AddLayoutDialog inherits Modal {
             }
         }
     }
-    HorizontalLayout {
-        alignment: end;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }
 }
@@ -689,15 +688,14 @@ export component OwnSettingsDialog inherits Modal {
     card-width: 440px;
     label: "Give a device its own settings";
     dismissed => { root.closed(); }
-    Text { text: "Give a device its own settings"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+    DialogTitle { text: "Give a device its own settings"; }
     Text { text: "They start as the defaults; what you change then is for that device alone."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     VerticalLayout {
         spacing: 0;
         for r in root.view.own-rows: PointerRow { entry: r; chosen => { root.pick(r.id); } }
         if root.view.own-rows.length == 0: Text { text: "Every device connected has its own settings already."; color: Theme.faint; font-size: Type.body; height: 40px; vertical-alignment: center; }
     }
-    HorizontalLayout {
-        alignment: end;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }
 }

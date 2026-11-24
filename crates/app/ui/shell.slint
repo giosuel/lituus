@@ -3,7 +3,7 @@
 // the cards below it.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Logo, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, SectionLabel, Banner, Focusable, Scroll, Focus } from "controls.slint";
+import { Button, IconButton, Switch, SectionLabel, Notice, Focusable, Scroll, Focus } from "controls.slint";
 
 /// sub: a short status on the right ("Home", "2 on", "45%"), and `spoken`, the same as a screen
 /// reader says it ("2 connected"). open: an item showing its sub-items, on one of their pages.
@@ -597,19 +597,29 @@ export component EmptyState inherits VerticalLayout {
     }
 }
 
-/// Above a page that writes Lituus's file to Hyprland's config folder, while Hyprland's own
-/// config doesn't load it: `line` is what loads it, with a button to copy it.
-export component LoadBanner inherits Rectangle {
+/// The setup dialog (D-44): what it shows, filled in by Rust when `open` is called, and the
+/// window shows it while `shown`.
+export global Setup {
+    in-out property <bool> shown;
+    /// The user's config, as ~/.config/hypr/hyprland.lua.
+    in property <string> file;
+    /// The comment and the line added at its end.
+    in property <string> comment;
     in property <string> line;
-    height: banner.preferred-height;
-    copy-field := TextInput { visible: false; text: root.line; read-only: true; }
-    banner := Banner {
-        width: parent.width;
-        height: parent.height;
-        tone: "warn";
-        text: "Your Hyprland config doesn't load Lituus's file yet, so changes are lost when Hyprland restarts.";
-        action: "Copy " + root.line;
-        dismissible: false;
-        action-clicked => { copy-field.select-all(); copy-field.copy(); }
-    }
+    /// The copy kept first: hyprland.lua.bak.
+    in property <string> backup;
+    in property <string> error;
+    in property <bool> working;
+    callback open();
+    callback confirm();
+}
+
+/// Above a page that writes Lituus's file to Hyprland's config folder, while Hyprland's own
+/// config doesn't load it: Set up… adds the line, after asking (D-44).
+export component LoadBanner inherits Notice {
+    tone: "warn";
+    title: "Your Hyprland config doesn't load Lituus's file yet";
+    text: "What you change here is lost when Hyprland restarts.";
+    dismissible: false;
+    Button { label: "Set up…"; kind: "primary"; button-height: Size.button-row; horizontal-stretch: 0; focus-key: "setup"; clicked => { Setup.open(); } }
 }

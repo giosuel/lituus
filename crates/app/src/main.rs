@@ -31,6 +31,7 @@ mod profiles;
 mod qr;
 mod quick;
 mod secrets;
+mod setup;
 mod shortcut_edit;
 mod shortcuts;
 mod sound;
@@ -298,6 +299,7 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_version(env!("APP_VERSION").into());
     connect_callbacks(&window);
     connect_focus(&window);
+    setup::connect(&window);
     apply_theme(&window);
     render(&window);
     let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
