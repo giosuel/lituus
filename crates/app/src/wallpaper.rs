@@ -1449,11 +1449,7 @@ mod tests {
         }
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let script = |cmd: &str, body: &str| {
-            let p = bin.join(cmd);
-            std::fs::write(&p, format!("#!/bin/sh\necho \"{cmd} $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        };
+        let script = |cmd: &str, body: &str| stand_in(&d, cmd, body);
         let alps = home.join("Pictures/Wallpapers/alps.png");
         if program == Some(Program::Awww) {
             script(
@@ -1618,11 +1614,24 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    /// A stand-in command in the test's folder, recording its calls as the others do.
+    /// A stand-in command in the test's folder, recording its calls.
     fn stand_in(d: &Path, command: &str, body: &str) {
         let p = d.join("bin").join(command);
-        std::fs::write(&p, format!("#!/bin/sh\necho \"{command} $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
+        let text = format!(
+            "#!/bin/sh\n[ -n \"$STAND_IN_READY\" ] && exit 0\necho \"{command} $*\" >> {}/calls\n{body}\n",
+            d.display()
+        );
+        std::fs::write(&p, text).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Run once, doing nothing, until it runs: while a test on another thread forks, its child
+        // holds this file open for writing for a moment, and running it fails with "Text file
+        // busy" (N-10). Once it ran, nothing has it open for writing any more.
+        for _ in 0..500 {
+            match std::process::Command::new(&p).env("STAND_IN_READY", "1").status() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(10)),
+                _ => return,
+            }
+        }
     }
 
     /// Thumbnails are kept only for what the page shows: the folder's, and the pictures shown;

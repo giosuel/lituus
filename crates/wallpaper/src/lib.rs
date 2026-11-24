@@ -429,11 +429,31 @@ mod tests {
         std::fs::create_dir_all(d.join("bin")).unwrap();
         for (command, body) in scripts {
             let p = d.join("bin").join(command);
-            std::fs::write(&p, format!("#!/bin/sh\necho \"$0 $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/sh\n[ -n \"$STAND_IN_READY\" ] && exit 0\necho \"$0 $*\" >> {}/calls\n{body}\n",
+                    d.display()
+                ),
+            )
+            .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ready(&p);
         }
         let env = Env { path: vec![d.join("bin")], runtime_dir: Some(d.join("run")), signature: Some("sig".into()) };
         (env, d)
+    }
+
+    /// Runs a stand-in just written, doing nothing, until it runs: while a test on another thread
+    /// forks, its child holds this file open for writing for a moment, and running it fails with
+    /// "Text file busy" (N-10). Once it ran, nothing has it open for writing any more.
+    fn ready(script: &Path) {
+        for _ in 0..500 {
+            match Command::new(script).env("STAND_IN_READY", "1").status() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                _ => return,
+            }
+        }
     }
 
     fn calls(d: &Path) -> Vec<String> {
