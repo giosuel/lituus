@@ -23,6 +23,9 @@ pub struct Extras {
     pub wg_key: Option<String>,
     /// A note at the top: what an import did.
     pub banner: String,
+    /// The UUID of an import whose certificates were saved already: they're deleted if the
+    /// connection isn't.
+    pub import: Option<String>,
 }
 
 /// Settings in a [`Command`]: compared by identity, since only the editor makes them.
@@ -79,6 +82,8 @@ pub struct EditorState {
     wg_key: Option<String>,
     wg_shown: bool,
     banner: String,
+    /// See [`Extras::import`].
+    import: Option<String>,
 }
 
 impl EditorState {
@@ -195,6 +200,7 @@ impl EditorState {
             wg_key: None,
             wg_shown: false,
             banner: String::new(),
+            import: None,
         }
     }
 
@@ -1210,7 +1216,14 @@ fn edit_rows(weak: &slint::Weak<MainWindow>, change: impl FnOnce(&mut EditorStat
 }
 
 fn close(app: &mut App) {
-    app.editor = None;
+    discard(app.editor.take());
+}
+
+/// An editor closed or replaced: an import that was never saved leaves no certificates behind.
+fn discard(state: Option<EditorState>) {
+    if let Some(uuid) = state.and_then(|s| s.import.filter(|_| s.path.is_none())) {
+        crate::openvpn::remove_files(&crate::home(), &uuid);
+    }
 }
 
 fn apply(app: &mut App) {
@@ -1307,7 +1320,8 @@ pub fn open(
     let mut state = EditorState::new(path, settings, zones, app.snapshot.as_ref(), new);
     state.wg_key = extras.wg_key;
     state.banner = extras.banner;
-    app.editor = Some(state);
+    state.import = extras.import;
+    discard(app.editor.replace(state));
 }
 
 /// A file was chosen for one of the editor's path fields ("eap.ca-cert", "ovpn.key", …).

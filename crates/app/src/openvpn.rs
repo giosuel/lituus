@@ -258,6 +258,26 @@ pub fn check(initial: Option<&OvpnForm>, f: &OvpnForm) -> (String, String, Strin
     problems
 }
 
+/// Where an imported file's inline certificates and keys go: a folder of the new connection's
+/// own, so two files with one name (most providers call theirs client.ovpn) keep theirs apart.
+pub fn cert_dir(home: &Path, uuid: &str) -> PathBuf {
+    home.join(".local/share/lituus/certificates").join(uuid)
+}
+
+/// Deletes a connection's imported certificates and keys: it was forgotten, or its import was
+/// never saved.
+pub fn remove_files(home: &Path, uuid: &str) {
+    // A UUID names the folder; nothing else may reach outside it.
+    if uuid.is_empty() || !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir_all(cert_dir(home, uuid))
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("lituus: couldn't delete the certificates of {uuid}: {error}");
+    }
+}
+
 /// A `.ovpn` file, turned into NetworkManager-openvpn's settings. Certificates and keys written
 /// inline (`<ca>…</ca>`) are saved as files in `cert_dir`, since the plugin wants paths.
 pub struct Imported {

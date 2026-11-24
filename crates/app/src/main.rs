@@ -2345,7 +2345,19 @@ async fn run(
         SetAirplane { wifi, wwan, .. } => return client.set_radios(*wifi, *wwan).await.map(|()| None),
         Rescan { device } => return client.request_scan(device).await.map(|()| None),
         Deactivate { active } => return client.deactivate(active).await.map(|()| None),
-        Forget { connection } => return client.forget(connection).await.map(|()| None),
+        Forget { connection } => {
+            // An imported OpenVPN file's certificates and key go with it.
+            let settings = client.settings(connection).await.ok();
+            let uuid = settings
+                .as_ref()
+                .and_then(|s| s.get("connection")?.get("uuid"))
+                .and_then(|u| <&str>::try_from(&**u).ok());
+            client.forget(connection).await?;
+            if let Some(uuid) = uuid {
+                openvpn::remove_files(&home(), uuid);
+            }
+            return Ok(None);
+        }
         Tether { device, address, name } => return client.tether(device, address, name).await.map(|_| None),
         CancelSignIn { uuid } => {
             vpns.sign_ins.cancel(uuid);
@@ -2537,9 +2549,14 @@ fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> 
     file.write_all(contents.as_bytes())
 }
 
+/// The user's home folder.
+fn home() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+}
+
 /// The base of an imported VPN connection: its name, started by hand, and the user's own.
-fn imported_settings(kind: editor::Kind, name: &str, owner: Option<&str>) -> lituus_nm::Settings {
-    let mut settings = editor::new_settings(kind, &secrets::new_uuid());
+fn imported_settings(kind: editor::Kind, uuid: &str, name: &str, owner: Option<&str>) -> lituus_nm::Settings {
+    let mut settings = editor::new_settings(kind, uuid);
     let connection = settings.entry("connection".into()).or_default();
     let mut put = |k: &str, v: zbus::zvariant::Value| {
         connection.insert(k.into(), zbus::zvariant::OwnedValue::try_from(v).expect("no fds"));
@@ -2590,9 +2607,7 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
         if !openvpn::plugin_installed() {
             return notice(weak, OPENVPN_MISSING);
         }
-        let name = file.trim_end_matches(".ovpn").trim_end_matches(".conf").to_owned();
-        let home = std::env::var("HOME").unwrap_or_default();
-        let dir = std::path::PathBuf::from(home).join(".local/share/lituus/certificates").join(&name);
+        let dir = openvpn::cert_dir(&home(), &uuid);
         let full = path.to_string_lossy().into_owned();
         let imported = match openvpn::import(&text, &full, &dir) {
             Ok(imported) => imported,
@@ -2600,10 +2615,11 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
         };
         for (path, contents) in &imported.files {
             if let Err(e) = write_private(path, contents) {
+                openvpn::remove_files(&home(), &uuid);
                 return notice(weak, &format!("Couldn't save {}: {e}.", path.display()));
             }
         }
-        let mut settings = imported_settings(editor::Kind::OpenVpn, &imported.name, owner.as_deref());
+        let mut settings = imported_settings(editor::Kind::OpenVpn, &uuid, &imported.name, owner.as_deref());
         openvpn::write(&mut settings, None, &imported.form);
         let mut banner = format!("Imported from {file}");
         if !imported.files.is_empty() {
@@ -2622,7 +2638,8 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
     let zones = client.firewall_zones().await;
     let _ = weak.upgrade_in_event_loop(move |window| {
         APP.with(|app| {
-            let extras = editing::Extras { wg_key: None, banner };
+            // An OpenVPN file's certificates are on disk already: they go if it isn't saved.
+            let extras = editing::Extras { banner, import: (!looks_wireguard).then_some(uuid), ..Default::default() };
             editing::open(&mut app.borrow_mut(), None, settings, zones, None, extras)
         });
         render(&window);
@@ -2640,7 +2657,7 @@ async fn import_saml(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>,
     };
     let owner = secrets::username();
     let settings_of = |name: &str, form: &openconnect::OcForm| {
-        let mut settings = imported_settings(editor::Kind::OpenConnect, name, owner.as_deref());
+        let mut settings = imported_settings(editor::Kind::OpenConnect, &secrets::new_uuid(), name, owner.as_deref());
         openconnect::write(&mut settings, None, form);
         settings
     };
@@ -2650,7 +2667,7 @@ async fn import_saml(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>,
         let zones = client.firewall_zones().await;
         let _ = weak.upgrade_in_event_loop(move |window| {
             APP.with(|app| {
-                let extras = editing::Extras { wg_key: None, banner };
+                let extras = editing::Extras { banner, ..Default::default() };
                 editing::open(&mut app.borrow_mut(), None, settings, zones, None, extras)
             });
             render(&window);
@@ -4730,5 +4747,32 @@ mod tests {
         // The window notes its new height on its next turn.
         mock_elapsed_time(Duration::from_millis(50));
         assert!(name_bottom() <= 18.0 + 136.0, "{}", name_bottom());
+    }
+
+    /// Two providers both call their file client.ovpn (most do): each connection keeps its own
+    /// certificates and key, and forgetting one takes only its own.
+    #[test]
+    fn a_second_openvpn_file_with_the_same_name_keeps_the_first_one_s_key() {
+        let home = std::env::temp_dir().join(format!("lituus-ovpn-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let file = |key: &str| format!("client\nremote vpn.example.org 1194\n<ca>\nCA\n</ca>\n<key>\n{key}\n</key>\n");
+        // What import_file does with the chosen file, for a new connection.
+        let import = |text: &str, path: &str| {
+            let uuid = super::secrets::new_uuid();
+            let imported = super::openvpn::import(text, path, &super::openvpn::cert_dir(&home, &uuid)).unwrap();
+            for (path, contents) in &imported.files {
+                super::write_private(path, contents).unwrap();
+            }
+            (uuid, std::path::PathBuf::from(imported.form.key))
+        };
+        let (first_uuid, first) = import(&file("KEY-A"), "/home/u/a/client.ovpn");
+        let (_, second) = import(&file("KEY-B"), "/home/u/b/client.ovpn");
+        let first_key = std::fs::read_to_string(&first).unwrap();
+        super::openvpn::remove_files(&home, &first_uuid);
+        let left = (first.exists(), second.exists());
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(first_key, "KEY-A\n", "the first connection's key file now holds the second one's key");
+        assert_ne!(first, second, "both connections point at the same key file");
+        assert_eq!(left, (false, true), "forgetting the first takes its files only");
     }
 }
