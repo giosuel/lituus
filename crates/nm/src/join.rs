@@ -191,6 +191,9 @@ impl Client {
         // It may have finished before the signals were set up.
         match Props::get_all(conn, active, "org.freedesktop.NetworkManager.Connection.Active").await {
             Ok(p) if p.u32("State") == Some(2) => return Ok(Outcome::Connected),
+            // Over already: its StateChanged went out before the watch, and no other will come.
+            // Its reason went with that signal.
+            Ok(p) if p.u32("State") == Some(4) => return Ok(failure(None, 0)),
             Ok(_) => {}
             Err(_) => return Ok(Outcome::Failed("The connection went away before it was up.".into())),
         }

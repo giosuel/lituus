@@ -603,3 +603,18 @@ GLib.timeout_add(200, burst)
     let snapshot = tokio::time::timeout(Duration::from_secs(3), client.snapshot()).await;
     assert!(snapshot.is_ok_and(|s| s.is_ok()), "NetworkManager's answers no longer arrive");
 }
+
+/// An attempt that ended before its outcome was watched is reported at once, not as "It took too
+/// long." when the 150 seconds are up.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attempt_over_before_it_is_watched_is_reported_at_once() {
+    use lituus_nm::Outcome;
+    let Some(bus) = Bus::start(true).await else { return };
+    let (wifi, _) = home_setup(&bus).await;
+    let conn: String = bus.mock("AddWiFiConnection", &(&wifi, "libconn", "Bibliothek-Free", "wpa-psk")).await;
+    // State 4: deactivated already.
+    let active: String = bus.mock("AddActiveConnection", &(vec![&wifi], &conn, "/", "libactive", 4u32)).await;
+    let client = Client::new(bus.connect().await);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), client.outcome(&active, Some(&wifi))).await;
+    assert_eq!(outcome.expect("answered at once").unwrap(), Outcome::Failed("NetworkManager gave no reason.".into()));
+}
