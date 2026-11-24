@@ -429,6 +429,21 @@ export component SelectButton inherits Focusable {
     }
 }
 
+/// A dialog's title (D-46): 17/600, wrapping.
+export component DialogTitle inherits Text {
+    color: Theme.text;
+    font-size: Type.dialog-title;
+    font-weight: 600;
+    wrap: word-wrap;
+}
+
+/// A dialog's buttons (D-46): on the right, 8 px apart, the main one last.
+export component DialogButtons inherits HorizontalLayout {
+    padding-top: 6px;
+    spacing: 8px;
+    alignment: end;
+}
+
 /// A dialog over the window: a dimmed backdrop and a card with the children. Esc calls
 /// `dismissed`, from any field in it, and so does a click on the backdrop.
 export component Modal inherits Rectangle {
@@ -504,7 +519,8 @@ export component JoinDialog inherits Modal {
 
     label: root.title;
     card-spacing: 16px;
-    // A click beside it would lose the password, so only Esc and Cancel close it.
+    // Esc, Cancel and a click beside it all cancel it, as every dialog does (D-29), even with a
+    // password typed in it.
     dismissed => { root.cancelled(); }
     HorizontalLayout {
         spacing: 14px;
@@ -518,7 +534,7 @@ export component JoinDialog inherits Modal {
         VerticalLayout {
             spacing: 3px;
             alignment: center;
-            Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+            DialogTitle { text: root.title; }
             Text { text: root.subtitle; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
         }
     }
@@ -556,10 +572,7 @@ export component JoinDialog inherits Modal {
         Text { text: root.storage-hints[root.storage]; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     }
     if root.mode != "prompt": CheckBox { checked <=> root.autoconnect; text: "Connect automatically when in range"; }
-    HorizontalLayout {
-        padding-top: 4px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         Button { label: "Connect"; kind: "primary"; button-height: Size.button-dialog; enabled: root.valid; clicked => { root.accepted(); } }
     }

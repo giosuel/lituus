@@ -191,7 +191,7 @@ export component SystemPage inherits VerticalLayout {
                     padding: 18px;
                     padding-top: 14px;
                     spacing: 8px;
-                    CardTitle { text: "Hardware"; height: 30px; }
+                    CardTitle { text: "Hardware"; }
                     facts := Rectangle {
                         property <int> columns: self.width >= 460px ? 2 : 1;
                         height: ceil(root.view.facts.length / self.columns) * 76px;
@@ -263,7 +263,7 @@ export component SystemPage inherits VerticalLayout {
                 padding: 18px;
                 padding-top: 14px;
                 spacing: 0;
-                CardTitle { text: "Software"; height: 34px; }
+                CardTitle { text: "Software"; }
                 SectionLabel { text: "DISTRIBUTION"; height: 26px; vertical-alignment: center; }
                 HorizontalLayout {
                     height: 40px;

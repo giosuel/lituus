@@ -3,7 +3,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button } from "controls.slint";
-import { CheckBox, Modal } from "dialogs.slint";
+import { CheckBox, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 
 /// tone: the status's colour ("accent" sent, "danger" failed, "muted").
 export struct FileRow { name: string, size: string, status: string, fraction: float, active: bool, tone: string }
@@ -33,7 +33,7 @@ export component SendFilesDialog inherits Modal {
     label: view.send-title;
     // Esc hides it, as Hide does; the files keep going.
     dismissed => { root.hide(); }
-    Text { text: root.view.send-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: root.view.send-title; }
     Text { text: "Keep the device unlocked; it may ask you to accept each file."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     for f in root.view.files: VerticalLayout {
         spacing: 4px;
@@ -59,10 +59,7 @@ export component SendFilesDialog inherits Modal {
         background: Theme.off-track;
         Rectangle { x: 0; width: parent.width * root.view.send-fraction; border-radius: 3px; background: Theme.accent; }
     }
-    HorizontalLayout {
-        padding-top: 4px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         if !root.view.send-done: Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancel(); } }
         Button { label: root.view.send-done ? "Close" : "Hide"; kind: root.view.send-done ? "primary" : "secondary"; button-height: Size.button-dialog; clicked => { root.hide(); } }
     }
@@ -76,7 +73,7 @@ export component IncomingFileDialog inherits Modal {
     card-spacing: 12px;
     label: view.in-title;
     dismissed => { root.decline(); }
-    Text { text: root.view.in-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+    DialogTitle { text: root.view.in-title; }
     Rectangle {
         height: 56px;
         border-radius: 10px;
@@ -102,10 +99,7 @@ export component IncomingFileDialog inherits Modal {
         Text { text: root.view.in-folder; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
     }
     CheckBox { text: root.view.in-always-label; checked <=> root.always; }
-    HorizontalLayout {
-        padding-top: 4px;
-        spacing: 8px;
-        alignment: end;
+    DialogButtons {
         Button { label: "Decline"; button-height: Size.button-dialog; clicked => { root.decline(); } }
         Button { label: "Accept"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.accept(); } }
     }

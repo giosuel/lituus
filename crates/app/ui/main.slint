@@ -9,17 +9,17 @@ import "fonts/JetBrainsMono-Medium.ttf";
 import { Palette } from "std-widgets.slint";
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars, Logo } from "icons.slint";
-import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Banner, Kbd, Hint, Scroll, Focusable, Focus, Link, Viewport } from "controls.slint";
-import { JoinDialog, TextField, Segmented, FormRow, Modal } from "dialogs.slint";
+import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Notice, Kbd, Hint, Scroll, Focusable, Focus, Link, Viewport } from "controls.slint";
+import { JoinDialog, TextField, Segmented, FormRow, Modal, DialogTitle, DialogButtons } from "dialogs.slint";
 import { QuickWindow, QuickRow } from "quick.slint";
 import { Action, Toggle, DetailItem, Chip, ChipRow, Details, DetailsPane } from "details.slint";
-import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo } from "shell.slint";
+import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo, Setup } from "shell.slint";
 import { SettingsHero, AppearanceSettings, ColourFiles, ThemeSwatch, ColourChip, SourceRow } from "appearance.slint";
 import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.slint";
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
-import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem } from "apps.slint";
+import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem, ChipLine } from "apps.slint";
 import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
 import { SystemPage, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, SystemUpdate } from "system.slint";
 import { WallpaperPage, WallpaperView, WallpaperTile, WallpaperMonitor, WallpaperTakeoverDialog } from "wallpaper.slint";
@@ -27,7 +27,7 @@ import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEdit
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
 import { Editor, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi } from "editor.slint";
 
-export { Theme, Focus, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
+export { Theme, Focus, Setup, ChipLine, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
 
 /// icon: "bars" (signal bars), or an icon name. tone: "accent", "danger", "muted", "faint".
 /// indent: a port under its bridge or bond, or a VLAN under its device.
@@ -423,22 +423,13 @@ export component MainWindow inherits Window {
                 // Where F6 from the sidebar starts: Tab goes on from here to the page's first
                 // control.
                 page-start := FocusScope { height: 0; focus-on-tab-navigation: false; focus-on-click: false; }
-                if root.banner != "": Rectangle {
-                    height: 40px;
-                    background: Theme.warn-bg;
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        spacing: 10px;
-                        VerticalLayout { alignment: center; Icon { name: "warning"; tint: Theme.warn-text; } }
-                        Text { text: root.banner; color: Theme.warn-text; font-size: Type.body; vertical-alignment: center; }
-                    }
-                }
                 page-body := VerticalLayout {
                     vertical-stretch: 1;
                     padding: 18px;
                     padding-left: 22px;
                     padding-right: 22px;
                     spacing: 14px;
+                    if root.banner != "": Notice { tone: "warn"; text: root.banner; dismissible: false; }
                     // Network's pages: Wi-Fi, Wired, VPN and Hotspot, each with its hero.
                     if root.network-page: network-hero := Hero {
                         // With nothing on the page (Wi-Fi off, no VPN yet, no Wi-Fi card for a
@@ -535,7 +526,7 @@ export component MainWindow inherits Window {
                                 VerticalLayout {
                                     padding: 10px;
                                     spacing: 10px;
-                            if root.message != "": Banner {
+                            if root.message != "": Notice {
                                 tone: root.message-tone;
                                 title: root.message-title;
                                 text: root.message;
@@ -641,7 +632,7 @@ export component MainWindow inherits Window {
                                             Segmented { options: ["Automatic", "2.4 GHz", "5 GHz"]; selected <=> root.hotspot-band; label: "Band"; height: 34px; }
                                         }
                                     }
-                                    if root.hotspot-warning != "": Banner { tone: "warn"; text: root.hotspot-warning; dismissible: false; }
+                                    if root.hotspot-warning != "": Notice { tone: "warn"; text: root.hotspot-warning; dismissible: false; }
                                     if root.hotspot-on: VerticalLayout {
                                         spacing: 8px;
                                         SectionLabel { text: root.hotspot-clients.length == 0 ? "NO DEVICES YET" : "CONNECTED DEVICES · " + root.hotspot-clients.length; }
@@ -982,14 +973,67 @@ export component MainWindow inherits Window {
         card-width: 420px;
         label: root.confirm-title;
         dismissed => { root.confirm-cancelled(); keys.focus(); }
-        Text { text: root.confirm-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; wrap: word-wrap; }
+        DialogTitle { text: root.confirm-title; }
         Text { text: root.confirm-text; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
-        HorizontalLayout {
-            padding-top: 6px;
-            spacing: 8px;
-            alignment: end;
+        DialogButtons {
             Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.confirm-cancelled(); keys.focus(); } }
             Button { label: root.confirm-button; kind: root.confirm-destructive ? "destructive" : "primary"; button-height: Size.button-dialog; clicked => { root.confirm-accepted(); keys.focus(); } }
+        }
+    }
+
+    // Set up… (D-44): the line Lituus adds to the user's config, and where, before it does.
+    if Setup.shown: Modal {
+        card-width: 560px;
+        card-spacing: 16px;
+        label: "Let Hyprland load Lituus's settings";
+        dismissed => { Setup.shown = false; keys.focus(); }
+        DialogTitle { text: "Let Hyprland load Lituus's settings"; }
+        Text {
+            text: "Lituus keeps what you change here in its own file. Your config needs one line at its end to load it, after your own settings and shortcuts, so Lituus's come last.";
+            color: Theme.muted;
+            font-size: Type.body;
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Added at the end of " + Setup.file; color: Theme.muted; font-size: Type.note; font-weight: 500; }
+            Rectangle {
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.ctrl-border;
+                background: Theme.input-bg;
+                VerticalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 4px;
+                    Text { text: Setup.comment; color: Theme.faint; font-size: Type.body; font-family: "JetBrains Mono"; wrap: word-wrap; }
+                    Text { text: Setup.line; color: Theme.accent; font-size: Type.body; font-family: "JetBrains Mono"; wrap: word-wrap; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout { alignment: start; padding-top: 1px; Icon { name: "info"; tint: Theme.faint; size: 14px; } }
+            Text {
+                text: "Your file is kept as " + Setup.backup + " first. Hyprland reloads its config after.";
+                color: Theme.faint;
+                font-size: Type.note;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        if Setup.error != "": Notice { tone: "danger"; compact: true; text: Setup.error; dismissible: false; }
+        DialogButtons {
+            Button { label: "Not now"; button-height: Size.button-dialog; clicked => { Setup.shown = false; keys.focus(); } }
+            Button {
+                label: Setup.working ? "Adding…" : "Add the line";
+                kind: "primary";
+                enabled: !Setup.working;
+                button-height: Size.button-dialog;
+                clicked => { Setup.confirm(); }
+            }
         }
     }
 
@@ -1093,7 +1137,7 @@ export component MainWindow inherits Window {
         card-width: min(760px, self.width - 32px);
         label: "Add a connection";
         dismissed => { root.add-cancelled(); keys.focus(); }
-        Text { text: "Add a connection"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        DialogTitle { text: "Add a connection"; }
         for group in [
             { title: "NETWORKS", kinds: [
                 { id: "wifi", icon: "wifi", title: "Wi-Fi", text: "Hidden and Enterprise (802.1X) too", ready: true },
@@ -1145,9 +1189,7 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        HorizontalLayout {
-            padding-top: 6px;
-            alignment: end;
+        DialogButtons {
             Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.add-cancelled(); keys.focus(); } }
         }
     }
@@ -1159,7 +1201,7 @@ export component MainWindow inherits Window {
         card-spacing: 14px;
         label: "Rename this computer";
         dismissed => { root.hostname-cancelled(); keys.focus(); }
-        Text { text: "Rename this computer"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        DialogTitle { text: "Rename this computer"; }
         FormRow {
             label: "Name";
             TextField {
@@ -1203,7 +1245,7 @@ export component MainWindow inherits Window {
         dismissed => { root.share-closed(); keys.focus(); }
         VerticalLayout {
             spacing: 3px;
-            Text { text: root.share-title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+            DialogTitle { text: root.share-title; }
             Text { text: "Scan with a phone camera to join."; color: Theme.muted; font-size: Type.body; }
         }
         HorizontalLayout {
@@ -1225,9 +1267,7 @@ export component MainWindow inherits Window {
                 TextInput { text: root.share-password; read-only: true; color: Theme.text; font-family: "JetBrains Mono"; font-size: Type.body; vertical-alignment: center; single-line: true; }
             }
         }
-        HorizontalLayout {
-            padding-top: 4px;
-            alignment: end;
+        DialogButtons {
             Button { label: "Close"; button-height: Size.button-dialog; clicked => { root.share-closed(); keys.focus(); } }
         }
     }

@@ -4,8 +4,8 @@
 // comes from Rust (src/shortcuts.rs); everything done goes back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, Switch, SectionLabel, Banner, Scroll, Focusable } from "controls.slint";
-import { TextField, Select, CheckBox, Modal } from "dialogs.slint";
+import { Button, Switch, SectionLabel, Notice, Scroll, Focusable } from "controls.slint";
+import { TextField, Select, CheckBox, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, EmptyState, LoadBanner } from "shell.slint";
 
 /// A row of the table, or a group's label above its rows (`label` set, the rest empty). id: what
@@ -515,26 +515,21 @@ export component ShortcutEditDialog inherits Modal {
         spacing: 14px;
         if root.dialog.conflict-title != "": VerticalLayout {
             padding-top: 10px;
-            Rectangle {
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Theme.warn-border;
-                background: Theme.warn-bg;
-                height: conflict.preferred-height;
-                conflict := VerticalLayout {
-                    padding: 12px;
-                    padding-top: 10px;
-                    padding-bottom: 10px;
-                    spacing: 4px;
-                    Text { text: root.dialog.conflict-title; color: Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
-                    Text { text: root.dialog.conflict-text; color: Theme.warn-text; font-size: Type.body; wrap: word-wrap; }
-                    if root.dialog.conflict-open: HorizontalLayout {
-                        padding-top: 6px;
-                        spacing: 8px;
-                        alignment: start;
-                        Button { label: "Replace it"; button-height: Size.button-row; clicked => { root.act("d-replace-keys", ""); } }
-                        Button { label: "Pick other keys"; button-height: Size.button-row; clicked => { root.act("d-listen", ""); } }
-                    }
+            VerticalLayout {
+                spacing: 8px;
+                Notice {
+                    tone: "warn";
+                    compact: true;
+                    dismissible: false;
+                    title: root.dialog.conflict-title;
+                    text: root.dialog.conflict-text;
+                }
+                // Under it rather than beside: the dialog is narrow and the text often long.
+                if root.dialog.conflict-open: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Button { label: "Replace it"; button-height: Size.button-row; clicked => { root.act("d-replace-keys", ""); } }
+                    Button { label: "Pick other keys"; button-height: Size.button-row; clicked => { root.act("d-listen", ""); } }
                 }
             }
         }
@@ -657,11 +652,9 @@ export component ShortcutDeleteDialog inherits Modal {
     card-width: 440px;
     label: root.view.deleting;
     dismissed => { root.act("delete-no", ""); }
-    Text { text: root.view.deleting; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    DialogTitle { text: root.view.deleting; }
     Text { text: root.view.deleting-text; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
-    HorizontalLayout {
-        alignment: end;
-        spacing: 8px;
+    DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.act("delete-no", ""); } }
         Button { label: "Delete"; kind: "destructive"; button-height: Size.button-dialog; clicked => { root.act("delete-yes", ""); } }
     }
@@ -675,21 +668,6 @@ export component ShortcutsPage inherits VerticalLayout {
     callback act(string, string);
     spacing: 14px;
 
-    if root.view.state == "list" && root.view.not-loaded: LoadBanner { line: root.view.load-line; }
-    if root.view.state == "list" && root.view.banner-title != "": Rectangle {
-        height: banner.preferred-height;
-        copy-field := TextInput { visible: false; text: root.view.load-line; read-only: true; }
-        banner := Banner {
-            width: parent.width;
-            height: parent.height;
-            tone: "warn";
-            title: root.view.banner-title;
-            text: root.view.banner-text;
-            action: "Copy " + root.view.load-line;
-            dismissible: false;
-            action-clicked => { copy-field.select-all(); copy-field.copy(); }
-        }
-    }
     Hero {
         title: "Shortcuts";
         sub: root.view.state == "list" ? root.view.sub : "";
@@ -709,6 +687,21 @@ export component ShortcutsPage inherits VerticalLayout {
             enabled: self.visible;
             label: "Add a shortcut…";
             clicked => { root.act("add", ""); }
+        }
+    }
+    if root.view.state == "list" && root.view.not-loaded: LoadBanner { }
+    if root.view.state == "list" && root.view.banner-title != "": Rectangle {
+        height: banner.preferred-height;
+        copy-field := TextInput { visible: false; text: root.view.load-line; read-only: true; }
+        banner := Notice {
+            width: parent.width;
+            height: parent.height;
+            tone: "warn";
+            title: root.view.banner-title;
+            text: root.view.banner-text;
+            action: "Copy " + root.view.load-line;
+            dismissible: false;
+            action-clicked => { copy-field.select-all(); copy-field.copy(); }
         }
     }
     if root.view.state == "list": table := Card {

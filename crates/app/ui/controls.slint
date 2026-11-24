@@ -330,6 +330,8 @@ export component PillSwitch inherits Focusable {
 // rows inside a card, and a field's label above its control.
 
 export component CardTitle inherits Text {
+    // Every card's title line is 32 px (D-46).
+    height: 32px;
     color: Theme.text;
     font-size: Type.card-title;
     font-weight: 600;
@@ -349,31 +351,36 @@ export component FieldLabel inherits Text {
     font-size: Type.note;
 }
 
-/// A message at the top of what it's about. tone: "info", "warn" or "danger", each with its own
-/// icon. A bold `title` if there is one, the text, a button (`action`), and Dismiss unless it
-/// can't be dismissed (it goes when what it says is fixed).
-export component Banner inherits Rectangle {
+/// A message on a page or in a dialog (D-46): info, warn or danger, its title in the tone's
+/// colour, the text, and its buttons on the right (`action`, or the children). `compact` in
+/// dialogs. It replaces the banners each page drew itself.
+export component Notice inherits Rectangle {
     in property <string> tone: "info";
     in property <string> title;
     in property <string> text;
     in property <string> action;
+    /// The action as the primary button.
+    in property <bool> primary;
+    in property <bool> compact;
     in property <bool> dismissible: true;
     callback action-clicked();
     callback dismissed();
-    border-radius: 8px;
+    border-radius: 10px;
     border-width: 1px;
-    border-color: tone == "danger" ? Theme.danger : tone == "warn" ? Theme.warn-border : Theme.border2;
-    background: tone == "warn" ? Theme.warn-bg : transparent;
+    border-color: root.tone == "danger" ? Theme.danger : root.tone == "warn" ? Theme.warn-border : Theme.border2;
+    background: root.tone == "warn" ? Theme.warn-bg : root.tone == "danger" ? Theme.danger.transparentize(0.93) : transparent;
     accessible-role: AccessibleRole.text;
-    accessible-label: title == "" ? text : title + " " + text;
+    accessible-label: root.title == "" ? root.text : root.title + " " + root.text;
     HorizontalLayout {
-        padding: 8px;
-        padding-left: 12px;
-        padding-right: 6px;
+        padding-top: root.compact ? 8px : 12px;
+        padding-bottom: root.compact ? 8px : 12px;
+        padding-left: root.compact ? 10px : 14px;
+        padding-right: root.dismissible ? 6px : root.compact ? 10px : 14px;
         spacing: 10px;
         // On the title's line, or beside a line of text.
         VerticalLayout {
             alignment: root.title != "" ? LayoutAlignment.start : LayoutAlignment.center;
+            padding-top: root.title != "" ? 1px : 0px;
             Icon {
                 name: root.tone == "danger" ? "error" : root.tone == "warn" ? "warning" : "info";
                 tint: root.tone == "danger" ? Theme.danger : root.tone == "warn" ? Theme.warn-text : Theme.muted;
@@ -381,23 +388,35 @@ export component Banner inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: 3px;
             horizontal-stretch: 1;
-            if root.title != "": Text { text: root.title; color: root.tone == "danger" ? Theme.danger : Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
-            Text {
-                text: root.text;
-                color: root.tone == "warn" ? Theme.warn-text : root.title != "" ? Theme.muted : Theme.text;
+            if root.title != "": Text {
+                text: root.title;
+                color: root.tone == "danger" ? Theme.danger : root.tone == "warn" ? Theme.warn-text : Theme.text;
                 font-size: Type.body;
+                font-weight: 600;
                 wrap: word-wrap;
             }
+            Text { text: root.text; color: root.title != "" ? Theme.muted : Theme.text; font-size: Type.body; wrap: word-wrap; }
         }
-        if root.action != "": VerticalLayout {
+        VerticalLayout {
             alignment: center;
-            Button { label: root.action; button-height: Size.button-row; min-width: self.preferred-width; horizontal-stretch: 0; clicked => { root.action-clicked(); } }
+            HorizontalLayout {
+                spacing: 8px;
+                if root.action != "": Button {
+                    label: root.action;
+                    kind: root.primary ? "primary" : "secondary";
+                    button-height: Size.button-row;
+                    min-width: self.preferred-width;
+                    horizontal-stretch: 0;
+                    clicked => { root.action-clicked(); }
+                }
+                @children
+            }
         }
         if root.dismissible: VerticalLayout {
             alignment: center;
-            IconButton { icon: "close"; label: "Dismiss"; flat: true; size: 24px; icon-size: 12px; clicked => { root.dismissed(); } }
+            IconButton { icon: "close"; label: "Dismiss"; flat: true; size: Size.icon-button-row; icon-size: 12px; clicked => { root.dismissed(); } }
         }
     }
 }
@@ -561,12 +580,16 @@ export component Chip inherits Focusable {
         padding-left: 12px;
         padding-right: root.removable ? 4px : 12px;
         spacing: 6px;
+        // Cut with an ellipsis when a row of them is short of room (an app's seven categories),
+        // rather than making the row wider than its card.
         Text {
             text: root.text;
             color: root.warn ? Theme.warn-text : root.selected ? Theme.text : Theme.muted;
             font-size: Type.body;
             font-family: root.mono ? "JetBrains Mono" : "Inter";
             vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
         }
         Text { text: root.count; color: Theme.faint; font-size: Type.body; vertical-alignment: center; visible: root.count != ""; width: root.count != "" ? self.preferred-width : 0px; }
         IconButton {
@@ -608,4 +631,18 @@ export component IconTile inherits Rectangle {
     border-radius: root.size > 32px ? 10px : 8px;
     background: Theme.ctrl-bg;
     Icon { name: root.icon; tint: Theme.icon-soft; size: root.size > 32px ? 18px : 16px; }
+}
+
+/// The line at the bottom of a card (D-46): a rule, then a note on where things go.
+export component CardFooter inherits VerticalLayout {
+    in property <string> text;
+    // Only as tall as it is: the list above it takes the rest of the card.
+    vertical-stretch: 0;
+    spacing: 12px;
+    Rectangle { height: 1px; background: Theme.border; }
+    HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout { alignment: start; padding-top: 1px; Icon { name: "info"; tint: Theme.faint; size: 14px; } }
+        Text { text: root.text; color: Theme.faint; font-size: Type.note; wrap: word-wrap; horizontal-stretch: 1; }
+    }
 }
