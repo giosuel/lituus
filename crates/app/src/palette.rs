@@ -800,7 +800,7 @@ fn pages(app: &App, items: &mut Vec<Item>) {
 // The search.
 
 /// How well `query` finds `item`, and where in its title (in chars), for the accent.
-fn score(query: &str, item: &Item) -> Option<(i32, Option<(usize, usize)>)> {
+fn score(query: &str, item: &Item) -> Option<(i32, Hit)> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return None;
@@ -846,11 +846,16 @@ fn score(query: &str, item: &Item) -> Option<(i32, Option<(usize, usize)>)> {
     None
 }
 
-/// A section of rows shown: its title and its rows (the items' indices, and where the search
-/// found each in its title).
+/// Where the search found an item in its title: (first char, chars).
+type Hit = Option<(usize, usize)>;
+
+/// A row shown: the item's index, and where the search found it.
+type Found = (usize, Hit);
+
+/// A section of rows shown: its title and its rows.
 struct Section {
     title: String,
-    rows: Vec<(usize, Option<(usize, usize)>)>,
+    rows: Vec<Found>,
 }
 
 fn sections(items: &[Item], query: &str, recent: &[String]) -> Vec<Section> {
@@ -860,7 +865,7 @@ fn sections(items: &[Item], query: &str, recent: &[String]) -> Vec<Section> {
         if !used.is_empty() {
             out.push(Section { title: "RECENT".into(), rows: used.iter().map(|&i| (i, None)).collect() });
         }
-        let quick: Vec<(usize, Option<(usize, usize)>)> = items
+        let quick: Vec<Found> = items
             .iter()
             .enumerate()
             .filter(|(i, item)| item.quick && !used.contains(i))
@@ -877,7 +882,7 @@ fn sections(items: &[Item], query: &str, recent: &[String]) -> Vec<Section> {
         (Kind::Action, "ACTIONS", ACTIONS_SHOWN),
         (Kind::Page, "PAGES", PAGES_SHOWN),
     ] {
-        let mut found: Vec<(i32, usize, Option<(usize, usize)>)> = items
+        let mut found: Vec<(i32, usize, Hit)> = items
             .iter()
             .enumerate()
             .filter(|(_, item)| item.kind == kind)
@@ -1133,7 +1138,7 @@ pub fn view(app: &App) -> PaletteView {
     }
 }
 
-fn row(item: &Item, value: Option<&Value>, hit: Option<(usize, usize)>) -> PaletteRow {
+fn row(item: &Item, value: Option<&Value>, hit: Hit) -> PaletteRow {
     let chars: Vec<char> = item.title.chars().collect();
     let (pre, hit, post) = match hit {
         Some((at, len)) if at + len <= chars.len() => (

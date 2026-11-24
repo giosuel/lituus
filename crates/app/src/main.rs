@@ -3516,9 +3516,9 @@ mod tests {
         press(&window, Key::F6);
         assert!(ring_on(&window, "Add a connection"));
         press(&window, Key::F6);
-        // The search field, just before the current page.
+        // The search button (the command palette's), just before the current page.
         press(&window, Key::Backtab);
-        assert!(ElementHandle::find_by_element_id(&window, "Focusable::ring").next().is_none());
+        assert!(ring_on(&window, "Search settings, pages and actions"));
         press(&window, Key::F6);
         assert!(ring_on(&window, "Add a connection"));
         // Not out of a dialog.
@@ -3632,17 +3632,14 @@ mod tests {
         tab_to(&window, "Airplane mode");
         press(&window, "p");
         assert_eq!(*keys.borrow(), ["key s", "key p"]);
-        // Into the sidebar's search field: typed, not a shortcut.
-        for _ in 0..30 {
-            press(&window, Key::Backtab);
-            if ElementHandle::find_by_element_id(&window, "Focusable::ring").next().is_none() {
-                break;
-            }
-        }
+        // In the command palette's search field: typed, not a shortcut.
+        window.set_palette_view(super::PaletteView { open: true, ..Default::default() });
         press(&window, "s");
         press(&window, "p");
         assert_eq!(*keys.borrow(), ["key s", "key p"]);
-        press(&window, Key::Escape);
+        assert_eq!(window.get_palette_query(), "sp");
+        // Closed, the window has the keys again.
+        window.set_palette_view(super::PaletteView::default());
         press(&window, "s");
         assert_eq!(*keys.borrow(), ["key s", "key p", "key s"]);
     }
