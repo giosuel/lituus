@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::Dirs;
+use crate::{Dirs, exec};
 
 /// A desktop file's lines, edited key by key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -149,14 +149,31 @@ pub fn differences(package: &str, own: &str) -> Vec<(String, String, String)> {
     out
 }
 
-/// The program a command runs: its first word, without env and quotes.
-pub fn program(exec: &str) -> String {
-    let mut words = exec.split_whitespace().map(|w| w.trim_matches('"'));
-    let mut w = words.next().unwrap_or_default();
-    if w == "env" || w.ends_with("/env") {
-        w = words.find(|w| !w.contains('=') && !w.starts_with('-')).unwrap_or_default();
+/// Where the program is among a command's words: the first, or after `env` and its settings.
+fn program_at(words: &[exec::Word]) -> Option<usize> {
+    let first = words.first()?;
+    if first.text == "env" || first.text.ends_with("/env") {
+        return words.iter().skip(1).position(|w| !w.text.contains('=') && !w.text.starts_with('-')).map(|p| p + 1);
     }
-    w.to_owned()
+    Some(0)
+}
+
+/// The program a command runs: its first word, after `env`, unquoted as the spec says.
+pub fn program(exec: &str) -> String {
+    let words = exec::words(exec);
+    program_at(&words).map(|i| words[i].text.clone()).unwrap_or_default()
+}
+
+/// The command with `program` in its program's place, quoted as Exec needs it.
+pub fn with_program(exec: &str, program: &str) -> String {
+    let words = exec::words(exec);
+    match program_at(&words) {
+        Some(i) => {
+            let at = &words[i].span;
+            format!("{}{}{}", &exec[..at.start], exec::quote(program), &exec[at.end..])
+        }
+        None => exec::quote(program),
+    }
 }
 
 /// A program by name on PATH, or its path.
@@ -190,17 +207,28 @@ pub fn is_electron(exec: &str, path: &str) -> bool {
 
 pub const WAYLAND_FLAG: &str = "--ozone-platform-hint=auto";
 
-/// The command with Electron's Wayland flag after its program, or without it.
+/// The command with Electron's Wayland flag after its program, or without it. The rest is kept
+/// as written, quotes and spaces in them included.
 pub fn with_wayland(exec: &str, on: bool) -> String {
-    let words: Vec<&str> = exec.split_whitespace().filter(|w| *w != WAYLAND_FLAG).collect();
-    if !on || words.is_empty() {
-        return words.join(" ");
+    let words = exec::words(exec);
+    let program = if on { program_at(&words) } else { None };
+    let mut out = String::with_capacity(exec.len() + WAYLAND_FLAG.len() + 1);
+    let mut copied = 0;
+    for (i, w) in words.iter().enumerate() {
+        if w.text == WAYLAND_FLAG {
+            // The flag goes, with the space before it.
+            copied = w.span.end;
+            continue;
+        }
+        out.push_str(&exec[copied..w.span.end]);
+        copied = w.span.end;
+        if Some(i) == program {
+            out.push(' ');
+            out.push_str(WAYLAND_FLAG);
+        }
     }
-    let at = if program(exec) != words[0] { words.iter().position(|w| *w == program(exec)).unwrap_or(0) } else { 0 };
-    let mut out: Vec<&str> = words[..=at].to_vec();
-    out.push(WAYLAND_FLAG);
-    out.extend(&words[at + 1..]);
-    out.join(" ")
+    out.push_str(&exec[copied..]);
+    out.trim().to_owned()
 }
 
 #[cfg(test)]
@@ -252,5 +280,23 @@ mod tests {
         assert_eq!(with_wayland("obsidian %U", true), "obsidian --ozone-platform-hint=auto %U");
         assert_eq!(with_wayland("env A=1 obsidian %U", true), "env A=1 obsidian --ozone-platform-hint=auto %U");
         assert_eq!(with_wayland("obsidian --ozone-platform-hint=auto %U", false), "obsidian %U");
+    }
+
+    #[test]
+    fn a_quoted_program_with_a_space() {
+        assert_eq!(program("\"/home/u/My Apps/Tool.AppImage\" %U"), "/home/u/My Apps/Tool.AppImage");
+        assert_eq!(program("env WINEPREFIX=\"/home/u/My Games/pfx\" wine start.exe"), "wine");
+        assert_eq!(
+            with_wayland("\"/opt/Electron Fiddle/electron-fiddle\" %U", true),
+            "\"/opt/Electron Fiddle/electron-fiddle\" --ozone-platform-hint=auto %U"
+        );
+        // Two spaces inside a quoted argument are part of it.
+        assert_eq!(with_wayland("app --title \"a  b\" %U", true), "app --ozone-platform-hint=auto --title \"a  b\" %U");
+        // Another program in its place, quoted when its path needs it.
+        assert_eq!(
+            with_program("\"/Apps/Cursor-0.42.AppImage\" --no-sandbox %U", "/Apps/Cursor 0.45.AppImage"),
+            "\"/Apps/Cursor 0.45.AppImage\" --no-sandbox %U"
+        );
+        assert_eq!(with_program("env A=1 /old/app %U", "/new/app"), "env A=1 /new/app %U");
     }
 }
