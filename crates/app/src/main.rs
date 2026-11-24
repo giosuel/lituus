@@ -238,6 +238,11 @@ thread_local! {
     static APP: RefCell<App> = RefCell::new(App::default());
     /// The quick popup, made the first time it's opened.
     static QUICK: RefCell<Option<QuickWindow>> = const { RefCell::new(None) };
+    /// Settings' update commands and the palette's rows, each kept as one model: a new one at
+    /// each render would build the rows again, throwing away a command being typed and stopping a
+    /// slider being dragged.
+    static UPDATE_COMMANDS: std::rc::Rc<VecModel<UpdateCommand>> = std::rc::Rc::new(VecModel::default());
+    static PALETTE_ROWS: std::rc::Rc<VecModel<PaletteRow>> = std::rc::Rc::new(VecModel::default());
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -1831,7 +1836,8 @@ fn render(window: &MainWindow) {
         defaultapps::render(window, &mut app.default_apps);
         apps::render(window, &mut app.apps);
         if window.get_page() == "settings" {
-            window.set_update_commands(model(system::command_rows(&app.system)));
+            let rows = model(system::command_rows(&app.system));
+            window.set_update_commands(UPDATE_COMMANDS.with(|kept| input::kept(kept, &rows)));
             window.set_update_terminal(system::terminal_text(&app.system).into());
         }
         files::render(window, &app.files);
@@ -1849,7 +1855,9 @@ fn render(window: &MainWindow) {
         });
         window.set_hints(model(hints));
         render_quick(&mut app, airplane);
-        window.set_palette_view(palette::view(&app));
+        let mut palette = palette::view(&app);
+        palette.rows = PALETTE_ROWS.with(|kept| input::kept(kept, &palette.rows));
+        window.set_palette_view(palette);
     });
 }
 
@@ -4857,5 +4865,121 @@ mod tests {
         }
         let wrong: Vec<String> = acted.borrow().iter().filter(|a| !a.ends_with("-> firefox")).cloned().collect();
         assert!(wrong.is_empty(), "saved to another app: {wrong:?}");
+    }
+
+    /// A render with nothing changed leaves the text being typed in an update command, and the
+    /// focus in it.
+    #[test]
+    fn typing_an_update_command_survives_a_render() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.ui.page = view::Page::Settings;
+            app.system.updates.found = Some(vec![lituus_system::updates::Found {
+                manager: lituus_system::updates::Manager::Pacman,
+                program: "pacman".into(),
+                source: "core, extra".into(),
+                default_command: "sudo pacman -Syu".into(),
+            }]);
+        });
+        super::render(&window);
+        let field = || text_field(&window, "pacman update command");
+        assert_eq!(field().accessible_value().unwrap(), "sudo pacman -Syu");
+        field().mock_single_click(PointerEventButton::Left);
+        press(&window, "x");
+        assert_ne!(field().accessible_value().unwrap(), "sudo pacman -Syu", "the x was typed");
+        // The next render, as anything that changes renders.
+        super::render(&window);
+        mock_elapsed_time(Duration::ZERO);
+        assert_ne!(field().accessible_value().unwrap(), "sudo pacman -Syu", "the typed x is gone");
+        press(&window, "y");
+        assert!(field().accessible_value().unwrap().contains('y'), "the field lost the focus");
+    }
+
+    /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
+    fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
+        let (p, s) = (slider.absolute_position(), slider.size());
+        let at = |f: f32| LogicalPosition::new(p.x + s.width * f, p.y + s.height / 2.0);
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position: at(from), button: PointerEventButton::Left });
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at((from + to) / 2.0) });
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at(to) });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position: at(to), button: PointerEventButton::Left });
+    }
+
+    fn volume(percent: f32) -> lituus_sound::Volume {
+        lituus_sound::Volume { channels: vec![(lituus_sound::NORM as f32 * percent) as u32; 2], sides: vec![-1, 1] }
+    }
+
+    /// An app's volume slider (Sound › Apps) follows a drag past its first step: the render each
+    /// step causes keeps the row, and with it the pointer's hold on the slider.
+    #[test]
+    fn an_app_volume_slider_can_be_dragged() {
+        let window = window();
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.ui.page = view::Page::Sound;
+            app.sound.snapshot = Some(lituus_sound::Snapshot {
+                streams: vec![lituus_sound::Stream {
+                    index: 7,
+                    app: "Firefox".into(),
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        });
+        window.set_sound_tab(1);
+        super::render(&window);
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // As the app does: the change renders at once, and PulseAudio's answer does again.
+        window.on_sound_act(move |_, _, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |_| {});
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().streams[0].volume = volume(v));
+        });
+        drag(&window, &control(&window, "Firefox volume", AccessibleRole::Slider), 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The same for a slider in a row of the command palette.
+    #[test]
+    fn a_palette_slider_can_be_dragged() {
+        let window = window();
+        super::connect_palette(&window);
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.sound.snapshot = Some(lituus_sound::Snapshot {
+                default_sink: Some("speakers".into()),
+                sinks: vec![lituus_sound::Device {
+                    index: 40,
+                    name: "speakers".into(),
+                    description: "Speakers".into(),
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            super::palette::open(&mut app.command);
+            super::palette::edited(&mut app.command, "output volume");
+        });
+        super::render(&window);
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // The Sound page's part: PulseAudio takes the volume, and its answer renders.
+        window.on_sound_act(move |_, _, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().sinks[0].volume = volume(v));
+        });
+        drag(&window, &control(&window, "Output volume", AccessibleRole::Slider), 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
     }
 }

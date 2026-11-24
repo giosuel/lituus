@@ -1350,6 +1350,11 @@ thread_local! {
     /// (several a second while the page is open).
     static LIST: Rc<VecModel<AppSection>> = Rc::new(VecModel::default());
     static SECTION_ROWS: RefCell<Vec<Rc<VecModel<AppRow>>>> = RefCell::default();
+    /// The details' rows with a field in them, kept the same way: a row built again throws away
+    /// what's being typed in it (a quick action's command, a category being added).
+    static ACTIONS: Rc<VecModel<AppAction>> = Rc::new(VecModel::default());
+    static CATEGORY_LINES: Rc<VecModel<ChipLine>> = Rc::new(VecModel::default());
+    static CATEGORY_CHIPS: RefCell<Vec<Rc<VecModel<SharedString>>>> = RefCell::default();
 }
 
 pub fn render(window: &MainWindow, state: &mut State) {
@@ -1370,6 +1375,22 @@ pub fn render(window: &MainWindow, state: &mut State) {
                 .collect()
         });
         v.sections = LIST.with(|kept| input::kept(kept, &model(sections)));
+        v.actions = ACTIONS.with(|kept| input::kept(kept, &v.actions));
+        let lines: Vec<ChipLine> = CATEGORY_CHIPS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            v.category_lines
+                .iter()
+                .enumerate()
+                .map(|(i, mut line)| {
+                    if kept.len() <= i {
+                        kept.push(Rc::new(VecModel::default()));
+                    }
+                    line.items = input::kept(&kept[i], &line.items);
+                    line
+                })
+                .collect()
+        });
+        v.category_lines = CATEGORY_LINES.with(|kept| input::kept(kept, &model(lines)));
         window.set_apps(v);
     }
 }
@@ -1562,6 +1583,58 @@ mod tests {
         let mut state = State { data: Some(again), ..Default::default() };
         let app = state.data.as_ref().unwrap().apps[0].clone();
         assert_eq!(choice(&mut state, &app), choice(&mut state, &app));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A render with nothing changed keeps the details' rows with a field in them: what's being
+    /// typed in a quick action's command, or in "+ Add" category, stays, with the focus.
+    #[test]
+    fn typing_in_the_details_survives_a_render() {
+        use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+        use slint::platform::{PointerEventButton, WindowEvent};
+        use slint::{ComponentHandle, LogicalSize};
+        let root = std::env::temp_dir().join(format!("lituus-apps-typing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write(
+            &root,
+            "usr/share/applications/blender.desktop",
+            "[Desktop Entry]\nType=Application\nName=Blender\nExec=blender %f\nCategories=Graphics;\nActions=new;\n\n\
+             [Desktop Action new]\nName=New file\nExec=blender --new\n",
+        );
+        let dirs = Dirs {
+            data_home: root.join("home/.local/share"),
+            data_dirs: vec![root.join("usr/share")],
+            ..Default::default()
+        };
+        let mut state = State { data: Some(read(dirs, 1.0, &HashMap::new())), ..Default::default() };
+        act(&slint::Weak::default(), &mut state, "select", "blender.desktop");
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.set_page("apps".into());
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.show().unwrap();
+        render(&window, &mut state);
+        let field = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+                .unwrap_or_else(|| panic!("{label}"))
+        };
+        let press = |text: &str| {
+            window.window().dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+            window.window().dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+        };
+        for (label, before) in [("New file", "blender --new"), ("Add a category", "")] {
+            field(label).mock_single_click(PointerEventButton::Left);
+            press("x");
+            let typed = field(label).accessible_value().unwrap();
+            assert_ne!(typed, before, "the x was typed");
+            // The next render, as anything that changes renders.
+            render(&window, &mut state);
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
+            assert_eq!(field(label).accessible_value().unwrap(), typed, "the text typed is gone");
+            press("y");
+            assert!(field(label).accessible_value().unwrap().contains('y'), "the field lost the focus");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
