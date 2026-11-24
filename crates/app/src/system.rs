@@ -256,17 +256,22 @@ pub fn act(weak: &slint::Weak<MainWindow>, verb: &str, arg: &str) {
 }
 
 /// Runs the package managers' update commands one after another in the default terminal; when
-/// the terminal closes, counts again.
+/// they're done, counts again.
 fn run(weak: &slint::Weak<MainWindow>, managers: Vec<Manager>) {
+    // Not one that's being updated already (a second pacman would find the database locked).
+    let managers: Vec<Manager> = crate::APP.with(|app| {
+        let running = &app.borrow().system.updates.running;
+        managers.into_iter().filter(|m| !running.contains(m)).collect()
+    });
     if managers.is_empty() {
         return;
     }
-    let (term, script) = crate::APP.with(|app| {
+    let (term, commands) = crate::APP.with(|app| {
         let app = app.borrow();
         let u = &app.system.updates;
         let commands: Vec<(String, String)> =
             managers.iter().map(|m| (m.label().to_owned(), u.command(&app.system.commands, *m))).collect();
-        (u.terminal.clone(), terminal::script(&commands))
+        (u.terminal.clone(), commands)
     });
     let Some(term) = term else {
         update(weak, |app| {
@@ -275,26 +280,41 @@ fn run(weak: &slint::Weak<MainWindow>, managers: Vec<Manager>) {
         });
         return;
     };
+    // The script tells when it's done: the terminal's process may end long before it.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_dir());
+    let marker = terminal::new_marker(&runtime.unwrap_or_else(std::env::temp_dir)).ok();
+    let script = match &marker {
+        Some(marker) => terminal::marked_script(&commands, marker),
+        None => terminal::script(&commands),
+    };
     let child =
         std::process::Command::new(&term.argv[0]).args(&term.argv[1..]).arg("sh").arg("-c").arg(&script).spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
+            if let Some(marker) = &marker {
+                let _ = std::fs::remove_file(marker);
+            }
             let error = format!("Couldn't start {}: {e}", term.argv[0]);
             update(weak, move |app| app.system.updates.error = error);
             return;
         }
     };
-    update(weak, |app| {
+    let started = managers.clone();
+    update(weak, move |app| {
         app.system.updates.error.clear();
-        app.system.updates.running = managers;
+        app.system.updates.running.extend(started);
     });
     let weak = weak.clone();
     std::thread::spawn(move || {
         let _ = child.wait();
+        if let Some(marker) = &marker {
+            terminal::wait_for(marker, Duration::from_secs(10));
+        }
         let w = weak.clone();
         let _ = weak.upgrade_in_event_loop(move |_| {
-            update(&w, |app| app.system.updates.running.clear());
+            update(&w, |app| app.system.updates.running.retain(|m| !managers.contains(m)));
+            // Once the last one is done.
             check(&w);
         });
     });
