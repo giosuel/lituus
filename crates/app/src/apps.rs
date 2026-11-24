@@ -154,18 +154,57 @@ fn slug(name: &str) -> String {
     s.split('-').filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
 }
 
+/// `base` with -2, -3… until `taken` says no: so adding never replaces a file of the same name.
+fn free_name(base: &str, ext: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut name = format!("{base}.{ext}");
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}-{n}.{ext}");
+        n += 1;
+    }
+    name
+}
+
+/// A folder of Lituus's own to extract into, new each time: in $XDG_RUNTIME_DIR (only the user's),
+/// made with 0700 and failing if the name is there already, so nothing another user put in a
+/// shared /tmp is used.
+fn private_dir(name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    (0..100).find_map(|_| {
+        let dir = base.join(format!("lituus-{name}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).ok().map(|()| dir)
+    })
+}
+
+/// An AppImage of type 2, the kind whose runtime extracts files on `--appimage-extract`: an ELF
+/// program with "AI" and 2 at byte 8. Anything else would just start, with those arguments.
+fn is_appimage(path: &Path) -> bool {
+    use std::io::Read;
+    let mut start = [0u8; 11];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut start)).is_ok()
+        && start.starts_with(b"\x7fELF")
+        && start[8..] == *b"AI\x02"
+}
+
 /// An AppImage's own desktop file and icon, extracted into a folder: (name, comment, categories,
-/// icon file). The AppImage is made executable first.
+/// icon file). The AppImage is made executable first (for its owner, as a download isn't).
 fn read_appimage(path: &Path, icons_dir: &Path) -> Option<(String, String, Vec<String>, Option<PathBuf>)> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = path.metadata().ok()?.permissions();
     if perms.mode() & 0o100 == 0 {
-        perms.set_mode(perms.mode() | 0o755);
+        perms.set_mode(perms.mode() | 0o100);
         std::fs::set_permissions(path, perms).ok()?;
     }
-    let tmp = std::env::temp_dir().join(format!("lituus-appimage-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).ok()?;
+    if !is_appimage(path) {
+        return None;
+    }
+    let tmp = private_dir("appimage")?;
     for pattern in ["*.desktop", ".DirIcon"] {
         let _ = std::process::Command::new(path)
             .args(["--appimage-extract", pattern])
@@ -187,8 +226,14 @@ fn read_appimage(path: &Path, icons_dir: &Path) -> Option<(String, String, Vec<S
         .ok()
         .filter(|p| p.starts_with(root.canonicalize().unwrap_or_default()) && p.is_file())
         .and_then(|p| {
-            let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "png".into());
-            let to = icons_dir.join(format!("{}.{ext}", slug(&app.name)));
+            let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| {
+                // .DirIcon has no extension: an SVG is text that says so near its start.
+                let start = std::fs::read(&p).unwrap_or_default();
+                let svg = String::from_utf8_lossy(&start[..start.len().min(1024)]).contains("<svg");
+                (if svg { "svg" } else { "png" }).into()
+            });
+            let base = Some(slug(&app.name)).filter(|s| !s.is_empty()).unwrap_or_else(|| "lituus-app".into());
+            let to = icons_dir.join(free_name(&base, &ext, |n| icons_dir.join(n).symlink_metadata().is_ok()));
             std::fs::create_dir_all(icons_dir).ok()?;
             std::fs::copy(&p, &to).ok()?;
             Some(to)
@@ -1667,5 +1712,20 @@ mod tests {
         thread.join().unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         assert!(done, "an icon was still reading the FIFO after 5 s");
+    }
+
+    #[test]
+    fn reading_a_program_that_isnt_an_appimage_does_not_run_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_root("appimage");
+        let ran = root.join("ran");
+        write(&root, "x.AppImage", &format!("#!/bin/sh\ntouch '{}'\n", ran.display()));
+        let program = root.join("x.AppImage");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_appimage(&program, &root.join("icons")).is_none());
+        // Executable for its owner, not readable by others; and not started.
+        assert_eq!(program.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(!ran.exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
