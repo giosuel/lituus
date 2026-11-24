@@ -1,6 +1,9 @@
 -- Lituus – Hyprland integration (Hyprland 0.55 and newer, Lua config)
--- Paste into ~/.config/hypr/hyprland.lua, or save next to it and add:
---   require("lituus")      -- for ~/.config/hypr/lituus.lua
+-- Paste into ~/.config/hypr/hyprland.lua, or save it next to it as lituus-extras.lua and add:
+--   require("lituus-extras")
+-- Not as lituus.lua: that's Lituus's own file, with what you change on Displays, Keyboard, Mouse &
+-- touchpad and Shortcuts. Its line, require("lituus"), goes at the very end of hyprland.lua, after
+-- your own settings and binds (Set up… on those pages adds it).
 -- Using hyprland.conf instead? See hyprland.conf in this folder.
 
 local lituus = [[^(ch\.giosuel\.Lituus)$]]

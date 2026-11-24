@@ -2,7 +2,7 @@
 pkgname=lituus
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Settings for Hyprland: network, Bluetooth, sound and displays'
+pkgdesc='Settings app for Hyprland and other desktops without one'
 arch=('x86_64' 'aarch64')
 url='https://github.com/giosuel/lituus'
 license=('AGPL-3.0-or-later' 'OFL-1.1')

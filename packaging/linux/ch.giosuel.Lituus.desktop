@@ -2,10 +2,10 @@
 Type=Application
 Name=Lituus
 GenericName=Settings
-Comment=Network, Bluetooth, sound and displays for Hyprland and other desktops
+Comment=Network, Bluetooth, sound, displays, input, wallpaper, apps and more
 Exec=lituus
 Icon=ch.giosuel.Lituus
 Terminal=false
-Categories=Settings;HardwareSettings;
-Keywords=wifi;wireless;network;ethernet;vpn;wireguard;networkmanager;bluetooth;sound;audio;volume;pipewire;display;monitor;hyprland;settings;
+Categories=Settings;DesktopSettings;HardwareSettings;
+Keywords=wifi;wireless;network;ethernet;vpn;wireguard;networkmanager;bluetooth;sound;audio;volume;pipewire;display;monitor;keyboard;layout;mouse;touchpad;input;shortcuts;keybinds;wallpaper;background;apps;applications;launcher;default;mime;terminal;system;hostname;updates;hyprland;settings;
 StartupWMClass=ch.giosuel.Lituus
