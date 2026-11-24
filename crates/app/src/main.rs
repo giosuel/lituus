@@ -2737,8 +2737,10 @@ async fn save_connection(
     let path = match path {
         Some(path) => {
             let mut settings = settings.clone();
-            // Edited WireGuard peers come without their pre-shared keys; put the saved ones back.
-            if settings.get("wireguard").is_some_and(|w| w.contains_key("peers"))
+            // A new WireGuard private key replaces every saved secret: put the pre-shared keys
+            // back with it. Without one, the update carries no secret and NetworkManager keeps
+            // them all.
+            if settings.get("wireguard").is_some_and(|w| w.contains_key("private-key"))
                 && let Ok(secrets) = client.secrets_raw(path, "wireguard").await
             {
                 wireguard::keep_preshared_keys(&mut settings, &secrets);
