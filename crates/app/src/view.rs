@@ -342,7 +342,7 @@ fn ip_items(device: &Device) -> Vec<DetailItem> {
     items
 }
 
-pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) -> View {
+pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, state: &UiState) -> View {
     let mut view = View { show_search: true, wifi_on: true, ..View::default() };
     view.hostname = snapshot.map(|s| s.hostname.clone()).unwrap_or_default();
     let Some(snapshot) = snapshot else {
@@ -354,16 +354,25 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) 
             tone: "muted",
             ..NetHero::default()
         };
+        // Only NetworkManager missing is "isn't running"; a refusal or a broken bus says itself.
         view.banner = match error {
-            Some(e) => format!("{e}. Lituus needs it to manage connections."),
+            Some(e @ lituus_nm::Error::NotRunning) => format!("{e}. Lituus needs it to manage connections."),
+            Some(e) => format!("Couldn't read NetworkManager: {}.", e.to_string().trim_end_matches('.')),
             None => String::new(),
         };
         view.empty = Some(match error {
-            Some(_) => Empty {
+            Some(lituus_nm::Error::NotRunning) => Empty {
                 icon: "warning",
                 title: "NetworkManager isn't running".into(),
                 text: "Lituus manages connections through NetworkManager. Start it with:".into(),
                 command: NOT_RUNNING_COMMAND.into(),
+                page: true,
+                ..Empty::default()
+            },
+            Some(_) => Empty {
+                icon: "warning",
+                title: "Couldn't read NetworkManager".into(),
+                text: "Lituus manages connections through NetworkManager, and keeps trying to reach it.".into(),
                 page: true,
                 ..Empty::default()
             },
@@ -1898,6 +1907,7 @@ pub(crate) mod tests {
             wireless_hardware_enabled: true,
             wwan_enabled: true,
             devices: vec![wifi, eth],
+            unreadable: 0,
             connections: vec![SavedConnection {
                 path: "/c/1".into(),
                 uuid: "u-home".into(),
@@ -2199,8 +2209,8 @@ pub(crate) mod tests {
 
     #[test]
     fn network_manager_missing() {
-        let view = build(None, Some("NetworkManager isn't running"), &UiState::default());
-        assert!(view.banner.starts_with("NetworkManager isn't running"));
+        let view = build(None, Some(&lituus_nm::Error::NotRunning), &UiState::default());
+        assert_eq!(view.banner, "NetworkManager isn't running. Lituus needs it to manage connections.");
         let empty = view.empty.unwrap();
         assert_eq!(empty.title, "NetworkManager isn't running");
         // The command, for its Copy button.
@@ -2209,6 +2219,17 @@ pub(crate) mod tests {
         // Still reading: a spinner (no icon), and the hero as it will be.
         let view = build(None, None, &UiState::default());
         assert_eq!(view.empty.map(|e| (e.icon, e.page)), Some(("", false)));
+    }
+
+    /// An error that isn't "NetworkManager is gone" doesn't say it isn't running, nor how to
+    /// start it, and its text isn't followed by a second full stop.
+    #[test]
+    fn a_refused_read_isnt_shown_as_networkmanager_not_running() {
+        let error = lituus_nm::Error::Denied("Insufficient privileges.".into());
+        let view = build(None, Some(&error), &UiState::default());
+        assert_eq!(view.banner, "Couldn't read NetworkManager: not allowed: Insufficient privileges.");
+        let empty = view.empty.unwrap();
+        assert_eq!((empty.title.as_str(), empty.command.as_str()), ("Couldn't read NetworkManager", ""));
     }
 
     /// The bar lists only the keys that work: Enter says what it does to the selected row, and

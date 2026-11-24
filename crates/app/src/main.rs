@@ -126,7 +126,7 @@ enum Dialog {
 #[derive(Default)]
 struct App {
     snapshot: Option<lituus_nm::Snapshot>,
-    error: Option<String>,
+    error: Option<lituus_nm::Error>,
     ui: view::UiState,
     row_ids: Vec<String>,
     /// The palette from the colour sources, while it's followed; `None` means the built-in theme.
@@ -1707,7 +1707,7 @@ fn render(window: &MainWindow) {
         let state = &mut *app;
         let airplane = airplane::follow(&mut state.airplane, state.snapshot.as_ref(), state.bt.snapshot.as_ref());
         app.ui.airplane = airplane;
-        let v = view::build(app.snapshot.as_ref(), app.error.as_deref(), &app.ui);
+        let v = view::build(app.snapshot.as_ref(), app.error.as_ref(), &app.ui);
         let network_keys = view::keys(&v);
         let mut entries = nav_entries(&app);
         let statuses = [&v.net_status, &v.net_items.wifi, &v.net_items.wired, &v.net_items.vpn, &v.net_items.hotspot];
@@ -2862,12 +2862,20 @@ fn deliver(weak: &slint::Weak<MainWindow>, snapshot: Result<lituus_nm::Snapshot,
                             notifier.send(notice);
                         }
                     }
+                    // Said once, not with every snapshot.
+                    let before = app.snapshot.as_ref().map_or(0, |s| s.unreadable);
+                    if snapshot.unreadable != before && snapshot.unreadable > 0 {
+                        eprintln!(
+                            "lituus: {} saved connection(s) belong to another user, who keeps them private, so they aren't shown",
+                            snapshot.unreadable
+                        );
+                    }
                     app.snapshot = Some(snapshot);
                     app.error = None;
                 }
                 Err(error) => {
                     app.snapshot = None;
-                    app.error = Some(error.to_string());
+                    app.error = Some(error);
                 }
             }
         });

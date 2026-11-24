@@ -48,7 +48,7 @@ impl Error {
             zbus::Error::FDO(fdo) => fdo.description().unwrap_or_default().to_owned(),
             _ => String::new(),
         };
-        if name == "org.freedesktop.DBus.Error.ServiceUnknown" {
+        if not_running(&name) {
             Self::NotRunning
         } else if name.ends_with(".PermissionDenied") || name == "org.freedesktop.DBus.Error.AccessDenied" {
             Self::Denied(message)
@@ -58,6 +58,19 @@ impl Error {
             Self::DBus(error)
         }
     }
+}
+
+/// Errors that mean nothing answers for NetworkManager's name: not running and not activatable
+/// (dbus-daemon), or its unit not found or disabled when the bus tried to start it
+/// (dbus-daemon through systemd, and dbus-broker).
+fn not_running(name: &str) -> bool {
+    matches!(
+        name,
+        "org.freedesktop.DBus.Error.ServiceUnknown"
+            | "org.freedesktop.DBus.Error.NameHasNoOwner"
+            | "org.freedesktop.systemd1.NoSuchUnit"
+            | "org.freedesktop.systemd1.UnitMasked"
+    ) || name.starts_with("org.freedesktop.DBus.Error.Spawn.")
 }
 
 /// The D-Bus error name of a method call that failed, if it's one.
@@ -76,6 +89,12 @@ fn vanished(error: &zbus::Error) -> bool {
         error_name(error).as_deref(),
         Some("org.freedesktop.DBus.Error.UnknownObject" | "org.freedesktop.DBus.Error.UnknownMethod")
     )
+}
+
+/// A saved connection this user may not read: another account's profile, kept to itself
+/// (`connection.permissions`). `ListConnections` lists it, but `GetSettings` refuses it.
+fn private(error: &zbus::Error) -> bool {
+    error_name(error).as_deref() == Some("org.freedesktop.NetworkManager.Settings.PermissionDenied")
 }
 
 #[derive(Clone, Debug)]
@@ -275,7 +294,16 @@ impl Client {
         let active_paths = nm.paths("ActiveConnections");
         let (devices, connections, active) = try_join3(
             try_join_all(device_paths.iter().map(|p| skip_vanished(self.device(p.as_str())))),
-            try_join_all(connection_paths.iter().map(|p| skip_vanished(self.saved_connection(p.as_str())))),
+            // A profile this user may not read is left out (as libnm does) and counted, rather
+            // than failing the whole snapshot: `Some(None)`.
+            try_join_all(connection_paths.iter().map(|p| {
+                skip_vanished(async move {
+                    match self.saved_connection(p.as_str()).await {
+                        Err(error) if private(&error) => Ok(None),
+                        read => read.map(Some),
+                    }
+                })
+            })),
             try_join_all(active_paths.iter().map(|p| skip_vanished(self.active_connection(p)))),
         )
         .await?;
@@ -286,7 +314,8 @@ impl Client {
             wireless_hardware_enabled: nm.bool("WirelessHardwareEnabled").unwrap_or(true),
             wwan_enabled: nm.bool("WwanEnabled").unwrap_or(true),
             devices: devices.into_iter().flatten().collect(),
-            connections: connections.into_iter().flatten().collect(),
+            unreadable: connections.iter().filter(|c| matches!(c, Some(None))).count(),
+            connections: connections.into_iter().flatten().flatten().collect(),
             active: active.into_iter().flatten().collect(),
             primary_connection: nm.path("PrimaryConnection"),
             hostname: settings.string("Hostname").unwrap_or_default(),
