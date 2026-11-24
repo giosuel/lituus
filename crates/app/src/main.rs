@@ -5453,4 +5453,50 @@ mod tests {
         assert_eq!(chip("Changed").accessible_checked(), Some(true));
         assert_eq!(chip("Graphics").accessible_checkable(), Some(false));
     }
+
+    /// Wallpaper from the keyboard: a folder used before, from the folder button's menu, and the
+    /// monitors a picture goes on (Enter picks one, Ctrl+Enter adds another, as Ctrl+click does).
+    #[test]
+    fn wallpapers_folders_and_monitors_are_chosen_from_the_keyboard() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("wallpaper".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_wallpaper_act(move |verb, arg, value| a.borrow_mut().push(format!("{verb} {arg} {value}")));
+        let monitor = |name: &str, x: f32| super::WallpaperMonitor {
+            name: name.into(),
+            model: "Dell U2720Q".into(),
+            x,
+            w: 0.5,
+            h: 1.0,
+            ..Default::default()
+        };
+        window.set_wallpaper(super::WallpaperView {
+            state: "list".into(),
+            aspect: 3.5,
+            folder: "~/Pictures".into(),
+            recent: super::model(vec![SharedString::from("~/Pictures"), "~/Wallpapers".into()]),
+            monitors: super::model(vec![monitor("DP-3", 0.0), monitor("DP-5", 0.5)]),
+            ..Default::default()
+        });
+        tab_to(&window, "Folder");
+        press(&window, Key::Return);
+        press(&window, Key::DownArrow);
+        press(&window, Key::Return);
+        // Include pictures in subfolders keeps the menu open; Esc closes it.
+        press(&window, Key::Return);
+        press(&window, Key::DownArrow);
+        press(&window, Key::DownArrow);
+        press(&window, " ");
+        press(&window, Key::Escape);
+        assert!(ring_on(&window, "Folder"));
+        tab_to(&window, "DP-3, Dell U2720Q");
+        press(&window, Key::Return);
+        tab_to(&window, "DP-5, Dell U2720Q");
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        press(&window, Key::Return);
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        assert_eq!(*acted.borrow(), ["folder ~/Wallpapers 0", "subfolders  0", "target  1", "target-add  2"]);
+    }
 }

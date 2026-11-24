@@ -3,8 +3,8 @@
 // (src/wallpaper.rs); everything done goes back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, SectionLabel, Scroll, Focusable, Switch, Badge, Viewport } from "controls.slint";
-import { TextField, Select, CheckBox, Modal, Segmented, SelectButton , DialogTitle, DialogButtons} from "dialogs.slint";
+import { Button, SectionLabel, Scroll, Focusable, Focus, Switch, Badge, Viewport } from "controls.slint";
+import { TextField, Select, CheckBox, Modal, Segmented, SelectButton, DialogTitle, DialogButtons, MenuKeys, MenuItem } from "dialogs.slint";
 import { Hero, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
 
@@ -74,20 +74,55 @@ export struct WallpaperView {
 // The folder button: the folder shown, and a menu of the folders before, the subfolders' pictures,
 // and the desktop's folder dialog.
 /// The folder, as a SelectButton (D-46) with a folder icon; its list has the folders used
-/// before, the subfolders choice and the file chooser.
+/// before, the subfolders choice and the file chooser. Its keys are its own while it's open
+/// (MenuKeys).
 component FolderButton inherits SelectButton {
     in property <WallpaperView> view;
     callback act(string, string, float);
+    // The item the arrow keys are on: the folders before, then the subfolders choice, then
+    // "Choose a folder…".
+    property <int> highlighted;
+    function open() {
+        root.highlighted = 0;
+        menu.show();
+    }
+    function choose(i: int) {
+        if i < root.view.recent.length {
+            menu.close();
+            root.act("folder", root.view.recent[i], 0);
+        } else if i == root.view.recent.length {
+            // The menu stays open, as after a click on the check box.
+            root.act("subfolders", "", 0);
+        } else {
+            menu.close();
+            root.act("choose-folder", "", 0);
+        }
+    }
     text: root.view.folder;
     label: "Folder";
     mono: true;
-    clicked => { menu.show(); }
+    clicked => { root.open(); }
+    // Here rather than through `activated`, which would take the focus back from the menu.
+    key(event) => {
+        if event.text == " " || event.text == Key.Return || event.text == Key.DownArrow || event.text == Key.UpArrow {
+            root.open();
+            return accept;
+        }
+        reject
+    }
     Icon { name: "folder"; tint: Theme.icon-soft; size: 16px; y: (parent.height - 16px) / 2; }
     menu := PopupWindow {
         x: min(0px, Viewport.width - 8px - root.absolute-position.x - self.width);
         y: root.height + 4px;
         width: min(max(root.width, 320px), 480px);
         close-policy: close-on-click-outside;
+        forward-focus: menu-keys;
+        menu-keys := MenuKeys {
+            count: root.view.recent.length + 2;
+            highlighted <=> root.highlighted;
+            chosen(i) => { root.choose(i); }
+            closed => { menu.close(); }
+        }
         Rectangle {
             border-radius: 8px;
             border-width: 1px;
@@ -99,16 +134,19 @@ component FolderButton inherits SelectButton {
                 padding: 6px;
                 spacing: 2px;
                 if root.view.recent.length > 0: SectionLabel { text: "FOLDERS BEFORE"; height: 26px; vertical-alignment: center; x: 8px; }
-                for r in root.view.recent: Rectangle {
-                    height: 32px;
-                    border-radius: 6px;
-                    background: pick.has-hover ? Theme.hover : transparent;
-                    Text { x: 10px; text: r; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; overflow: elide; width: parent.width - 20px; }
-                    pick := TouchArea { mouse-cursor: pointer; clicked => { root.act("folder", r, 0); menu.close(); } }
+                for r[i] in root.view.recent: MenuItem {
+                    text: r;
+                    mono: true;
+                    highlighted: i == root.highlighted;
+                    clicked => { root.choose(i); }
                 }
                 Rectangle { height: 1px; background: Theme.border; }
                 Rectangle {
                     height: 36px;
+                    border-radius: 6px;
+                    // The arrow keys' item, drawn as a MenuItem's.
+                    border-width: root.highlighted == root.view.recent.length && Focus.keyboard ? 2px : 0;
+                    border-color: Theme.accent;
                     CheckBox {
                         x: 10px;
                         y: (parent.height - self.height) / 2;
@@ -117,12 +155,10 @@ component FolderButton inherits SelectButton {
                         toggled => { root.act("subfolders", "", 0); }
                     }
                 }
-                Rectangle {
-                    height: 32px;
-                    border-radius: 6px;
-                    background: choose.has-hover ? Theme.hover : transparent;
-                    Text { x: 10px; text: "Choose a folder…"; color: Theme.text; font-size: Type.body; vertical-alignment: center; height: parent.height; }
-                    choose := TouchArea { mouse-cursor: pointer; clicked => { root.act("choose-folder", "", 0); menu.close(); } }
+                MenuItem {
+                    text: "Choose a folder…";
+                    highlighted: root.highlighted == root.view.recent.length + 1;
+                    clicked => { root.choose(root.view.recent.length + 1); }
                 }
             }
         }
@@ -236,28 +272,46 @@ export component WallpaperPage inherits VerticalLayout {
             width: min(self.room-width, self.room-height * self.aspect);
             height: self.width / self.aspect;
             visible: root.view.state == "list";
-            for m[i] in root.view.monitors: Rectangle {
+            // A click, Space or Enter picks this one; Shift or Ctrl with it adds it to (or takes
+            // it from) the ones a picture is set on.
+            for m[i] in root.view.monitors: Focusable {
                 x: m.x * parent.width;
                 y: m.y * parent.height;
                 width: m.w * parent.width - 6px;
                 height: m.h * parent.height - 6px;
                 border-radius: 6px;
-                clip: true;
-                border-width: 2px;
-                border-color: m.target ? Theme.accent : Theme.border2;
-                background: Theme.ctrl-bg;
-                Image { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; source: m.picture; image-fit: cover; }
-                Rectangle {
-                    x: 6px;
-                    y: parent.height - self.height - 6px;
-                    width: label.preferred-width + 10px;
-                    height: 18px;
-                    border-radius: 4px;
-                    background: Theme.overlay;
-                    label := Text { text: m.name; color: Theme.on-scrim; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
+                // Its own TouchArea, below, sees the modifiers.
+                clickable: false;
+                accessible-role: button;
+                accessible-label: m.model == "" ? m.name : m.name + ", " + m.model;
+                accessible-checkable: true;
+                accessible-checked: m.target;
+                accessible-action-default => { root.act("target", "", i + 1); }
+                activated => { root.act("target", "", i + 1); }
+                key(event) => {
+                    if (event.modifiers.shift || event.modifiers.control) && (event.text == " " || event.text == Key.Return) {
+                        root.act("target-add", "", i + 1);
+                        return accept;
+                    }
+                    reject
                 }
-                // A click picks this one; Shift+click or Ctrl+click adds it to (or takes it from)
-                // the ones a picture is set on.
+                Rectangle {
+                    border-radius: 6px;
+                    clip: true;
+                    border-width: 2px;
+                    border-color: m.target ? Theme.accent : Theme.border2;
+                    background: Theme.ctrl-bg;
+                    Image { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; source: m.picture; image-fit: cover; }
+                    Rectangle {
+                        x: 6px;
+                        y: parent.height - self.height - 6px;
+                        width: label.preferred-width + 10px;
+                        height: 18px;
+                        border-radius: 4px;
+                        background: Theme.overlay;
+                        label := Text { text: m.name; color: Theme.on-scrim; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
                 TouchArea {
                     mouse-cursor: pointer;
                     pointer-event(event) => {
