@@ -172,6 +172,8 @@ component Tile inherits Focusable {
     callback act(string, string, float);
     border-radius: 10px;
     ring-gap: 2px;
+    // Each render builds the tiles again: the new one takes the focus back.
+    focus-key: "wallpaper-tile:" + root.tile.id;
     accessible-role: button;
     accessible-label: root.tile.folder ? root.tile.name + ", folder, " + root.tile.sub : root.tile.name + ", " + root.tile.sub;
     activated => { root.act(root.tile.folder ? "folder" : "set", root.tile.id, 0); }
@@ -282,6 +284,7 @@ export component WallpaperPage inherits VerticalLayout {
                 border-radius: 6px;
                 // Its own TouchArea, below, sees the modifiers.
                 clickable: false;
+                focus-key: "wallpaper-monitor:" + m.name;
                 accessible-role: button;
                 accessible-label: m.model == "" ? m.name : m.name + ", " + m.model;
                 accessible-checkable: true;

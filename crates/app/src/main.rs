@@ -5472,14 +5472,15 @@ mod tests {
             h: 1.0,
             ..Default::default()
         };
-        window.set_wallpaper(super::WallpaperView {
+        let view = || super::WallpaperView {
             state: "list".into(),
             aspect: 3.5,
             folder: "~/Pictures".into(),
             recent: super::model(vec![SharedString::from("~/Pictures"), "~/Wallpapers".into()]),
             monitors: super::model(vec![monitor("DP-3", 0.0), monitor("DP-5", 0.5)]),
             ..Default::default()
-        });
+        };
+        window.set_wallpaper(view());
         tab_to(&window, "Folder");
         press(&window, Key::Return);
         press(&window, Key::DownArrow);
@@ -5494,9 +5495,41 @@ mod tests {
         tab_to(&window, "DP-3, Dell U2720Q");
         press(&window, Key::Return);
         tab_to(&window, "DP-5, Dell U2720Q");
+        // A render builds the monitors again: the focus stays on DP-5.
+        window.set_wallpaper(view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "DP-5, Dell U2720Q"));
         window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
         press(&window, Key::Return);
         window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
         assert_eq!(*acted.borrow(), ["folder ~/Wallpapers 0", "subfolders  0", "target  1", "target-add  2"]);
+    }
+
+    /// A wallpaper's tile keeps the focus through a render, which builds the tiles again (after
+    /// Random, Tab went to a tile, and the next render dropped the focus to the window).
+    #[test]
+    fn a_wallpaper_tile_keeps_the_focus_through_a_render() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("wallpaper".into());
+        let view = || super::WallpaperView {
+            state: "list".into(),
+            aspect: 1.8,
+            folder: "~/Pictures".into(),
+            tiles: super::model(vec![super::WallpaperTile {
+                id: "/home/u/Pictures/teal.png".into(),
+                name: "teal.png".into(),
+                sub: "320 × 180".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        window.set_wallpaper(view());
+        tab_to(&window, "Random");
+        press(&window, Key::Tab);
+        assert!(ring_on(&window, "teal.png, 320 × 180"));
+        window.set_wallpaper(view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "teal.png, 320 × 180"), "the focus went with the old tile");
     }
 }
