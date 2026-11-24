@@ -15,7 +15,7 @@ export default defineConfig({
     starlight({
       title: 'Lituus',
       description:
-        'A network manager for Hyprland, Sway and other desktops without one: Wi-Fi, wired and WireGuard on NetworkManager, written in Rust.',
+        'The settings app for Hyprland and other desktops without one: network, Bluetooth, displays, sound, input, wallpaper, apps and more, written in Rust.',
       logo: { src: './src/assets/mark.svg' },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
@@ -30,7 +30,24 @@ export default defineConfig({
       lastUpdated: false,
       sidebar: [
         { label: 'Installing', link: '/install/' },
-        { label: 'Guide', items: [{ autogenerate: { directory: 'guide' } }] },
+        {
+          label: 'Guide',
+          // In the app's order: setting up, then the pages as its sidebar lists them.
+          items: [
+            'guide/hyprland',
+            'guide/window',
+            'guide/network',
+            'guide/bluetooth',
+            'guide/displays',
+            'guide/sound',
+            'guide/input',
+            'guide/wallpaper',
+            'guide/apps',
+            'guide/default-apps',
+            'guide/system',
+            'guide/settings',
+          ],
+        },
         { label: 'Development', link: '/development/' },
       ],
     }),
