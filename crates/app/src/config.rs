@@ -243,24 +243,28 @@ impl Mode {
 }
 
 /// Sets one key, keeping the rest of the file as it is (comments and order included).
+/// A file that can't be read is an error, not an empty file to write the key to.
 pub fn set(path: &Path, table: &str, key: &str, value: impl Into<toml_edit::Value>) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = lituus_fs::read_or_empty(path)?;
     let text = with(&text, table, key, value).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
 /// Removes one key, keeping the rest of the file (and the table, even when it's empty).
 pub fn unset(path: &Path, table: &str, key: &str) -> std::io::Result<()> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let text = match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        read => read?,
+    };
     let mut doc: toml_edit::DocumentMut =
         text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if let Some(t) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
         t.remove(key);
     }
-    std::fs::write(path, doc.to_string())
+    lituus_fs::write_atomic(path, doc.to_string())
 }
 
 /// Sets one key to a list of strings, keeping the rest of the file.

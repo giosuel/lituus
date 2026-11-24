@@ -119,19 +119,31 @@ impl ConfigFile {
         section(&self.read()?, name)
     }
 
-    /// Writes the page's part of the file, keeping the other pages' parts.
+    /// Writes the page's part of the file, keeping the other pages' parts. A file that's there
+    /// but can't be read is an error, not an empty file: the other parts would be lost.
     pub fn write_section(&self, name: &str, part: &str) -> std::io::Result<()> {
-        self.write(&with_section(&self.read().unwrap_or_default(), name, part))
+        let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let text = lituus_fs::read_or_empty(&self.path())?;
+        self.write_unlocked(&with_section(&text, name, part))
     }
 
-    /// Writes the file whole, through a temporary file, so Hyprland never reads half of it.
+    /// Writes the file whole, through a temporary file, so Hyprland never reads half of it. A
+    /// file that's a link into the user's dotfiles stays a link.
     pub fn write(&self, text: &str) -> std::io::Result<()> {
+        let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_unlocked(text)
+    }
+
+    fn write_unlocked(&self, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join(format!(".{}.tmp", file_name(&self.path())));
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, self.path())
+        lituus_fs::write_atomic(&self.path(), text)
     }
 }
+
+/// Held while the file is read, changed and written: Displays (on the window's thread), Input
+/// (its worker) and Shortcuts (a thread per change) each write their part, and without it one
+/// could write back another's part as it was before that one's change.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The file's parts: (page, its lines). Text before the first part has no page.
 fn sections(text: &str) -> Vec<(Option<String>, String)> {
@@ -280,6 +292,57 @@ mod tests {
         f.write_section("Displays", displays).unwrap();
         assert_eq!(f.read_section("Input").as_deref(), Some(input));
         assert_eq!(f.read().unwrap(), format!("{input}\n{displays}"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn lituus_file_thats_a_link_stays_a_link() {
+        let d = dir("own-link");
+        let dotfiles = dir("own-link-dotfiles").join("lituus.lua");
+        std::fs::write(&dotfiles, "").unwrap();
+        std::os::unix::fs::symlink(&dotfiles, d.join("lituus.lua")).unwrap();
+        let f = ConfigFile::new(&d, true);
+        f.write_section("Input", "-- Written by Lituus (Input).\n").unwrap();
+        assert!(std::fs::symlink_metadata(f.path()).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&dotfiles).unwrap().contains("Input"));
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(dotfiles.parent().unwrap()).unwrap();
+    }
+
+    /// A file that can't be read isn't taken as empty: writing one part would drop the others.
+    #[test]
+    fn a_file_that_cant_be_read_isnt_written_over() {
+        let d = dir("own-unreadable");
+        let f = ConfigFile::new(&d, true);
+        let text = b"-- Written by Lituus (Displays).\n-- caf\xe9\nhl.monitor({ output = \"DP-1\" })\n";
+        std::fs::write(f.path(), text).unwrap();
+        assert!(f.write_section("Input", "-- Written by Lituus (Input).\n").is_err());
+        assert_eq!(std::fs::read(f.path()).unwrap(), text);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Displays, Input and Shortcuts write their parts from their own threads: none is lost.
+    #[test]
+    fn pages_writing_at_once_keep_each_others_parts() {
+        let d = dir("own-threads");
+        let f = ConfigFile::new(&d, true);
+        let threads: Vec<_> = ["Displays", "Input", "Shortcuts"]
+            .into_iter()
+            .map(|page| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for i in 0..100 {
+                        f.write_section(page, &format!("-- Written by Lituus ({page}).\n-- {i}\n")).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        for page in ["Displays", "Input", "Shortcuts"] {
+            assert_eq!(f.read_section(page), Some(format!("-- Written by Lituus ({page}).\n-- 99\n")));
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 
