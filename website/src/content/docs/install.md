@@ -7,7 +7,8 @@ Every release has packages for x86-64 and ARM64 Linux on its
 [GitHub release page](https://github.com/giosuel/lituus/releases). They're built on Debian 12,
 so they run on Debian 12, Ubuntu 22.04, and anything newer.
 
-Besides NetworkManager, some features use packages you may want:
+Every package needs NetworkManager. The rest depends on the pages you use, and most pages say
+when something they need is missing or not running:
 
 - **OpenVPN** needs NetworkManager's OpenVPN plugin: `networkmanager-openvpn` (Arch),
   `network-manager-openvpn` (Debian, Ubuntu), `NetworkManager-openvpn` (Fedora).
@@ -16,9 +17,19 @@ Besides NetworkManager, some features use packages you may want:
   other web sign-ins: `networkmanager-openconnect` (Arch), `network-manager-openconnect-gnome`
   (Debian, Ubuntu), `NetworkManager-openconnect-gnome` (Fedora). Web sign-ins need openconnect
   9.00 and NetworkManager-openconnect 1.2.10 or newer.
-- **Choosing files** (certificates, `.conf` and `.ovpn` files) opens your desktop's file dialog
-  through the XDG desktop portal. On Hyprland that's `xdg-desktop-portal-gtk` (or `-kde`) next to
-  `xdg-desktop-portal-hyprland`. Without one, type the path instead.
+- **Bluetooth** needs BlueZ with its service running. Sending and receiving files needs its
+  `obexd`, which is part of `bluez` on Arch and `bluez-obexd` on Debian and Ubuntu.
+- **Sound**, and a Bluetooth headset's choice between high quality and headset, need PipeWire's
+  PulseAudio service, `pipewire-pulse`.
+- **Displays, Keyboard, Mouse & touchpad and Shortcuts** need Hyprland.
+- **Wallpaper** needs awww (0.12 or newer) or hyprpaper (0.8 or newer).
+- **The default terminal** on Default apps is `xdg-terminal-exec`'s. Websites added as apps need
+  a Chromium-based browser.
+- **Renaming the computer** goes through systemd-hostnamed, and asks for an admin password through
+  a polkit agent, as connections shared with all users do.
+- **Choosing files** (certificates, `.conf` and `.ovpn` files, files to send) opens your desktop's
+  file dialog through the XDG desktop portal. On Hyprland that's `xdg-desktop-portal-gtk` (or
+  `-kde`) next to `xdg-desktop-portal-hyprland`. Without one, type the path instead.
 - **Passwords "for me only"** go to GNOME Keyring, KWallet or another Secret Service keyring.
 
 ## Arch Linux (AUR)
@@ -37,7 +48,8 @@ sudo apt install ./lituus_<version>-1_amd64.deb   # arm64.deb on ARM
 ## Fedora, openSUSE
 
 ```sh
-sudo dnf install ./lituus-<version>-1.x86_64.rpm   # aarch64.rpm on ARM
+sudo dnf install ./lituus-<version>-1.x86_64.rpm      # Fedora; aarch64.rpm on ARM
+sudo zypper install ./lituus-<version>-1.x86_64.rpm   # openSUSE
 ```
 
 ## AppImage
@@ -45,7 +57,7 @@ sudo dnf install ./lituus-<version>-1.x86_64.rpm   # aarch64.rpm on ARM
 Runs on most distributions without installing anything:
 
 ```sh
-chmod +x Lituus-<version>-x86_64.AppImage
+chmod +x Lituus-<version>-x86_64.AppImage   # aarch64.AppImage on ARM
 ./Lituus-<version>-x86_64.AppImage
 ```
 
@@ -59,9 +71,12 @@ flatpak install --user ./Lituus-<version>-linux-x64.flatpak
 flatpak run ch.giosuel.Lituus
 ```
 
-In the sandbox, Lituus may talk to NetworkManager, your keyring, the notification daemon and
-the tray, and read your colour files; nothing else of your home folder. A few things work
-differently there:
+In the sandbox, Lituus may talk to NetworkManager, BlueZ, PipeWire, your keyring, the
+notification daemon and the tray, and read your colour files; nothing else of your home folder. It
+can't reach Hyprland, your Hyprland config, the wallpaper programs, your apps' desktop files or
+your package managers, so the Flatpak is for Network, Bluetooth and Sound: Displays, Input,
+Wallpaper, Apps, Default apps and System's updates need one of the other packages. A few more
+things work differently there:
 
 - The settings are in `~/.var/app/ch.giosuel.Lituus/config/lituus/config.toml`.
 - The hotspot can't list the devices connected to it.

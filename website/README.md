@@ -12,7 +12,10 @@ npm run build         # static site in dist/
 npm run check-links   # broken internal links in dist/ (CI runs this)
 ```
 
-- `src/content/docs/`: the pages (Markdown/MDX). `index.mdx` is the landing page.
+- `src/content/docs/`: the pages (Markdown/MDX). `index.mdx` is the landing page; `guide/` has a
+  page for each of the app's pages.
+- `astro.config.mjs`: the sidebar. The guide's pages are listed there in the app's order, so a new
+  one needs adding to the list.
 - `src/styles/custom.css`: the app's colours and the landing page's look.
 - `public/hero.svg`: the window illustration on the landing page.
 - `site.config.mjs`: the only place that knows the URL and base path. Write internal links
