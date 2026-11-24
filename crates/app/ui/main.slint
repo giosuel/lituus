@@ -9,7 +9,7 @@ import "fonts/JetBrainsMono-Medium.ttf";
 import { Palette } from "std-widgets.slint";
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars, Logo } from "icons.slint";
-import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Banner, Kbd, Hint, Scroll, Focusable, Focus } from "controls.slint";
+import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Banner, Kbd, Hint, Scroll, Focusable, Focus, Link, Viewport } from "controls.slint";
 import { JoinDialog, TextField, Segmented, FormRow, Modal } from "dialogs.slint";
 import { QuickWindow, QuickRow } from "quick.slint";
 import { Action, Toggle, DetailItem, Chip, ChipRow, Details, DetailsPane } from "details.slint";
@@ -47,7 +47,7 @@ component ListRow inherits Focusable {
     /// Its place in the window, for the list to scroll to.
     callback reveal(length, length);
     height: 52px;
-    border-radius: 8px;
+    border-radius: 9px;
     // The list would cut off a ring outside it.
     ring-gap: -2px;
     focus-key: "row:" + entry.id;
@@ -74,7 +74,7 @@ component ListRow inherits Focusable {
             alignment: center;
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.entry.name; color: Theme.text; font-weight: 500; overflow: elide; }
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
             Text { text: root.entry.meta; color: root.entry.selected && root.entry.tone == "muted" ? Theme.accent : Theme.tone(root.entry.tone); font-size: Type.note; overflow: elide; }
         }
         if root.entry.secure: Icon { name: "lock"; tint: Theme.faint; size: 14px; y: (parent.height - 14px) / 2; }
@@ -336,12 +336,12 @@ export component MainWindow inherits Window {
     // the layout, and the heroes' heights on this.
     property <length> window-height: 760px;
     changed height => { root.window-height = root.height; }
-    init => { root.window-height = root.height; root.window-width = root.width; }
+    init => { root.window-height = root.height; root.window-width = root.width; Viewport.width = root.width; }
     // A short window: the heroes are smaller, so the lists keep their room.
     property <bool> compact: root.window-height < 720px;
     // The same for the width (changed, not bound: a page's layout depends on it).
     property <length> window-width: 1200px;
-    changed width => { root.window-width = root.width; }
+    changed width => { root.window-width = root.width; Viewport.width = root.width; }
 
     title: "Lituus";
     icon: @image-url("assets/logo-mark.svg");
@@ -626,7 +626,7 @@ export component MainWindow inherits Window {
                                             spacing: 10px;
                                             alignment: start;
                                             TextField { text <=> root.hotspot-password; mono: true; label: "Password"; enabled: !root.hotspot-on; horizontal-stretch: 1; preferred-width: 360px; max-width: 360px; edited => { root.hotspot-edited(); } }
-                                            Button { label: "Generate"; button-height: 36px; horizontal-stretch: 0; enabled: !root.hotspot-on; clicked => { root.hotspot-new-password(); } }
+                                            Button { label: "Generate"; button-height: Size.button-dialog; horizontal-stretch: 0; enabled: !root.hotspot-on; clicked => { root.hotspot-new-password(); } }
                                         }
                                     }
                                     FormRow {
@@ -891,12 +891,9 @@ export component MainWindow inherits Window {
                                         HorizontalLayout {
                                             spacing: 14px;
                                             Text { text: root.update-terminal; color: Theme.text; font-size: Type.body; vertical-alignment: center; }
-                                            change-terminal := Text {
-                                                text: "Change in Default apps";
-                                                color: change-area.has-hover ? Theme.text : Theme.accent;
-                                                font-size: Type.body;
-                                                vertical-alignment: center;
-                                                change-area := TouchArea { mouse-cursor: pointer; clicked => { root.navigate("default-apps"); } }
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Link { text: "Change in Default apps"; focus-key: "change-terminal"; clicked => { root.navigate("default-apps"); } }
                                             }
                                         }
                                     }
@@ -991,8 +988,8 @@ export component MainWindow inherits Window {
             padding-top: 6px;
             spacing: 8px;
             alignment: end;
-            Button { label: "Cancel"; button-height: 36px; clicked => { root.confirm-cancelled(); keys.focus(); } }
-            Button { label: root.confirm-button; kind: root.confirm-destructive ? "destructive" : "primary"; button-height: 36px; clicked => { root.confirm-accepted(); keys.focus(); } }
+            Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.confirm-cancelled(); keys.focus(); } }
+            Button { label: root.confirm-button; kind: root.confirm-destructive ? "destructive" : "primary"; button-height: Size.button-dialog; clicked => { root.confirm-accepted(); keys.focus(); } }
         }
     }
 
@@ -1151,7 +1148,7 @@ export component MainWindow inherits Window {
         HorizontalLayout {
             padding-top: 6px;
             alignment: end;
-            Button { label: "Cancel"; button-height: 36px; clicked => { root.add-cancelled(); keys.focus(); } }
+            Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.add-cancelled(); keys.focus(); } }
         }
     }
 
@@ -1195,8 +1192,8 @@ export component MainWindow inherits Window {
             padding-top: 6px;
             spacing: 8px;
             Text { text: "Saving asks for an admin password"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; }
-            Button { label: "Cancel"; button-height: 36px; horizontal-stretch: 0; clicked => { root.hostname-cancelled(); keys.focus(); } }
-            Button { label: "Save"; kind: "primary"; button-height: 36px; horizontal-stretch: 0; enabled: root.hostname-error == ""; clicked => { root.hostname-save(); keys.focus(); } }
+            Button { label: "Cancel"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.hostname-cancelled(); keys.focus(); } }
+            Button { label: "Save"; kind: "primary"; button-height: Size.button-dialog; horizontal-stretch: 0; enabled: root.hostname-error == ""; clicked => { root.hostname-save(); keys.focus(); } }
         }
     }
 
@@ -1231,7 +1228,7 @@ export component MainWindow inherits Window {
         HorizontalLayout {
             padding-top: 4px;
             alignment: end;
-            Button { label: "Close"; button-height: 36px; clicked => { root.share-closed(); keys.focus(); } }
+            Button { label: "Close"; button-height: Size.button-dialog; clicked => { root.share-closed(); keys.focus(); } }
         }
     }
 

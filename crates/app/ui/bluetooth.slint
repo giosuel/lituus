@@ -73,7 +73,7 @@ component BtListRow inherits Focusable {
     /// Its place in the window, for the list to scroll to.
     callback reveal(length, length);
     height: 52px;
-    border-radius: 8px;
+    border-radius: 9px;
     // The list would cut off a ring outside it.
     ring-gap: -2px;
     focus-key: "row:" + entry.id;
@@ -98,7 +98,7 @@ component BtListRow inherits Focusable {
             alignment: center;
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.entry.name; color: Theme.text; font-weight: 500; overflow: elide; }
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
             Text { text: root.entry.meta; color: root.entry.selected && root.entry.tone == "muted" ? Theme.accent : Theme.tone(root.entry.tone); font-size: Type.note; overflow: elide; }
         }
         if root.entry.battery >= 0: HorizontalLayout {
@@ -113,7 +113,7 @@ component BtListRow inherits Focusable {
         if root.entry.button != "": Button {
             label: root.entry.button;
             focus-key: "row-button:" + root.entry.id;
-            button-height: 28px;
+            button-height: Size.button-row;
             horizontal-stretch: 0;
             min-width: self.preferred-width;
             max-width: self.preferred-width;
@@ -325,11 +325,11 @@ export component BtPairDialog inherits Modal {
         padding-top: 6px;
         spacing: 8px;
         alignment: end;
-        Button { label: root.pair.mode == "service" ? "Deny" : "Cancel"; button-height: 36px; clicked => { root.cancelled(); } }
+        Button { label: root.pair.mode == "service" ? "Deny" : "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         if root.pair.accept != "": Button {
             label: root.pair.accept;
             kind: "primary";
-            button-height: 36px;
+            button-height: Size.button-dialog;
             enabled: (root.pair.mode != "pin" && root.pair.mode != "passkey") || root.code != "";
             clicked => { root.accepted(); }
         }
@@ -380,8 +380,8 @@ export component BtAdapterDialog inherits Modal {
         padding-top: 6px;
         spacing: 8px;
         alignment: end;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.cancelled(); } }
-        Button { label: "Save"; kind: "primary"; button-height: 36px; clicked => { root.saved(); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
+        Button { label: "Save"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.saved(); } }
     }
 }
 
@@ -401,7 +401,7 @@ export component BtRenameDialog inherits Modal {
         padding-top: 6px;
         spacing: 8px;
         alignment: end;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.cancelled(); } }
-        Button { label: "Save"; kind: "primary"; button-height: 36px; clicked => { root.saved(); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
+        Button { label: "Save"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.saved(); } }
     }
 }

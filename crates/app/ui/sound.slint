@@ -249,7 +249,7 @@ export component SoundPage inherits VerticalLayout {
                                 min-width: 140px;
                                 preferred-width: 240px;
                                 horizontal-stretch: 0;
-                                select-height: 34px;
+                                select-height: Size.field;
                                 label: "Output device";
                                 options: root.page.outputs-names;
                                 details: root.page.outputs-details;
@@ -264,7 +264,7 @@ export component SoundPage inherits VerticalLayout {
                                 min-width: 140px;
                                 preferred-width: 240px;
                                 horizontal-stretch: 0;
-                                select-height: 34px;
+                                select-height: Size.field;
                                 label: "Port";
                                 options: root.page.out-ports;
                                 selected: root.page.out-port;
@@ -323,7 +323,7 @@ export component SoundPage inherits VerticalLayout {
                                 min-width: 140px;
                                 preferred-width: 240px;
                                 horizontal-stretch: 0;
-                                select-height: 34px;
+                                select-height: Size.field;
                                 label: "Input device";
                                 options: root.page.inputs-names;
                                 details: root.page.inputs-details;
@@ -409,7 +409,7 @@ export component SoundPage inherits VerticalLayout {
                         Percent { value: a.volume; muted: a.muted; }
                         Select {
                             width: 190px;
-                            select-height: 32px;
+                            select-height: Size.field;
                             label: "Output for " + a.name;
                             focus-key: "app-output:" + a.id;
                             options: root.page.outputs-names;
@@ -443,7 +443,7 @@ export component SoundPage inherits VerticalLayout {
                             min-width: 160px;
                             preferred-width: 300px;
                             horizontal-stretch: 0;
-                            select-height: 34px;
+                            select-height: Size.field;
                             label: "Profile for " + c.name;
                             focus-key: "profile:" + c.id;
                             options: c.profiles;

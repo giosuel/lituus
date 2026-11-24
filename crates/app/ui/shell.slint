@@ -446,13 +446,19 @@ component Differs inherits HorizontalLayout {
 /// A setting in a card, the one row every page's settings use: its name and a line under it on
 /// the left (or, for a setting that differs from its default, what the default is), its control
 /// (the children) on the right, and a line above it unless it's the first of its group.
-export component SettingRow inherits Rectangle {
+/// A row of a card's list under a divider, none over the first (D-46): at least 48 px, one
+/// divider colour. Settings, kinds of file, software and updates are built on it.
+export component DividerRow inherits Rectangle {
+    in property <bool> first;
+    min-height: 48px;
+    // A colour rather than an `if`: there's one per row.
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
+}
+
+export component SettingRow inherits DividerRow {
     in property <string> label;
     in property <string> description;
     in property <string> differs;
-    in property <bool> first;
-    min-height: 48px;
-    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
         spacing: 14px;
         padding-top: 5px;
@@ -577,7 +583,7 @@ export component EmptyState inherits VerticalLayout {
                 Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
                 Button {
                     label: "Copy";
-                    button-height: 28px;
+                    button-height: Size.button-row;
                     min-width: self.preferred-width;
                     y: (parent.height - self.height) / 2;
                     clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }

@@ -6,7 +6,7 @@
 // (src/system.rs).
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, CardTitle, SectionLabel } from "controls.slint";
+import { Button, IconButton, CardTitle, SectionLabel, IconTile } from "controls.slint";
 import { Hero, HeroSubject, Card, ScrollCard, Tooltip, EmptyState } from "shell.slint";
 
 /// A fact about the hardware: what it is (label), its name (title) and a line under it. link: an
@@ -56,14 +56,7 @@ component Fact inherits Rectangle {
     HorizontalLayout {
         padding: 10px;
         spacing: 14px;
-        Rectangle {
-            width: 32px;
-            height: 32px;
-            y: 2px;
-            border-radius: 8px;
-            background: Theme.ctrl-bg;
-            Icon { name: root.fact.icon; tint: Theme.icon-soft; size: 16px; }
-        }
+        IconTile { icon: root.fact.icon; y: 2px; }
         VerticalLayout {
             spacing: 2px;
             horizontal-stretch: 1;
@@ -73,18 +66,20 @@ component Fact inherits Rectangle {
         }
         if root.fact.link: VerticalLayout {
             alignment: center;
-            Button { label: "Open Displays"; button-height: 30px; horizontal-stretch: 0; clicked => { root.opened(); } }
+            Button { label: "Open Displays"; button-height: Size.button-row; horizontal-stretch: 0; clicked => { root.opened(); } }
         }
     }
 }
 
 /// A name, its value and a note on the right; a line above it unless it's the first.
+// Not DividerRow, whose rows are 48 px at least: these facts are a compact list, so the card
+// fits at 1070 px. The same divider.
 component SoftwareRow inherits Rectangle {
     in property <SystemSoftware> entry;
     in property <bool> first;
     in property <bool> narrow;
     height: 40px;
-    if !root.first: Rectangle { y: 0; height: 1px; background: Theme.border; }
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
         spacing: 12px;
         Text { text: root.entry.name; color: Theme.muted; font-size: Type.body; vertical-alignment: center; width: root.narrow ? 110px : 150px; overflow: elide; }
@@ -107,7 +102,7 @@ component UpdateRow inherits Rectangle {
     in property <bool> narrow;
     callback update();
     height: 46px;
-    if !root.first: Rectangle { y: 0; height: 1px; background: Theme.border; }
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
         spacing: 12px;
         HorizontalLayout {
@@ -129,7 +124,7 @@ component UpdateRow inherits Rectangle {
         }
         if root.entry.state == "count": VerticalLayout {
             alignment: center;
-            Button { label: "Update"; button-height: 28px; horizontal-stretch: 0; clicked => { root.update(); } }
+            Button { label: "Update"; button-height: Size.button-row; horizontal-stretch: 0; clicked => { root.update(); } }
         }
     }
 }
@@ -301,7 +296,7 @@ export component SystemPage inherits VerticalLayout {
                     }
                     if root.view.update-all: VerticalLayout {
                         alignment: center;
-                        Button { label: "Update all"; kind: "primary"; button-height: 28px; horizontal-stretch: 0; clicked => { root.act("update-all", ""); } }
+                        Button { label: "Update all"; kind: "primary"; button-height: Size.button-row; horizontal-stretch: 0; clicked => { root.act("update-all", ""); } }
                     }
                 }
                 for u[i] in root.view.updates: UpdateRow {

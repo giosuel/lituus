@@ -532,8 +532,8 @@ export component ShortcutEditDialog inherits Modal {
                         padding-top: 6px;
                         spacing: 8px;
                         alignment: start;
-                        Button { label: "Replace it"; button-height: 28px; clicked => { root.act("d-replace-keys", ""); } }
-                        Button { label: "Pick other keys"; button-height: 28px; clicked => { root.act("d-listen", ""); } }
+                        Button { label: "Replace it"; button-height: Size.button-row; clicked => { root.act("d-replace-keys", ""); } }
+                        Button { label: "Pick other keys"; button-height: Size.button-row; clicked => { root.act("d-listen", ""); } }
                     }
                 }
             }
@@ -567,7 +567,7 @@ export component ShortcutEditDialog inherits Modal {
                     spacing: 8px;
                     Select {
                         width: 220px;
-                        select-height: 34px;
+                        select-height: Size.field;
                         label: "Action";
                         options: root.dialog.kinds;
                         selected: root.dialog.kind;
@@ -582,7 +582,7 @@ export component ShortcutEditDialog inherits Modal {
                         alignment: start;
                         Select {
                             width: 160px;
-                            select-height: 34px;
+                            select-height: Size.field;
                             label: "Direction";
                             options: root.dialog.directions;
                             selected: root.dialog.direction;
@@ -635,7 +635,7 @@ export component ShortcutEditDialog inherits Modal {
                     spacing: 6px;
                     HorizontalLayout {
                         alignment: start;
-                        Button { label: "Back to your config's version"; button-height: 34px; clicked => { root.act("d-restore", ""); } }
+                        Button { label: "Back to your config's version"; button-height: Size.button; clicked => { root.act("d-restore", ""); } }
                     }
                     Note { text: "Fills in your config's version; Save puts it back"; }
                 }
@@ -644,8 +644,8 @@ export component ShortcutEditDialog inherits Modal {
         HorizontalLayout {
             spacing: 8px;
             Text { text: root.dialog.problem; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-            Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Cancel"; button-height: 36px; clicked => { root.act("d-cancel", ""); } }
-            Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Save"; kind: "primary"; button-height: 36px; enabled: root.dialog.problem == ""; clicked => { root.act("d-save", ""); } }
+            Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Cancel"; button-height: Size.button-dialog; clicked => { root.act("d-cancel", ""); } }
+            Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Save"; kind: "primary"; button-height: Size.button-dialog; enabled: root.dialog.problem == ""; clicked => { root.act("d-save", ""); } }
         }
     }
 }
@@ -662,8 +662,8 @@ export component ShortcutDeleteDialog inherits Modal {
     HorizontalLayout {
         alignment: end;
         spacing: 8px;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.act("delete-no", ""); } }
-        Button { label: "Delete"; kind: "destructive"; button-height: 36px; clicked => { root.act("delete-yes", ""); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.act("delete-no", ""); } }
+        Button { label: "Delete"; kind: "destructive"; button-height: Size.button-dialog; clicked => { root.act("delete-yes", ""); } }
     }
 }
 
@@ -723,6 +723,8 @@ export component ShortcutsPage inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 14px;
                 search := TextField {
+                    icon: "search";
+                    height: Size.field;
                     width: 340px;
                     label: "Search shortcuts";
                     placeholder: "Search keys or actions";

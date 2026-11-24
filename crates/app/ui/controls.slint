@@ -6,6 +6,12 @@ import { Icon } from "icons.slint";
 /// control Slint rebuilds (every row of a list Rust sends again) takes it back; `keyboard` says
 /// it came from the keyboard, which is when the ring shows. `on-control`, `probe` and `answer`
 /// let the window notice that the control with the focus is gone (see MainWindow).
+/// The window's width, for popups that must stay inside it (Select's list). The main window
+/// keeps it current.
+export global Viewport {
+    in-out property <length> width: 100000px;
+}
+
 export global Focus {
     in-out property <string> key;
     in-out property <bool> keyboard;
@@ -177,7 +183,7 @@ export component FocusTrap inherits Rectangle {
 export component Button inherits Focusable {
     in property <string> label;
     in property <string> kind: "secondary";
-    in property <length> button-height: 34px;
+    in property <length> button-height: Size.button;
     callback clicked();
     height: button-height;
     // Shrinks (eliding the label) before it makes a narrow window impossible.
@@ -387,7 +393,7 @@ export component Banner inherits Rectangle {
         }
         if root.action != "": VerticalLayout {
             alignment: center;
-            Button { label: root.action; button-height: 28px; min-width: self.preferred-width; horizontal-stretch: 0; clicked => { root.action-clicked(); } }
+            Button { label: root.action; button-height: Size.button-row; min-width: self.preferred-width; horizontal-stretch: 0; clicked => { root.action-clicked(); } }
         }
         if root.dismissible: VerticalLayout {
             alignment: center;
@@ -462,7 +468,11 @@ export component Scroll inherits Rectangle {
         content-height: max(self.height, root.fill ? body.min-height : body.preferred-height);
         flicked => { root.scrolled(); }
         body := VerticalLayout {
-            width: flick.width;
+            // With the scrollbar inside the area, its 10 px and a gap stay free on the right, so
+            // it never covers the content (D-46); a negative inset puts it in the padding. At
+            // x 0: Slint centres a child narrower than its parent.
+            x: 0;
+            width: flick.width - (root.bar-inset >= 0 ? 14px + root.bar-inset : 0px);
             height: flick.content-height;
             spacing: root.spacing;
             alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
@@ -505,4 +515,99 @@ export component Scroll inherits Rectangle {
             }
         }
     }
+}
+
+/// A small label with a tone (D-46): "accent" (Changed), "warn" (Can't start), "neutral"
+/// (Flatpak), or "overlay" over a picture (GIF).
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <string> tone: "accent";
+    height: 20px;
+    width: badge-text.preferred-width + 16px;
+    border-radius: 10px;
+    background: root.tone == "warn" ? Theme.warn-bg : root.tone == "neutral" ? Theme.ctrl-bg : root.tone == "overlay" ? Theme.overlay : Theme.accent-soft-bg;
+    badge-text := Text {
+        text: root.text;
+        color: root.tone == "warn" ? Theme.warn-text : root.tone == "neutral" ? Theme.muted : root.tone == "overlay" ? Theme.on-scrim : Theme.accent;
+        font-size: Type.label;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+/// A filter or a value as a pill (D-46): `selected` in the accent, a `count` after it, and an
+/// × when `removable`.
+export component Chip inherits Focusable {
+    in property <string> text;
+    in property <string> count;
+    in property <bool> selected;
+    in property <bool> removable;
+    in property <bool> warn;
+    in property <bool> mono;
+    callback clicked();
+    callback removed();
+    height: 28px;
+    preferred-width: chip-row.preferred-width;
+    min-width: chip-row.min-width;
+    horizontal-stretch: 0;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent-soft-border : Theme.border2;
+    background: root.selected ? Theme.accent-soft-bg : self.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    activated => { root.clicked(); }
+    chip-row := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: root.removable ? 4px : 12px;
+        spacing: 6px;
+        Text {
+            text: root.text;
+            color: root.warn ? Theme.warn-text : root.selected ? Theme.text : Theme.muted;
+            font-size: Type.body;
+            font-family: root.mono ? "JetBrains Mono" : "Inter";
+            vertical-alignment: center;
+        }
+        Text { text: root.count; color: Theme.faint; font-size: Type.body; vertical-alignment: center; visible: root.count != ""; width: root.count != "" ? self.preferred-width : 0px; }
+        IconButton {
+            icon: "close";
+            label: "Remove " + root.text;
+            flat: true;
+            size: root.removable ? 20px : 0px;
+            icon-size: 10px;
+            visible: root.removable;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.removed(); }
+        }
+    }
+}
+
+/// Text that does something (D-46): the keyboard reaches it like a button.
+export component Link inherits Focusable {
+    in property <string> text;
+    in property <color> link-color: Theme.accent;
+    in property <length> font-size: Type.body;
+    callback clicked();
+    preferred-width: link-text.preferred-width;
+    height: link-text.preferred-height;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    activated => { root.clicked(); }
+    link-text := Text { text: root.text; color: root.has-hover ? Theme.text : root.link-color; font-size: root.font-size; vertical-alignment: center; }
+}
+
+/// A line icon on a small square (D-46): 32 px in facts, 36 px in rows that lead with one.
+export component IconTile inherits Rectangle {
+    in property <string> icon;
+    in property <length> size: 32px;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size > 32px ? 10px : 8px;
+    background: Theme.ctrl-bg;
+    Icon { name: root.icon; tint: Theme.icon-soft; size: root.size > 32px ? 18px : 16px; }
 }

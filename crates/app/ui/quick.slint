@@ -47,7 +47,7 @@ component Row inherits Rectangle {
         if root.entry.button != "": Button {
             label: root.entry.button;
             focus-key: "quick:" + root.entry.id;
-            button-height: 28px;
+            button-height: Size.button-row;
             horizontal-stretch: 0;
             min-width: self.preferred-width;
             max-width: self.preferred-width;
@@ -171,7 +171,7 @@ export component QuickWindow inherits Window {
                 if root.bt-available && root.devices.length == 0: Note { text: root.bt-on ? "No paired devices" : "Off"; }
                 for d in root.devices: Row { entry: d; button-clicked => { root.row-button(d.id); } opened => { root.row-opened(d.id); } }
             }
-            Rectangle { height: 1px; background: Theme.border2; }
+            Rectangle { height: 1px; background: Theme.border; }
             if root.sound-available: VerticalLayout {
                 spacing: 2px;
                 Heading { text: "Volume"; }
@@ -222,7 +222,7 @@ export component QuickWindow inherits Window {
             HorizontalLayout {
                 padding-top: 4px;
                 spacing: 8px;
-                Button { label: "Open Lituus"; button-height: 36px; horizontal-stretch: 1; clicked => { root.open-main(); } }
+                Button { label: "Open Lituus"; button-height: Size.button-dialog; horizontal-stretch: 1; clicked => { root.open-main(); } }
                 IconButton { icon: "settings"; label: "Settings"; size: 36px; clicked => { root.open-settings(); } }
             }
         }

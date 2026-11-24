@@ -4,7 +4,7 @@
 // whenever it changes (see src/editor.rs) and sends back the errors.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, AddButton, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus, FocusTrap } from "controls.slint";
+import { Button, IconButton, AddButton, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus, FocusTrap, Chip } from "controls.slint";
 import { TextField, Segmented, CheckBox, Select, FormRow, Modal } from "dialogs.slint";
 
 export struct AddressRow { address: string, prefix: string }
@@ -266,7 +266,7 @@ component PortList inherits VerticalLayout {
         VerticalLayout {
             for p[i] in root.ports: Rectangle {
                 height: 49px;
-                Rectangle { y: 0; height: 1px; background: i == 0 ? transparent : Theme.border2; }
+                Rectangle { y: 0; height: 1px; background: i == 0 ? transparent : Theme.border; }
                 HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 10px;
@@ -279,7 +279,7 @@ component PortList inherits VerticalLayout {
                         Text { text: p.interface; color: Theme.text; font-size: Type.body; font-weight: 500; font-family: "JetBrains Mono"; }
                         Text { text: p.meta; color: p.new ? Theme.accent : Theme.muted; font-size: Type.note; overflow: elide; }
                     }
-                    Button { label: "Remove"; button-height: 28px; width: 76px; horizontal-stretch: 0; y: (parent.height - self.height) / 2; clicked => { root.remove(i); } }
+                    Button { label: "Remove"; button-height: Size.button-row; width: 76px; horizontal-stretch: 0; y: (parent.height - self.height) / 2; clicked => { root.remove(i); } }
                 }
             }
         }
@@ -313,7 +313,7 @@ component FileRow inherits HorizontalLayout {
     callback choose();
     spacing: 8px;
     alignment: start;
-    Button { label: "Choose file…"; button-height: 36px; horizontal-stretch: 0; clicked => { root.choose(); } }
+    Button { label: "Choose file…"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.choose(); } }
     TextField { text <=> root.path; mono: true; width: 400px; label: root.label; placeholder: "or type the path"; invalid: root.invalid; }
     if root.path != "": Remove { y: (parent.height - self.height) / 2; label: "Clear " + root.label; clicked => { root.path = ""; } }
 }
@@ -437,15 +437,9 @@ component PeerCard inherits Rectangle {
             if r == 2: HorizontalLayout {
                 spacing: 6px;
                 alignment: start;
-                for ip[j] in root.peer.allowed-ips: Rectangle {
-                    height: 34px;
-                    width: t.preferred-width + 40px;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: Theme.ctrl-border;
-                    background: Theme.ctrl-bg;
-                    t := Text { x: 10px; text: ip; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; }
-                    Remove { x: parent.width - 30px; y: 3px; label: "Remove " + ip; clicked => { root.remove-allowed(j); } }
+                for ip[j] in root.peer.allowed-ips: VerticalLayout {
+                    alignment: center;
+                    Chip { text: ip; mono: true; removable: true; removed => { root.remove-allowed(j); } }
                 }
                 TextField { text <=> root.peer.allowed-input; mono: true; width: 140px; height: 34px; label: "Add an allowed range"; placeholder: "Add range"; committed => { root.add-allowed(); } }
             }
@@ -938,8 +932,8 @@ export component Editor inherits Rectangle {
                                 placeholder: root.options.wg-shown-key != "" ? root.options.wg-shown-key : root.new ? "" : "Saved; generate or paste to change it";
                                 invalid: root.errors.wg-key != "";
                             }
-                            if !root.new && root.options.wg-shown-key == "": Button { label: "Show"; button-height: 36px; horizontal-stretch: 0; clicked => { root.wg-show-key(); } }
-                            Button { label: "Generate"; button-height: 36px; horizontal-stretch: 0; clicked => { root.wg-generate(); } }
+                            if !root.new && root.options.wg-shown-key == "": Button { label: "Show"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.wg-show-key(); } }
+                            Button { label: "Generate"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.wg-generate(); } }
                         }
                         if root.errors.wg-key != "": Error { text: root.errors.wg-key; }
                     }
@@ -986,7 +980,7 @@ export component Editor inherits Rectangle {
                     if !root.new: FormRow {
                         label: "Configuration file";
                         label-top: 8px;
-                        HorizontalLayout { alignment: start; Button { label: "Export .conf…"; button-height: 34px; horizontal-stretch: 0; clicked => { root.wg-export(); } } }
+                        HorizontalLayout { alignment: start; Button { label: "Export .conf…"; button-height: Size.button; horizontal-stretch: 0; clicked => { root.wg-export(); } } }
                     }
                 }
                 if root.tab == "peers": VerticalLayout {
@@ -1375,12 +1369,12 @@ export component Editor inherits Rectangle {
                 padding-right: 24px;
                 spacing: 10px;
                 Text { text: root.footer; color: Theme.tone(root.footer-tone); font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                Button { label: "Revert"; button-height: 36px; horizontal-stretch: 0; enabled: root.dirty && !root.busy; y: (parent.height - self.height) / 2; clicked => { root.revert(); } }
+                Button { label: "Revert"; button-height: Size.button-dialog; horizontal-stretch: 0; enabled: root.dirty && !root.busy; y: (parent.height - self.height) / 2; clicked => { root.revert(); } }
                 Button {
                     horizontal-stretch: 0;
                     label: root.new ? "Save" : "Apply";
                     kind: "primary";
-                    button-height: 36px;
+                    button-height: Size.button-dialog;
                     enabled: (root.dirty || root.new) && root.valid && !root.busy;
                     y: (parent.height - self.height) / 2;
                     clicked => { root.apply(); }
@@ -1435,7 +1429,7 @@ export component Editor inherits Rectangle {
         HorizontalLayout {
             padding-top: 6px;
             alignment: end;
-            Button { label: "Cancel"; button-height: 36px; clicked => { root.port-chosen(""); } }
+            Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.port-chosen(""); } }
         }
     }
 
@@ -1474,8 +1468,8 @@ export component Editor inherits Rectangle {
             padding-top: 6px;
             spacing: 8px;
             alignment: end;
-            Button { label: "Cancel"; button-height: 36px; clicked => { root.routes-done(false); } }
-            Button { label: "Done"; kind: "primary"; button-height: 36px; clicked => { root.routes-done(true); } }
+            Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.routes-done(false); } }
+            Button { label: "Done"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.routes-done(true); } }
         }
     }
 }

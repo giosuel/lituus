@@ -401,7 +401,7 @@ export component DisplaysPage inherits VerticalLayout {
                             alignment: center;
                             Select {
                                 width: 240px;
-                                select-height: 34px;
+                                select-height: Size.field;
                                 label: "Monitor for workspace " + w.name;
                                 focus-key: "ws-monitor:" + i;
                                 options: root.view.ws-monitors;
@@ -471,8 +471,8 @@ export component DisplaysPage inherits VerticalLayout {
                                     Text { text: p.active ? "In use · " + p.summary : p.summary; color: p.active ? Theme.accent : Theme.muted; font-size: Type.note; overflow: elide; }
                                 }
                                 CheckBox { checked: p.auto; text: "Switch by itself"; label: "Switch to " + p.name + " by itself"; focus-key: "profile-auto:" + i; horizontal-stretch: 0; y: (parent.height - self.height) / 2; toggled => { root.act("profile-auto", "" + i, 0); } }
-                                Button { label: "Use"; focus-key: "profile-use:" + i; button-height: 30px; horizontal-stretch: 0; enabled: !p.active; y: (parent.height - self.height) / 2; clicked => { root.act("profile-use", "" + i, 0); } }
-                                Button { label: "Update"; focus-key: "profile-update:" + i; button-height: 30px; horizontal-stretch: 0; y: (parent.height - self.height) / 2; clicked => { root.act("profile-update", "" + i, 0); } }
+                                Button { label: "Use"; focus-key: "profile-use:" + i; button-height: Size.button-row; horizontal-stretch: 0; enabled: !p.active; y: (parent.height - self.height) / 2; clicked => { root.act("profile-use", "" + i, 0); } }
+                                Button { label: "Update"; focus-key: "profile-update:" + i; button-height: Size.button-row; horizontal-stretch: 0; y: (parent.height - self.height) / 2; clicked => { root.act("profile-update", "" + i, 0); } }
                                 IconButton { icon: "trash"; label: "Delete " + p.name; focus-key: "profile-delete:" + i; flat: true; y: (parent.height - self.height) / 2; clicked => { root.act("profile-delete", "" + i, 0); } }
                             }
                             HorizontalLayout {
@@ -487,7 +487,7 @@ export component DisplaysPage inherits VerticalLayout {
                     HorizontalLayout {
                         spacing: 10px;
                         TextField { text <=> root.new-profile; placeholder: "Name, e.g. Desk + TV"; label: "New profile's name"; height: 34px; accepted => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
-                        Button { label: "Save the current layout as a profile"; button-height: 34px; horizontal-stretch: 0; enabled: root.new-profile != ""; clicked => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
+                        Button { label: "Save the current layout as a profile"; button-height: Size.button; horizontal-stretch: 0; enabled: root.new-profile != ""; clicked => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
                     }
                 }
             }
@@ -533,11 +533,11 @@ export component DisplaysPage inherits VerticalLayout {
                         spacing-vertical: 14px;
                         Field {
                             label: "Resolution";
-                            Select { options: root.view.resolutions; selected: root.view.resolution; label: "Resolution"; select-height: 34px; chosen(i) => { root.act("resolution", "" + i, 0); } }
+                            Select { options: root.view.resolutions; selected: root.view.resolution; label: "Resolution"; select-height: Size.field; chosen(i) => { root.act("resolution", "" + i, 0); } }
                         }
                         Field {
                             label: "Refresh rate";
-                            Select { options: root.view.rates; selected: root.view.rate; label: "Refresh rate"; select-height: 34px; chosen(i) => { root.act("rate", "" + i, 0); } }
+                            Select { options: root.view.rates; selected: root.view.rate; label: "Refresh rate"; select-height: Size.field; chosen(i) => { root.act("rate", "" + i, 0); } }
                         }
                         scale-box := Field {
                             // The "Other…" field is being typed in, and hasn't been handed over.
@@ -553,7 +553,7 @@ export component DisplaysPage inherits VerticalLayout {
                                 details: root.view.scale-details;
                                 selected: root.view.scale;
                                 label: "Scale";
-                                select-height: 34px;
+                                select-height: Size.field;
                                 chosen(i) => { root.act("scale", "" + i, 0); }
                             }
                             // Any scale Hyprland takes at this resolution; one it doesn't stays here,
@@ -602,7 +602,7 @@ export component DisplaysPage inherits VerticalLayout {
                         }
                         Field {
                             label: "Mirror";
-                            Select { options: root.view.mirrors; selected: root.view.mirror; label: "Mirror"; select-height: 34px; chosen(i) => { root.act("mirror", "" + i, 0); } }
+                            Select { options: root.view.mirrors; selected: root.view.mirror; label: "Mirror"; select-height: Size.field; chosen(i) => { root.act("mirror", "" + i, 0); } }
                         }
                     }
                 }
@@ -614,7 +614,7 @@ export component DisplaysPage inherits VerticalLayout {
                         Field {
                             label: "Colour mode";
                             hint: root.view.hdr-capable ? "HDR needs a monitor and apps that support it." : "This monitor doesn't say it supports HDR.";
-                            Select { options: root.view.colour-modes; selected: root.view.colour-mode; label: "Colour mode"; select-height: 34px; chosen(i) => { root.act("colour", "" + i, 0); } }
+                            Select { options: root.view.colour-modes; selected: root.view.colour-mode; label: "Colour mode"; select-height: Size.field; chosen(i) => { root.act("colour", "" + i, 0); } }
                         }
                         Field {
                             label: "Bit depth";
@@ -658,7 +658,7 @@ export component DisplaysPage inherits VerticalLayout {
                             Field {
                                 label: "Variable refresh rate";
                                 hint: root.view.vrr-capable ? "Off, on, or only for fullscreen apps." : "This monitor doesn't say it supports VRR.";
-                                Select { options: root.view.vrr-options; selected: root.view.vrr; label: "Variable refresh rate"; select-height: 34px; chosen(i) => { root.act("vrr", "" + i, 0); } }
+                                Select { options: root.view.vrr-options; selected: root.view.vrr; label: "Variable refresh rate"; select-height: Size.field; chosen(i) => { root.act("vrr", "" + i, 0); } }
                             }
                             Field {
                                 label: "Reserved area";
@@ -720,9 +720,9 @@ export component DisplaysPage inherits VerticalLayout {
             background: root.view.status-tone == "danger" ? Theme.danger : root.view.status-tone == "warn" ? Theme.warn-text : root.view.status-tone == "accent" ? Theme.accent : Theme.faint;
         }
         Text { text: root.view.status; color: root.view.status-tone == "danger" ? Theme.danger : Theme.muted; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-        if root.view.can-save: Button { label: "Save to config file"; button-height: 34px; horizontal-stretch: 0; min-width: 84px; clicked => { root.act("save", "", 0); } }
-        Button { label: "Revert"; button-height: 34px; horizontal-stretch: 0; min-width: 84px; enabled: root.view.can-revert; clicked => { root.act("revert", "", 0); } }
-        Button { label: "Apply"; kind: "primary"; button-height: 34px; horizontal-stretch: 0; min-width: 96px; enabled: root.view.can-apply; clicked => { root.act("apply", "", 0); } }
+        if root.view.can-save: Button { label: "Save to config file"; button-height: Size.button; horizontal-stretch: 0; min-width: 84px; clicked => { root.act("save", "", 0); } }
+        Button { label: "Revert"; button-height: Size.button; horizontal-stretch: 0; min-width: 84px; enabled: root.view.can-revert; clicked => { root.act("revert", "", 0); } }
+        Button { label: "Apply"; kind: "primary"; button-height: Size.button; horizontal-stretch: 0; min-width: 96px; enabled: root.view.can-apply; clicked => { root.act("apply", "", 0); } }
     }
 
     if root.view.state != "list": Card {
@@ -796,8 +796,8 @@ export component KeepDialog inherits Modal {
     HorizontalLayout {
         spacing: 8px;
         alignment: end;
-        Button { label: "Go back now"; button-height: 36px; clicked => { root.revert(); } }
-        Button { label: "Keep"; kind: "primary"; button-height: 36px; clicked => { root.keep(); } }
+        Button { label: "Go back now"; button-height: Size.button-dialog; clicked => { root.revert(); } }
+        Button { label: "Keep"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.keep(); } }
     }
 }
 
@@ -861,7 +861,7 @@ export component ConfigDialog inherits Modal {
     HorizontalLayout {
         spacing: 8px;
         alignment: end;
-        Button { label: "Copy"; button-height: 36px; clicked => { code.select-all(); code.copy(); } }
-        Button { label: "Close"; kind: "primary"; button-height: 36px; clicked => { root.closed(); } }
+        Button { label: "Copy"; button-height: Size.button-dialog; clicked => { code.select-all(); code.copy(); } }
+        Button { label: "Close"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }
 }
