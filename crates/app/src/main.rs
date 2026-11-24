@@ -5324,4 +5324,34 @@ mod tests {
         press(&window, Key::Return);
         assert_eq!(*acted.borrow(), ["open c0"]);
     }
+
+    /// "Add a port" (a bridge's or a bond's): Tab reaches a device that can be one, and Enter
+    /// adds it; one that can't isn't a stop.
+    #[test]
+    fn a_port_is_added_from_the_keyboard() {
+        let window = window();
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let c = chosen.clone();
+        window.on_editor_port_chosen(move |interface| c.borrow_mut().push(interface.to_string()));
+        window.set_editor_open(true);
+        mock_elapsed_time(Duration::ZERO);
+        mock_elapsed_time(Duration::from_millis(300));
+        window.set_editor_options(super::EditorOptions {
+            candidates: super::model(vec![
+                super::PortCandidateUi {
+                    interface: "wlp2s0".into(),
+                    meta: "Wi-Fi".into(),
+                    blocked: "Wi-Fi can't be a port.".into(),
+                    ..Default::default()
+                },
+                super::PortCandidateUi { interface: "enp3s0".into(), meta: "Ethernet".into(), ..Default::default() },
+            ]),
+            ..Default::default()
+        });
+        window.set_editor_ports_open(true);
+        mock_elapsed_time(Duration::from_millis(50));
+        assert_eq!(tab_to(&window, "enp3s0, Ethernet"), 1, "the blocked device was a stop");
+        press(&window, Key::Return);
+        assert_eq!(*chosen.borrow(), ["enp3s0"]);
+    }
 }
