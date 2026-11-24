@@ -944,7 +944,7 @@ fn in_subnet(ip: Ipv4Addr, network: Ipv4Addr, prefix: u32) -> bool {
 }
 
 /// Disabled (and IPv6's Ignore): the page hides everything but the method.
-fn is_off(ip: &IpForm, v6: bool) -> bool {
+pub(crate) fn is_off(ip: &IpForm, v6: bool) -> bool {
     if v6 { ip.method >= 4 } else { ip.method == 4 }
 }
 
