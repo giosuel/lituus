@@ -2,7 +2,7 @@
 // keybind, with the nearest networks, the VPNs, the Bluetooth devices, the volume and airplane
 // mode, each under its heading. Its rows come from Rust (src/quick.rs, and main.rs for the rest).
 // Wayland doesn't let apps place windows, so a window rule floats it (see extras/hyprland.lua).
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars } from "icons.slint";
 import { Button, IconButton, Switch, CardTitle, Scroll, Focus } from "controls.slint";
 import { Slider } from "sound.slint";
@@ -41,8 +41,8 @@ component Row inherits Rectangle {
             alignment: center;
             spacing: 1px;
             horizontal-stretch: 1;
-            Text { text: root.entry.name; color: Theme.text; font-size: 13px; font-weight: 500; overflow: elide; }
-            Text { text: root.entry.meta; color: root.entry.active ? Theme.accent : Theme.muted; font-size: 11px; overflow: elide; }
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+            Text { text: root.entry.meta; color: root.entry.active ? Theme.accent : Theme.muted; font-size: Type.label; overflow: elide; }
         }
         if root.entry.button != "": Button {
             label: root.entry.button;
@@ -71,7 +71,7 @@ component Note inherits HorizontalLayout {
     in property <string> text;
     height: 34px;
     padding-left: 10px;
-    Text { text: root.text; color: Theme.muted; font-size: 12px; vertical-alignment: center; overflow: elide; }
+    Text { text: root.text; color: Theme.muted; font-size: Type.note; vertical-alignment: center; overflow: elide; }
 }
 
 export component QuickWindow inherits Window {
@@ -110,7 +110,7 @@ export component QuickWindow inherits Window {
     height: 600px;
     background: Theme.surface;
     default-font-family: "Inter";
-    default-font-size: 13px;
+    default-font-size: Type.body;
 
     // As in the main window (see there): when the control with the focus goes away, the
     // window takes it.
@@ -198,7 +198,7 @@ export component QuickWindow inherits Window {
                     Text {
                         text: root.muted ? "Muted" : round(root.volume * 100) + " %";
                         color: Theme.muted;
-                        font-size: 12px;
+                        font-size: Type.note;
                         font-family: "JetBrains Mono";
                         horizontal-alignment: right;
                         vertical-alignment: center;
@@ -215,7 +215,7 @@ export component QuickWindow inherits Window {
                     spacing: 1px;
                     horizontal-stretch: 1;
                     CardTitle { text: "Airplane mode"; }
-                    Text { text: "Turns off Wi-Fi, Bluetooth and mobile broadband"; color: Theme.muted; font-size: 11px; overflow: elide; }
+                    Text { text: "Turns off Wi-Fi, Bluetooth and mobile broadband"; color: Theme.muted; font-size: Type.label; overflow: elide; }
                 }
                 Switch { on: root.airplane; label: "Airplane mode"; switch-width: 40px; y: (parent.height - self.height) / 2; toggled => { root.airplane-switched(); } }
             }

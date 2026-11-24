@@ -2,7 +2,7 @@
 // settings group, as in the mockups (EditGeneral, EditWifi, EditSecurity, EditIPv4, EditIPv6,
 // EditEthernet, Routes). The form is one struct, two-way bound to the controls; Rust checks it
 // whenever it changes (see src/editor.rs) and sends back the errors.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, AddButton, SectionLabel, FieldLabel, Banner, Scroll, Focusable, Focus, FocusTrap } from "controls.slint";
 import { TextField, Segmented, CheckBox, Select, FormRow, Modal } from "dialogs.slint";
@@ -229,14 +229,14 @@ export struct EditorOptions {
 
 component Hint inherits Text {
     color: Theme.muted;
-    font-size: 12px;
+    font-size: Type.note;
     wrap: word-wrap;
     horizontal-stretch: 1;
 }
 
 component Error inherits Text {
     color: Theme.danger;
-    font-size: 12px;
+    font-size: Type.note;
     wrap: word-wrap;
 }
 
@@ -276,8 +276,8 @@ component PortList inherits VerticalLayout {
                         alignment: center;
                         spacing: 1px;
                         horizontal-stretch: 1;
-                        Text { text: p.interface; color: Theme.text; font-size: 13px; font-weight: 500; font-family: "JetBrains Mono"; }
-                        Text { text: p.meta; color: p.new ? Theme.accent : Theme.muted; font-size: 12px; overflow: elide; }
+                        Text { text: p.interface; color: Theme.text; font-size: Type.body; font-weight: 500; font-family: "JetBrains Mono"; }
+                        Text { text: p.meta; color: p.new ? Theme.accent : Theme.muted; font-size: Type.note; overflow: elide; }
                     }
                     Button { label: "Remove"; button-height: 28px; width: 76px; horizontal-stretch: 0; y: (parent.height - self.height) / 2; clicked => { root.remove(i); } }
                 }
@@ -424,14 +424,14 @@ component PeerCard inherits Rectangle {
                 accessible-label: "Remove peer";
                 accessible-action-default => { root.remove(); }
                 activated => { root.remove(); }
-                remove-peer := Text { text: "Remove peer"; color: Theme.danger; font-size: 13px; }
+                remove-peer := Text { text: "Remove peer"; color: Theme.danger; font-size: Type.body; }
             }
         }
         for row[r] in [
             { label: "Public key" }, { label: "Endpoint" }, { label: "Allowed IPs" }, { label: "Keepalive" },
         ]: HorizontalLayout {
             spacing: 0px;
-            Text { text: row.label; color: Theme.text; font-size: 13px; width: 180px; vertical-alignment: center; }
+            Text { text: row.label; color: Theme.text; font-size: Type.body; width: 180px; vertical-alignment: center; }
             if r == 0: HorizontalLayout { alignment: start; TextField { text <=> root.peer.public-key; mono: true; width: 440px; label: "Public key"; edited => { root.edited(); } } }
             if r == 1: HorizontalLayout { alignment: start; TextField { text <=> root.peer.endpoint; mono: true; width: 300px; label: "Endpoint"; placeholder: "None (the peer connects to you)"; edited => { root.edited(); } } }
             if r == 2: HorizontalLayout {
@@ -444,7 +444,7 @@ component PeerCard inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.ctrl-border;
                     background: Theme.ctrl-bg;
-                    t := Text { x: 10px; text: ip; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; }
+                    t := Text { x: 10px; text: ip; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; }
                     Remove { x: parent.width - 30px; y: 3px; label: "Remove " + ip; clicked => { root.remove-allowed(j); } }
                 }
                 TextField { text <=> root.peer.allowed-input; mono: true; width: 140px; height: 34px; label: "Add an allowed range"; placeholder: "Add range"; committed => { root.add-allowed(); } }
@@ -486,7 +486,7 @@ component IpPage inherits VerticalLayout {
     if root.v6 && root.current.length > 0: FormRow {
         label: "Current addresses";
         label-top: 0px;
-        for a in root.current: Text { text: a; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; }
+        for a in root.current: Text { text: a; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; }
     }
     if !root.off && (root.manual || root.ip.addresses.length > 0): FormRow {
         label: root.manual ? "Addresses" : "Extra addresses";
@@ -494,7 +494,7 @@ component IpPage inherits VerticalLayout {
         HorizontalLayout {
             spacing: 8px;
             FieldLabel { text: "Address"; width: 180px; }
-            Text { text: "Prefix"; color: Theme.muted; font-size: 12px; width: 72px; }
+            Text { text: "Prefix"; color: Theme.muted; font-size: Type.note; width: 72px; }
             FieldLabel { text: "Gateway"; width: 180px; }
             Rectangle {}
         }
@@ -542,7 +542,7 @@ component IpPage inherits VerticalLayout {
                 border-width: 1px;
                 border-color: Theme.ctrl-border;
                 background: Theme.ctrl-bg;
-                chip := Text { x: 10px; text: d; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; }
+                chip := Text { x: 10px; text: d; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; }
                 Remove { x: parent.width - 30px; y: 3px; label: "Remove " + d; clicked => { root.remove-dns(i); } }
             }
             TextField {
@@ -670,15 +670,15 @@ export component Editor inherits Rectangle {
             VerticalLayout {
                 spacing: 2px;
                 horizontal-stretch: 1;
-                Text { text: root.title; color: Theme.text; font-size: 19px; font-weight: 600; overflow: elide; }
-                Text { text: root.subtitle; color: Theme.muted; font-size: 12px; overflow: elide; }
+                Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; overflow: elide; }
+                Text { text: root.subtitle; color: Theme.muted; font-size: Type.note; overflow: elide; }
             }
             if root.dirty: HorizontalLayout {
                 horizontal-stretch: 0;
                 spacing: 7px;
                 alignment: center;
                 Rectangle { width: 7px; height: 7px; border-radius: 3.5px; background: Theme.warn-text; y: (parent.height - 7px) / 2; }
-                Text { text: "Unsaved changes"; color: Theme.warn-text; font-size: 13px; vertical-alignment: center; }
+                Text { text: "Unsaved changes"; color: Theme.warn-text; font-size: Type.body; vertical-alignment: center; }
             }
         }
         // Tabs
@@ -702,7 +702,7 @@ export component Editor inherits Rectangle {
                         x: 12px;
                         text: t.label;
                         color: t.id == root.tab ? Theme.text : Theme.muted;
-                        font-size: 13px;
+                        font-size: Type.body;
                         font-weight: t.id == root.tab ? 600 : 400;
                         vertical-alignment: center;
                         height: parent.height - 2px;
@@ -956,7 +956,7 @@ export component Editor inherits Rectangle {
                                     read-only: true;
                                     color: Theme.text;
                                     font-family: "JetBrains Mono";
-                                    font-size: 13px;
+                                    font-size: Type.body;
                                     vertical-alignment: center;
                                     single-line: true;
                                 }
@@ -1124,7 +1124,7 @@ export component Editor inherits Rectangle {
                             Text {
                                 text: "When you connect, a sign-in window opens: the Microsoft 365 page if your organisation uses it, otherwise the server's own username, password and code. Nothing to set up here.";
                                 color: Theme.text;
-                                font-size: 13px;
+                                font-size: Type.body;
                                 wrap: word-wrap;
                                 horizontal-stretch: 1;
                             }
@@ -1374,7 +1374,7 @@ export component Editor inherits Rectangle {
                 padding-left: 24px;
                 padding-right: 24px;
                 spacing: 10px;
-                Text { text: root.footer; color: Theme.tone(root.footer-tone); font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                Text { text: root.footer; color: Theme.tone(root.footer-tone); font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 Button { label: "Revert"; button-height: 36px; horizontal-stretch: 0; enabled: root.dirty && !root.busy; y: (parent.height - self.height) / 2; clicked => { root.revert(); } }
                 Button {
                     horizontal-stretch: 0;
@@ -1399,9 +1399,9 @@ export component Editor inherits Rectangle {
         card-spacing: 12px;
         label: "Add a port";
         dismissed => { root.port-chosen(""); }
-        Text { text: "Add a port to " + (root.form.virt.interface == "" ? root.form.name : root.form.virt.interface); color: Theme.text; font-size: 17px; font-weight: 600; }
-        Text { text: "The device becomes part of it, with a small connection of its own."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
-        if root.options.candidates.length == 0: Text { text: "No other wired devices to add."; color: Theme.faint; font-size: 13px; }
+        Text { text: "Add a port to " + (root.form.virt.interface == "" ? root.form.name : root.form.virt.interface); color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        Text { text: "The device becomes part of it, with a small connection of its own."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
+        if root.options.candidates.length == 0: Text { text: "No other wired devices to add."; color: Theme.faint; font-size: Type.body; }
         for c in root.options.candidates: Rectangle {
             height: c.warning != "" ? 68px : 52px;
             border-radius: 8px;
@@ -1421,9 +1421,9 @@ export component Editor inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     spacing: 2px;
-                    Text { text: c.interface; color: Theme.text; font-size: 13px; font-weight: 500; font-family: "JetBrains Mono"; }
-                    Text { text: c.blocked != "" ? c.blocked : c.meta; color: Theme.muted; font-size: 12px; overflow: elide; }
-                    if c.warning != "": Text { text: c.warning; color: Theme.warn-text; font-size: 12px; overflow: elide; }
+                    Text { text: c.interface; color: Theme.text; font-size: Type.body; font-weight: 500; font-family: "JetBrains Mono"; }
+                    Text { text: c.blocked != "" ? c.blocked : c.meta; color: Theme.muted; font-size: Type.note; overflow: elide; }
+                    if c.warning != "": Text { text: c.warning; color: Theme.warn-text; font-size: Type.note; overflow: elide; }
                 }
             }
             pick := TouchArea {
@@ -1447,19 +1447,19 @@ export component Editor inherits Rectangle {
         label: v6 ? "IPv6 routes" : "IPv4 routes";
         // A click beside it would lose the routes typed in it.
         dismissed => { root.routes-done(false); }
-        Text { text: (v6 ? "IPv6 routes · " : "IPv4 routes · ") + root.form.name; color: Theme.text; font-size: 17px; font-weight: 600; }
-        Text { text: "Extra routes added when this connection is up."; color: Theme.muted; font-size: 13px; }
+        Text { text: (v6 ? "IPv6 routes · " : "IPv4 routes · ") + root.form.name; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+        Text { text: "Extra routes added when this connection is up."; color: Theme.muted; font-size: Type.body; }
         if (v6 ? root.form.ip6.routes.length : root.form.ip4.routes.length) == 0: Text {
             text: "No extra routes yet.";
             color: Theme.faint;
-            font-size: 13px;
+            font-size: Type.body;
         }
         if (v6 ? root.form.ip6.routes.length : root.form.ip4.routes.length) > 0: HorizontalLayout {
             spacing: 8px;
             FieldLabel { text: "Destination"; width: 180px; }
-            Text { text: "Prefix"; color: Theme.muted; font-size: 12px; width: 64px; }
+            Text { text: "Prefix"; color: Theme.muted; font-size: Type.note; width: 64px; }
             FieldLabel { text: "Gateway"; width: 180px; }
-            Text { text: "Metric"; color: Theme.muted; font-size: 12px; width: 80px; }
+            Text { text: "Metric"; color: Theme.muted; font-size: Type.note; width: 80px; }
             Rectangle {}
         }
         if !v6: RouteRows { routes <=> root.form.ip4.routes; edited => { root.form-edited(); } remove(i) => { root.remove-row("ip4-route", i); } }

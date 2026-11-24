@@ -2,7 +2,7 @@
 // in the user's Hyprland config in groups, each with its keys, what it does, its options and where
 // it's written, a switch, and a ⋯ menu. A click opens the dialog that changes it. What it shows
 // comes from Rust (src/shortcuts.rs); everything done goes back through `act`.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, Switch, SectionLabel, Banner, Scroll, Focusable } from "controls.slint";
 import { TextField, Select, CheckBox, Modal } from "dialogs.slint";
@@ -138,7 +138,7 @@ component More inherits Focusable {
             border-color: Theme.border2;
             background: Theme.surface;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: Theme.shadow;
             VerticalLayout {
                 padding: 4px;
                 for item in [
@@ -151,7 +151,7 @@ component More inherits Focusable {
                     visible: item.shown;
                     border-radius: 6px;
                     background: pick.has-hover ? Theme.hover : transparent;
-                    Text { x: 10px; text: item.label; color: item.danger ? Theme.danger : Theme.text; font-size: 13px; vertical-alignment: center; height: parent.height; }
+                    Text { x: 10px; text: item.label; color: item.danger ? Theme.danger : Theme.text; font-size: Type.body; vertical-alignment: center; height: parent.height; }
                     pick := TouchArea { mouse-cursor: pointer; clicked => { root.chose(item.id); } }
                 }
             }
@@ -197,7 +197,7 @@ component Line inherits Rectangle {
                 Text {
                     text: root.entry.title;
                     color: root.entry.unread || !root.entry.on ? Theme.muted : root.entry.warn ? Theme.faint : Theme.text;
-                    font-size: 14px;
+                    font-size: Type.body;
                     font-weight: 500;
                     overflow: elide;
                     vertical-alignment: center;
@@ -206,7 +206,7 @@ component Line inherits Rectangle {
                 if root.wide: Text {
                     text: root.entry.detail;
                     color: root.entry.unread || root.entry.warn || !root.entry.on ? Theme.faint : Theme.muted;
-                    font-size: 12px;
+                    font-size: Type.note;
                     font-family: root.entry.mono ? "JetBrains Mono" : "Inter";
                     overflow: elide;
                     vertical-alignment: center;
@@ -217,7 +217,7 @@ component Line inherits Rectangle {
             if !root.wide: Text {
                 text: root.entry.summary;
                 color: root.entry.warn ? Theme.warn-text : Theme.faint;
-                font-size: 12px;
+                font-size: Type.note;
                 overflow: elide;
             }
         }
@@ -225,7 +225,7 @@ component Line inherits Rectangle {
             width: Columns.options;
             text: root.entry.options;
             color: root.entry.warn ? Theme.warn-text : Theme.muted;
-            font-size: 12px;
+            font-size: Type.note;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -243,7 +243,7 @@ component Line inherits Rectangle {
             Text {
                 text: root.entry.from;
                 color: root.entry.marker ? (root.entry.warn ? Theme.warn-text : Theme.muted) : Theme.faint;
-                font-size: 12px;
+                font-size: Type.note;
                 overflow: elide;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
@@ -283,7 +283,7 @@ component Check inherits VerticalLayout {
     CheckBox { text: root.text; checked: root.checked; enabled: root.enabled; toggled => { root.toggled(); } }
     HorizontalLayout {
         padding-left: 28px;
-        Text { text: root.hint; color: root.enabled ? Theme.muted : Theme.faint; font-size: 12px; wrap: word-wrap; }
+        Text { text: root.hint; color: root.enabled ? Theme.muted : Theme.faint; font-size: Type.note; wrap: word-wrap; }
     }
 }
 
@@ -303,7 +303,7 @@ component BigKey inherits Rectangle {
         height: parent.height - 8px;
         border-radius: 11px;
         background: @linear-gradient(180deg, Theme.ctrl-bg.brighter(0.18) 0%, Theme.ctrl-bg 100%);
-        label := Text { text: root.key; color: Theme.text; font-size: 26px; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-alignment: center; }
+        label := Text { text: root.key; color: Theme.text; font-size: Type.display; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-alignment: center; }
     }
 }
 
@@ -360,7 +360,7 @@ component KeysBand inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         spacing: 10px;
-                        Text { text: "Press the new shortcut"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-alignment: center; }
+                        Text { text: "Press the new shortcut"; color: Theme.text; font-size: Type.body; font-weight: 600; horizontal-alignment: center; }
                         HorizontalLayout {
                             alignment: center;
                             spacing: 6px;
@@ -373,15 +373,15 @@ component KeysBand inherits Rectangle {
                                 border-color: Theme.accent;
                             }
                         }
-                        Text { text: root.dialog.listen-note; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                        Text { text: root.dialog.listen-note; color: Theme.muted; font-size: Type.note; horizontal-alignment: center; }
                     }
                 }
             }
-            Text { text: "Esc cancels · Backspace clears"; color: Theme.faint; font-size: 12px; horizontal-alignment: center; }
+            Text { text: "Esc cancels · Backspace clears"; color: Theme.faint; font-size: Type.note; horizontal-alignment: center; }
             Text {
                 text: "Hyprland's shortcuts are paused while Lituus listens, so the keys you press don't run anything.";
                 color: Theme.muted;
-                font-size: 12px;
+                font-size: Type.note;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
@@ -393,7 +393,7 @@ component KeysBand inherits Rectangle {
             accessible-label: root.dialog.keys-label;
             for k[i] in root.dialog.keys: HorizontalLayout {
                 spacing: 14px;
-                if i > 0: Text { text: "+"; color: Theme.faint; font-size: 24px; vertical-alignment: center; }
+                if i > 0: Text { text: "+"; color: Theme.faint; font-size: Type.display; vertical-alignment: center; }
                 BigKey { key: k; }
             }
         }
@@ -401,7 +401,7 @@ component KeysBand inherits Rectangle {
             height: 80px;
             text: "No keys yet";
             color: Theme.faint;
-            font-size: 20px;
+            font-size: Type.dialog-title;
             vertical-alignment: center;
             horizontal-alignment: center;
         }
@@ -413,7 +413,7 @@ component KeysBand inherits Rectangle {
                 clicked => { root.act("d-listen", ""); }
             }
         }
-        if root.dialog.note != "": Text { text: root.dialog.note; color: Theme.muted; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+        if root.dialog.note != "": Text { text: root.dialog.note; color: Theme.muted; font-size: Type.note; horizontal-alignment: center; wrap: word-wrap; }
     }
     Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
 }
@@ -448,8 +448,8 @@ component Part inherits VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
                 spacing: 2px;
-                Text { text: root.title; color: Theme.text; font-size: 14px; }
-                if root.sub != "": Text { text: root.sub; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                Text { text: root.title; color: Theme.text; font-size: Type.body; }
+                if root.sub != "": Text { text: root.sub; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
             }
             if root.switch-shown: Switch {
                 y: (parent.height - self.height) / 2;
@@ -482,7 +482,7 @@ component Code inherits Rectangle {
         width: parent.width - 24px;
         text: root.text;
         color: Theme.muted;
-        font-size: 12px;
+        font-size: Type.note;
         font-family: "JetBrains Mono";
         wrap: word-wrap;
     }
@@ -491,7 +491,7 @@ component Code inherits Rectangle {
 // A muted line under a control.
 component Note inherits Text {
     color: Theme.muted;
-    font-size: 12px;
+    font-size: Type.note;
     wrap: word-wrap;
 }
 
@@ -526,8 +526,8 @@ export component ShortcutEditDialog inherits Modal {
                     padding-top: 10px;
                     padding-bottom: 10px;
                     spacing: 4px;
-                    Text { text: root.dialog.conflict-title; color: Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; }
-                    Text { text: root.dialog.conflict-text; color: Theme.warn-text; font-size: 13px; wrap: word-wrap; }
+                    Text { text: root.dialog.conflict-title; color: Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
+                    Text { text: root.dialog.conflict-text; color: Theme.warn-text; font-size: Type.body; wrap: word-wrap; }
                     if root.dialog.conflict-open: HorizontalLayout {
                         padding-top: 6px;
                         spacing: 8px;
@@ -643,7 +643,7 @@ export component ShortcutEditDialog inherits Modal {
         }
         HorizontalLayout {
             spacing: 8px;
-            Text { text: root.dialog.problem; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+            Text { text: root.dialog.problem; color: Theme.faint; font-size: Type.note; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
             Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Cancel"; button-height: 36px; clicked => { root.act("d-cancel", ""); } }
             Button { horizontal-stretch: 0; min-width: self.preferred-width; label: "Save"; kind: "primary"; button-height: 36px; enabled: root.dialog.problem == ""; clicked => { root.act("d-save", ""); } }
         }
@@ -657,8 +657,8 @@ export component ShortcutDeleteDialog inherits Modal {
     card-width: 440px;
     label: root.view.deleting;
     dismissed => { root.act("delete-no", ""); }
-    Text { text: root.view.deleting; color: Theme.text; font-size: 17px; font-weight: 600; }
-    Text { text: root.view.deleting-text; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+    Text { text: root.view.deleting; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
+    Text { text: root.view.deleting-text; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
     HorizontalLayout {
         alignment: end;
         spacing: 8px;
@@ -733,11 +733,11 @@ export component ShortcutsPage inherits VerticalLayout {
                     text: root.view.query;
                     edited => { root.act("query", self.text); }
                 }
-                Text { text: root.view.count; color: Theme.faint; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                Text { text: root.view.count; color: Theme.faint; font-size: Type.note; vertical-alignment: center; overflow: elide; }
                 Text {
                     text: root.view.message != "" ? root.view.message : root.view.editable ? "Click a shortcut to change it" : "";
                     color: root.view.message != "" ? Theme.danger : Theme.faint;
-                    font-size: 12px;
+                    font-size: Type.note;
                     vertical-alignment: center;
                     horizontal-alignment: right;
                     horizontal-stretch: 1;

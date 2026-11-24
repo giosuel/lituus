@@ -1,7 +1,7 @@
 // Desktop › Wallpaper, following the "Wallpaper" mockups: the monitors with their pictures in the
 // hero, a folder's pictures in a grid beside one card of settings. What it shows comes from Rust
 // (src/wallpaper.rs); everything done goes back through `act`.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, SectionLabel, Scroll, Focusable, Switch } from "controls.slint";
 import { TextField, Select, CheckBox, Modal, Segmented } from "dialogs.slint";
@@ -90,7 +90,7 @@ component FolderButton inherits Focusable {
         padding-right: 10px;
         spacing: 8px;
         Icon { name: "folder"; tint: Theme.muted; size: 15px; y: (parent.height - 15px) / 2; }
-        Text { text: root.view.folder; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+        Text { text: root.view.folder; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
         Icon { name: "chevron"; tint: Theme.icon-soft; y: (parent.height - 16px) / 2; }
     }
     menu := PopupWindow {
@@ -104,7 +104,7 @@ component FolderButton inherits Focusable {
             border-color: Theme.border2;
             background: Theme.surface;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: Theme.shadow;
             VerticalLayout {
                 padding: 6px;
                 spacing: 2px;
@@ -113,7 +113,7 @@ component FolderButton inherits Focusable {
                     height: 32px;
                     border-radius: 6px;
                     background: pick.has-hover ? Theme.hover : transparent;
-                    Text { x: 10px; text: r; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; overflow: elide; width: parent.width - 20px; }
+                    Text { x: 10px; text: r; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; height: parent.height; overflow: elide; width: parent.width - 20px; }
                     pick := TouchArea { mouse-cursor: pointer; clicked => { root.act("folder", r, 0); menu.close(); } }
                 }
                 Rectangle { height: 1px; background: Theme.border; }
@@ -131,7 +131,7 @@ component FolderButton inherits Focusable {
                     height: 32px;
                     border-radius: 6px;
                     background: choose.has-hover ? Theme.hover : transparent;
-                    Text { x: 10px; text: "Choose a folder…"; color: Theme.text; font-size: 13px; vertical-alignment: center; height: parent.height; }
+                    Text { x: 10px; text: "Choose a folder…"; color: Theme.text; font-size: Type.body; vertical-alignment: center; height: parent.height; }
                     choose := TouchArea { mouse-cursor: pointer; clicked => { root.act("choose-folder", "", 0); menu.close(); } }
                 }
             }
@@ -174,8 +174,8 @@ component Tile inherits Focusable {
             width: 26px;
             height: 22px;
             border-radius: 6px;
-            background: #000000a0;
-            Icon { name: "folder"; tint: #ffffff; size: 14px; x: 6px; y: 4px; }
+            background: Theme.overlay;
+            Icon { name: "folder"; tint: Theme.on-scrim; size: 14px; x: 6px; y: 4px; }
         }
         if root.tile.gif: Rectangle {
             x: parent.width - self.width - 8px;
@@ -183,8 +183,8 @@ component Tile inherits Focusable {
             width: 34px;
             height: 20px;
             border-radius: 5px;
-            background: #000000b0;
-            Text { text: "GIF"; color: #ffffff; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+            background: Theme.overlay;
+            Text { text: "GIF"; color: Theme.on-scrim; font-size: Type.label; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
         }
         if root.tile.off: Rectangle { background: Theme.surface; opacity: 0.62; }
         // On hover, what a click does (or why it can't).
@@ -194,16 +194,16 @@ component Tile inherits Focusable {
             width: hint.preferred-width + 20px;
             height: 26px;
             border-radius: 13px;
-            background: #000000b8;
-            hint := Text { text: root.tile.off ? "Moves only with awww" : root.set-label; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            background: Theme.overlay;
+            hint := Text { text: root.tile.off ? "Moves only with awww" : root.set-label; color: Theme.on-scrim; font-size: Type.note; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
     VerticalLayout {
         y: root.picture-height + 6px;
         height: root.height - root.picture-height - 6px;
         spacing: 1px;
-        Text { text: root.tile.name; color: Theme.text; font-size: 13px; overflow: elide; }
-        Text { text: root.tile.sub; color: root.tile.accent ? Theme.accent : Theme.faint; font-size: 12px; overflow: elide; }
+        Text { text: root.tile.name; color: Theme.text; font-size: Type.body; overflow: elide; }
+        Text { text: root.tile.sub; color: root.tile.accent ? Theme.accent : Theme.faint; font-size: Type.note; overflow: elide; }
     }
 }
 
@@ -213,11 +213,11 @@ export component WallpaperTakeoverDialog inherits Modal {
     card-width: 480px;
     label: "Write hyprpaper.conf?";
     dismissed => { root.act("takeover-no", "", 0); }
-    Text { text: "Write hyprpaper.conf?"; color: Theme.text; font-size: 17px; font-weight: 600; }
+    Text { text: "Write hyprpaper.conf?"; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; }
     Text {
         text: "hyprpaper shows the pictures in hyprpaper.conf when it starts, and forgets the ones it's told while it runs. Lituus writes a block for each monitor you set; the rest of your file stays as it is, and the file as it is now is kept as hyprpaper.conf.bak.";
         color: Theme.muted;
-        font-size: 13px;
+        font-size: Type.body;
         wrap: word-wrap;
     }
     HorizontalLayout {
@@ -273,8 +273,8 @@ export component WallpaperPage inherits VerticalLayout {
                     width: label.preferred-width + 10px;
                     height: 18px;
                     border-radius: 4px;
-                    background: #000000b0;
-                    label := Text { text: m.name; color: #ffffff; font-size: 11px; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
+                    background: Theme.overlay;
+                    label := Text { text: m.name; color: Theme.on-scrim; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
                 }
                 // A click picks this one; Shift+click or Ctrl+click adds it to (or takes it from)
                 // the ones a picture is set on.
@@ -298,9 +298,9 @@ export component WallpaperPage inherits VerticalLayout {
             spacing: 4px;
             for m in root.view.monitors: HorizontalLayout {
                 spacing: 14px;
-                Text { text: m.name; color: Theme.accent; font-size: 12px; font-family: "JetBrains Mono"; width: 80px; overflow: elide; }
-                Text { text: m.model; color: Theme.text; font-size: 13px; width: 150px; overflow: elide; }
-                Text { text: m.file; color: Theme.muted; font-size: 13px; overflow: elide; horizontal-stretch: 1; }
+                Text { text: m.name; color: Theme.accent; font-size: Type.note; font-family: "JetBrains Mono"; width: 80px; overflow: elide; }
+                Text { text: m.model; color: Theme.text; font-size: Type.body; width: 150px; overflow: elide; }
+                Text { text: m.file; color: Theme.muted; font-size: Type.body; overflow: elide; horizontal-stretch: 1; }
             }
         }
     }
@@ -340,7 +340,7 @@ export component WallpaperPage inherits VerticalLayout {
                         visible: !parent.narrow || root.view.message != "";
                         text: root.view.message != "" ? root.view.message : root.view.count;
                         color: root.view.message != "" ? Theme.danger : Theme.faint;
-                        font-size: 12px;
+                        font-size: Type.note;
                         vertical-alignment: center;
                         horizontal-alignment: right;
                         horizontal-stretch: 1;
@@ -370,7 +370,7 @@ export component WallpaperPage inherits VerticalLayout {
                     if root.view.empty-folder != "": Text {
                         text: root.view.empty-folder;
                         color: Theme.faint;
-                        font-size: 13px;
+                        font-size: Type.body;
                         horizontal-alignment: center;
                         height: 80px;
                         vertical-alignment: center;
@@ -432,7 +432,7 @@ export component WallpaperPage inherits VerticalLayout {
                                 y: (parent.height - self.height) / 2;
                                 moved(v) => { root.act("duration", "", v); }
                             }
-                            Text { text: root.view.duration-text; color: Theme.muted; font-size: 12px; font-family: "JetBrains Mono"; vertical-alignment: center; width: 40px; }
+                            Text { text: root.view.duration-text; color: Theme.muted; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; width: 40px; }
                         }
                     }
                 }
@@ -488,7 +488,7 @@ export component WallpaperPage inherits VerticalLayout {
                     spacing: 6px;
                     padding-top: 10px;
                     padding-bottom: 6px;
-                    Text { text: "Run after a change"; color: Theme.text; font-size: 13px; }
+                    Text { text: "Run after a change"; color: Theme.text; font-size: Type.body; }
                     TextField {
                         height: 34px;
                         // As wide as the card, however long the command: its text scrolls inside.
@@ -500,7 +500,7 @@ export component WallpaperPage inherits VerticalLayout {
                         text: root.view.after;
                         committed => { root.act("after", self.text, 0); }
                     }
-                    Text { text: root.view.after-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                    Text { text: root.view.after-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
                 }
             }
         }

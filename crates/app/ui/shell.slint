@@ -1,7 +1,7 @@
 // The frame every page shares, following the "Hero" mockups: the sidebar with its groups, status
 // and search, the hero at the top of a page (a big live picture of what the page is about), and
 // the cards below it.
-import { Theme } from "theme.slint";
+import { Theme, Type, Size } from "theme.slint";
 import { Icon, Logo, Spinner } from "icons.slint";
 import { Button, Switch, SectionLabel, Banner, Focusable, Scroll, Focus } from "controls.slint";
 
@@ -190,7 +190,7 @@ export component Sidebar inherits Rectangle {
                 spacing: 10px;
                 alignment: start;
                 Logo { size: 26px; y: (parent.height - 26px) / 2; }
-                Text { text: "Lituus"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                Text { text: "Lituus"; color: Theme.text; font-size: Type.card-title; font-weight: 700; vertical-alignment: center; }
             }
             Rectangle {
                 property <int> requests: root.focus-requests;
@@ -209,7 +209,7 @@ export component Sidebar inherits Rectangle {
                         horizontal-stretch: 1;
                         input := TextInput {
                             color: Theme.text;
-                            font-size: 13px;
+                            font-size: Type.body;
                             vertical-alignment: center;
                             single-line: true;
                             accessible-label: "Search settings";
@@ -221,7 +221,7 @@ export component Sidebar inherits Rectangle {
                                 reject
                             }
                         }
-                        if input.text == "": Text { x: 0; text: "Search"; color: Theme.faint; font-size: 13px; vertical-alignment: center; }
+                        if input.text == "": Text { x: 0; text: "Search"; color: Theme.faint; font-size: Type.body; vertical-alignment: center; }
                     }
                     Rectangle {
                         width: kbd.preferred-width + 10px;
@@ -230,7 +230,7 @@ export component Sidebar inherits Rectangle {
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: Theme.border2;
-                        kbd := Text { text: "Ctrl K"; color: Theme.faint; font-size: 11px; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
+                        kbd := Text { text: "Ctrl K"; color: Theme.faint; font-size: Type.label; font-family: "JetBrains Mono"; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
@@ -264,7 +264,7 @@ export component Sidebar inherits Rectangle {
                 if root.groups.length == 0: HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
-                    Text { text: "No setting matches the search."; color: Theme.faint; font-size: 12px; wrap: word-wrap; height: 40px; vertical-alignment: center; }
+                    Text { text: "No setting matches the search."; color: Theme.faint; font-size: Type.note; wrap: word-wrap; height: 40px; vertical-alignment: center; }
                 }
             }
             // A line where the pages are cut off; always there, so the layout doesn't change.
@@ -321,8 +321,8 @@ export component Hero inherits Rectangle {
         width: parent.width - 48px - root.picture-width;
         height: self.preferred-height;
         spacing: 4px;
-        Text { text: root.title; color: Theme.text; font-size: 30px; font-weight: 600; }
-        if root.sub != "": Text { text: root.sub; color: Theme.muted; font-size: 13px; overflow: elide; }
+        Text { text: root.title; color: Theme.text; font-size: Type.page-title; font-weight: 600; }
+        if root.sub != "": Text { text: root.sub; color: Theme.muted; font-size: Type.body; overflow: elide; }
     }
     if root.compact: HorizontalLayout {
         x: 24px;
@@ -330,13 +330,13 @@ export component Hero inherits Rectangle {
         width: parent.width - 48px - root.picture-width - (root.aside > 0 ? root.aside + 12px : 0);
         height: self.preferred-height;
         spacing: 14px;
-        Text { text: root.title; color: Theme.text; font-size: 30px; font-weight: 600; }
+        Text { text: root.title; color: Theme.text; font-size: Type.page-title; font-weight: 600; }
         // On the title's baseline.
         if root.sub != "": VerticalLayout {
             alignment: end;
             padding-bottom: 5px;
             horizontal-stretch: 1;
-            Text { text: root.sub; color: Theme.muted; font-size: 13px; overflow: elide; }
+            Text { text: root.sub; color: Theme.muted; font-size: Type.body; overflow: elide; }
         }
     }
     @children
@@ -362,9 +362,9 @@ export component HeroSubject inherits HorizontalLayout {
         alignment: end;
         spacing: 5px;
         padding-bottom: 4px;
-        Text { text: root.info.name; color: Theme.text; font-size: 22px; font-weight: 600; overflow: elide; }
-        if root.info.meta != "": Text { text: root.info.meta; color: Theme.tone(root.info.tone); font-size: 13px; overflow: elide; }
-        if root.info.detail != "" && !root.compact: Text { text: root.info.detail; color: Theme.faint; font-size: 12px; font-family: "JetBrains Mono"; overflow: elide; }
+        Text { text: root.info.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
+        if root.info.meta != "": Text { text: root.info.meta; color: Theme.tone(root.info.tone); font-size: Type.body; overflow: elide; }
+        if root.info.detail != "" && !root.compact: Text { text: root.info.detail; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
     }
 }
 
@@ -374,7 +374,7 @@ component Differs inherits HorizontalLayout {
     spacing: 6px;
     VerticalLayout { alignment: center; Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.accent; } }
     // No width of its own: showing it mustn't move the control beside it (a slider being dragged).
-    Text { text: root.text; color: Theme.muted; font-size: 12px; overflow: elide; preferred-width: 0; horizontal-stretch: 1; }
+    Text { text: root.text; color: Theme.muted; font-size: Type.note; overflow: elide; preferred-width: 0; horizontal-stretch: 1; }
 }
 
 /// A setting in a card, the one row every page's settings use: its name and a line under it on
@@ -397,9 +397,9 @@ export component SettingRow inherits Rectangle {
             horizontal-stretch: 1;
             // The control gives way before the name does.
             min-width: 112px;
-            Text { text: root.label; color: Theme.text; font-size: 13px; overflow: elide; }
+            Text { text: root.label; color: Theme.text; font-size: Type.body; overflow: elide; }
             if root.differs != "": Differs { text: root.differs; }
-            if root.differs == "" && root.description != "": Text { text: root.description; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+            if root.differs == "" && root.description != "": Text { text: root.description; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
         }
         // Centred by a layout: a `y` on the control put it at the top of the row.
         VerticalLayout {
@@ -421,7 +421,7 @@ export component Tooltip inherits Rectangle {
     background: Theme.ctrl-bg;
     drop-shadow-blur: 22px;
     drop-shadow-offset-y: 8px;
-    drop-shadow-color: #00000073;
+    drop-shadow-color: Theme.shadow;
     accessible-role: AccessibleRole.text;
     accessible-label: root.text;
     label := Text {
@@ -430,7 +430,7 @@ export component Tooltip inherits Rectangle {
         width: parent.width - 22px;
         text: root.text;
         color: Theme.text;
-        font-size: 12px;
+        font-size: Type.note;
         wrap: word-wrap;
     }
 }
@@ -481,10 +481,10 @@ export component EmptyState inherits VerticalLayout {
     padding: 18px;
     if root.loading: HorizontalLayout { alignment: center; Spinner { size: 20px; } }
     if !root.loading && root.icon != "": HorizontalLayout { alignment: center; Icon { name: root.icon; tint: Theme.faint; size: 44px; stroke-width: 1px; } }
-    Text { text: root.title; color: Theme.text; font-size: 17px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+    Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
     if root.text != "": HorizontalLayout {
         alignment: center;
-        Text { text: root.text; color: Theme.muted; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; max-width: 460px; }
+        Text { text: root.text; color: Theme.muted; font-size: Type.body; horizontal-alignment: center; wrap: word-wrap; max-width: 460px; }
     }
     if root.command != "": HorizontalLayout {
         alignment: center;
@@ -500,7 +500,7 @@ export component EmptyState inherits VerticalLayout {
                 padding-left: 14px;
                 padding-right: 8px;
                 spacing: 12px;
-                Text { text: root.command; color: Theme.text; font-size: 13px; font-family: "JetBrains Mono"; vertical-alignment: center; }
+                Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
                 Button {
                     label: "Copy";
                     button-height: 28px;
