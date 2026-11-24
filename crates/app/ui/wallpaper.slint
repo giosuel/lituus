@@ -69,6 +69,8 @@ export struct WallpaperView {
     after-note: string,
     message: string,
     takeover: bool,
+    /// Where the user's hyprpaper.conf is kept first: hyprpaper.conf.bak, or .bak.1 and on.
+    takeover-backup: string,
 }
 
 // The folder button: the folder shown, and a menu of the folders before, the subfolders' pictures,
@@ -191,13 +193,14 @@ component Tile inherits Focusable {
 
 /// Lituus asks before it first writes hyprpaper.conf that's there already.
 export component WallpaperTakeoverDialog inherits Modal {
+    in property <string> backup: "hyprpaper.conf.bak";
     callback act(string, string, float);
     card-width: 480px;
     label: "Write hyprpaper.conf?";
     dismissed => { root.act("takeover-no", "", 0); }
     DialogTitle { text: "Write hyprpaper.conf?"; }
     Text {
-        text: "hyprpaper shows the pictures in hyprpaper.conf when it starts, and forgets the ones it's told while it runs. Lituus writes a block for each monitor you set; the rest of your file stays as it is, and the file as it is now is kept as hyprpaper.conf.bak.";
+        text: "hyprpaper shows the pictures in hyprpaper.conf when it starts, and forgets the ones it's told while it runs. Lituus writes a block for each monitor you set; the rest of your file stays as it is, and the file as it is now is kept as " + root.backup + ".";
         color: Theme.muted;
         font-size: Type.body;
         wrap: word-wrap;

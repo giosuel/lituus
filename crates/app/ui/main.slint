@@ -1322,6 +1322,7 @@ export component MainWindow inherits Window {
         act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
     }
     if root.page == "wallpaper" && root.wallpaper.takeover: WallpaperTakeoverDialog {
+        backup: root.wallpaper.takeover-backup;
         act(verb, arg, value) => { root.wallpaper-act(verb, arg, value); }
     }
     if root.page == "shortcuts" && root.shortcuts.dialog.open: ShortcutEditDialog {

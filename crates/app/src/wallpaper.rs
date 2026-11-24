@@ -737,12 +737,26 @@ fn write_conf(path: &Path, entries: &[HyprpaperEntry]) -> std::io::Result<()> {
     std::fs::write(path, text)
 }
 
-/// The user's hyprpaper.conf kept as hyprpaper.conf.bak, before Lituus writes its first blocks.
-fn take_over(state: &State) -> std::io::Result<()> {
+/// Where the user's hyprpaper.conf is kept before Lituus first writes it: hyprpaper.conf.bak, or
+/// .bak.1 and on when that's taken (by an earlier takeover's copy, or the user's own), as Set up…
+/// does with Hyprland's config.
+fn backup_path(conf: &Path) -> PathBuf {
+    (0u32..)
+        .map(|n| conf.with_extension(if n == 0 { "conf.bak".to_owned() } else { format!("conf.bak.{n}") }))
+        .find(|p| !p.exists())
+        .expect("a free name")
+}
+
+/// The user's hyprpaper.conf kept as `backup_path`, before Lituus writes its first blocks.
+fn take_over(state: &State) -> Result<(), String> {
     let path = lituus_wallpaper::hyprpaper_conf(&state.hypr_dir());
-    std::fs::copy(&path, path.with_extension("conf.bak"))?;
-    let text = std::fs::read_to_string(&path)?;
-    std::fs::write(&path, format!("{MARK}\n{text}"))
+    let backup = backup_path(&path);
+    let kept = |e: std::io::Error| {
+        format!("hyprpaper.conf couldn't be kept as {}: {e}.", backup.file_name().unwrap_or_default().display())
+    };
+    std::fs::copy(&path, &backup).map_err(kept)?;
+    let text = std::fs::read_to_string(&path).map_err(kept)?;
+    std::fs::write(&path, format!("{MARK}\n{text}")).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))
 }
 
 fn save(state: &mut State, key: &str, value: impl Into<toml_edit::Value>) {
@@ -1055,6 +1069,10 @@ pub fn view(state: &State) -> WallpaperView {
     });
     v.message = s(state.message.clone().unwrap_or_default());
     v.takeover = state.takeover.is_some();
+    if v.takeover {
+        let backup = backup_path(&lituus_wallpaper::hyprpaper_conf(&state.hypr_dir()));
+        v.takeover_backup = s(backup.file_name().unwrap_or_default().to_string_lossy());
+    }
     v.hyprpaper = state.program() == Some(Program::Hyprpaper);
     v.splash = v.hyprpaper
         && lituus_wallpaper::hyprpaper_splash(
@@ -1278,9 +1296,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
                     (Ok(()), Pending::Pictures(sets, after)) => set_picture(weak, state, sets, after),
                     (Ok(()), Pending::Slideshow) => hyprpaper_slideshow(weak, state),
                     (Ok(()), Pending::Splash(on)) => hyprpaper_splash(weak, state, on),
-                    (Err(e), _) => {
-                        state.message = Some(format!("hyprpaper.conf couldn't be kept as hyprpaper.conf.bak: {e}."))
-                    }
+                    (Err(e), _) => state.message = Some(e),
                 }
             }
         }
@@ -1828,6 +1844,25 @@ mod tests {
         act_with(None, &mut state, "random", "", 0.0);
         assert_eq!(calls(&d).len(), before);
         assert_eq!(state.message.as_deref(), Some("hyprpaper doesn't show GIFs: install awww for pictures that move."));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A second takeover (the file put back without Lituus's mark) keeps the first copy.
+    #[test]
+    fn a_second_takeover_keeps_the_first_copy() {
+        let (mut state, d) = state_in("takeover-again", Some(Program::Hyprpaper));
+        let conf = d.join("hypr/hyprpaper.conf");
+        std::fs::create_dir_all(d.join("hypr")).unwrap();
+        let alps = state.folder_path().join("alps.png").display().to_string();
+        for (n, mine) in ["# the first one\n", "# from my dotfiles\n"].into_iter().enumerate() {
+            std::fs::write(&conf, mine).unwrap();
+            act_with(None, &mut state, "set", &alps, 0.0);
+            let backup = if n == 0 { "hyprpaper.conf.bak" } else { "hyprpaper.conf.bak.1" };
+            assert_eq!(view(&state).takeover_backup, backup);
+            act_with(None, &mut state, "takeover-yes", "", 0.0);
+            assert_eq!(std::fs::read_to_string(d.join("hypr").join(backup)).unwrap(), mine);
+        }
+        assert_eq!(std::fs::read_to_string(d.join("hypr/hyprpaper.conf.bak")).unwrap(), "# the first one\n");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
