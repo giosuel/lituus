@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use lituus_nm::Settings;
 use zbus::zvariant::{OwnedValue, Value};
 
+use crate::editor::{expand_path, path_problem};
+
 pub const SERVICE: &str = "org.freedesktop.NetworkManager.openvpn";
 
 /// `connection-type`, by the Authentication choice.
@@ -153,11 +155,13 @@ pub fn write(s: &mut Settings, initial: Option<&OvpnForm>, f: &OvpnForm) {
     if edited!(username) {
         set("username", &f.username);
     }
+    // NetworkManager-openvpn runs as root: `~/` means nothing to it.
+    let files = [&f.ca, &f.cert, &f.key, &f.static_key].map(|p| expand_path(p));
     for (key, value, changed) in [
-        ("ca", &f.ca, edited!(ca)),
-        ("cert", &f.cert, edited!(cert)),
-        ("key", &f.key, edited!(key)),
-        ("static-key", &f.static_key, edited!(static_key)),
+        ("ca", &files[0], edited!(ca)),
+        ("cert", &files[1], edited!(cert)),
+        ("key", &files[2], edited!(key)),
+        ("static-key", &files[3], edited!(static_key)),
         ("cipher", &f.cipher, edited!(cipher)),
         ("tunnel-mtu", &f.mtu, edited!(mtu)),
         ("fragment-size", &f.fragment, edited!(fragment)),
@@ -172,7 +176,7 @@ pub fn write(s: &mut Settings, initial: Option<&OvpnForm>, f: &OvpnForm) {
             set(key, "");
         }
         set("ta-dir", "");
-        set(TLS_KEY_MODES[f.tls_key_mode].0, &f.tls_key);
+        set(TLS_KEY_MODES[f.tls_key_mode].0, &expand_path(&f.tls_key));
         if f.tls_key_mode == 0 && !f.tls_key.trim().is_empty() {
             set("ta-dir", &f.tls_key_direction);
         }
@@ -253,6 +257,18 @@ pub fn check(initial: Option<&OvpnForm>, f: &OvpnForm) -> (String, String, Strin
         problems.2 = "Certificates need your certificate and private key files.".into();
     } else if auth == "static-key" && f.static_key.trim().is_empty() {
         problems.2 = "Choose the static key file.".into();
+    }
+    // The files the page shows, for this way of signing in.
+    let mut paths = vec![&f.tls_key];
+    match auth {
+        "static-key" => paths.push(&f.static_key),
+        "password" => paths.push(&f.ca),
+        _ => paths.extend([&f.ca, &f.cert, &f.key]),
+    }
+    if problems.2.is_empty()
+        && let Some(problem) = paths.into_iter().find_map(|p| path_problem(p))
+    {
+        problems.2 = problem;
     }
     let _ = initial;
     problems
@@ -520,6 +536,23 @@ abcd
         let after = data(&s);
         assert_eq!(after["remote"], "vpn3.uzh.ch:1194");
         assert_eq!(after.len(), before.len());
+    }
+
+    /// NetworkManager-openvpn runs as root: `~/` is expanded, and a relative path refused.
+    #[test]
+    fn typed_paths_are_whole() {
+        let f = OvpnForm {
+            gateway: "vpn.example.org".into(),
+            auth: 1,
+            cert: "~/c.pem".into(),
+            key: "k.pem".into(),
+            ..OvpnForm::default()
+        };
+        assert_eq!(check(None, &f).2, "Type the full path of k.pem, starting with / or ~/.");
+        let mut s: Settings = HashMap::new();
+        write(&mut s, None, &OvpnForm { key: "/k.pem".into(), ..f });
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(data(&s)["cert"], format!("{}/c.pem", home.trim_end_matches('/')));
     }
 
     /// A new password goes with the saved private key password, or NetworkManager drops that one;

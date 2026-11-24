@@ -524,8 +524,27 @@ fn read_cert(s: &Settings, key: &str) -> String {
     text.trim_end_matches('\0').strip_prefix("file://").unwrap_or("").to_owned()
 }
 
+/// A file path as typed, with `~/` for the home folder.
+pub fn expand_path(path: &str) -> String {
+    let path = path.trim();
+    let home = || std::env::var("HOME").unwrap_or_default().trim_end_matches('/').to_owned();
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", home()),
+        None if path == "~" => home(),
+        None => path.to_owned(),
+    }
+}
+
+/// What's wrong with a typed file path: NetworkManager's VPN plugins and wpa_supplicant run as
+/// root, in `/`, so a path that doesn't start there (or at `~/`) leads nowhere.
+pub fn path_problem(path: &str) -> Option<String> {
+    let path = path.trim();
+    (!path.is_empty() && !std::path::Path::new(&expand_path(path)).is_absolute())
+        .then(|| format!("Type the full path of {path}, starting with / or ~/."))
+}
+
 fn cert_value(path: &str) -> Value<'static> {
-    let mut bytes = format!("file://{}", path.trim()).into_bytes();
+    let mut bytes = format!("file://{}", expand_path(path)).into_bytes();
     bytes.push(0);
     Value::from(bytes)
 }
@@ -829,6 +848,15 @@ fn check_eap(kind: Kind, initial: Option<&Form>, f: &Form, e: &mut Errors) {
     }
     if tls && (x.client_cert.trim().is_empty() || x.private_key.trim().is_empty()) {
         e.eap_certs = "TLS needs your certificate and private key files.".into();
+    }
+    let mut paths = vec![&x.ca_cert];
+    if tls {
+        paths.extend([&x.client_cert, &x.private_key]);
+    }
+    if e.eap_certs.is_empty()
+        && let Some(problem) = paths.into_iter().find_map(|p| path_problem(p))
+    {
+        e.eap_certs = problem;
     }
 }
 
@@ -1637,6 +1665,29 @@ mod tests {
         // Unchanged, it stays as it was.
         let out = write(kind, &s, Some(&initial), &initial, "me");
         assert_eq!(string(&out, "802-1x", "phase2-autheap").as_deref(), Some("gtc"));
+    }
+
+    /// wpa_supplicant runs as root in /: `~/` is expanded, and a relative path refused.
+    #[test]
+    fn a_typed_home_path_is_expanded_or_refused() {
+        let mut f = new_form(Kind::Ethernet, "wired");
+        f.eap = EapForm {
+            enabled: true,
+            method: 2,
+            identity: "a".into(),
+            client_cert: "~/c.pem".into(),
+            private_key: "k.pem".into(),
+            ..f.eap
+        };
+        assert_eq!(check(Kind::Ethernet, None, &f).eap_certs, "Type the full path of k.pem, starting with / or ~/.");
+        f.eap.private_key = "/etc/k.pem".into();
+        assert_eq!(check(Kind::Ethernet, None, &f).eap_certs, "");
+        let s = write(Kind::Ethernet, &new_settings(Kind::Ethernet, "u"), None, &f, "me");
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            bytes(&s, "802-1x", "client-cert"),
+            format!("file://{}/c.pem\0", home.trim_end_matches('/')).into_bytes()
+        );
     }
 
     // 01-7: nm-setting-ip4-config.c and nm-setting-ip6-config.c verify(): no DNS, search domains

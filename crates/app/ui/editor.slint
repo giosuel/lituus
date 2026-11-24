@@ -384,6 +384,8 @@ component EapPage inherits VerticalLayout {
         label-top: 2px;
         CheckBox { checked <=> root.eap.system-ca; text: "Use the system's certificates"; }
         FileRow { path <=> root.eap.ca-cert; label: "CA certificate"; choose => { root.choose-file("eap.ca-cert"); } }
+        // With TLS, the private key's row shows it.
+        if !root.tls && root.errors.eap-certs != "": Error { text: root.errors.eap-certs; }
         if !root.eap.system-ca && root.eap.ca-cert == "": Hint { text: "Without a CA certificate, any server is believed. Choose one, or the system's."; color: Theme.warn-text; }
     }
     FormRow {
