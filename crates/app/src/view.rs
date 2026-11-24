@@ -1703,6 +1703,9 @@ pub fn intent(snap: &Snapshot, selected: &str, action: &str) -> Option<Intent> {
             .find(|n| network_id(n) == format!("wifi:{id}"))?;
         let saved = network.saved.as_deref().and_then(|uuid| snap.connections.iter().find(|c| c.uuid == uuid));
         return match action {
+            // Enter on the connected network: activating it again would drop the connection
+            // and bring it back up.
+            "connect" if network.active => None,
             "connect" => Some(match saved {
                 Some(c) => Intent::Run(Command::Activate {
                     connection: c.path.clone(),
@@ -1740,6 +1743,13 @@ pub fn intent(snap: &Snapshot, selected: &str, action: &str) -> Option<Intent> {
         let c = snap.connections.iter().find(|c| c.uuid == uuid)?;
         let active = active_uuid_state(snap, uuid);
         return match action {
+            // Already on or coming on: activating it again would restart it (a VPN's sign-in
+            // too).
+            "connect"
+                if active.is_some_and(|a| matches!(a.state, ActiveState::Activated | ActiveState::Activating)) =>
+            {
+                None
+            }
             "connect" => {
                 // A wired profile goes on its own (or the first) Ethernet port; NetworkManager
                 // picks the device for VPNs.
@@ -2437,6 +2447,41 @@ pub(crate) mod tests {
         assert_eq!((cafe.name.as_str(), cafe.key_mgmt), ("Aster Café", KeyMgmt::WpaPsk));
         assert_eq!(wifi_switch(&snap), Command::SetWifi(false));
         assert_eq!(rescan(&snap), Some(Command::Rescan { device: "/d/wlan".into() }));
+    }
+
+    /// Enter on the connected network, which the bar doesn't offer, does nothing.
+    #[test]
+    fn enter_on_the_connected_network_leaves_it_alone() {
+        let snap = home();
+        let view = build(Some(&snap), None, &UiState::default());
+        let selected = view.selected.clone().unwrap();
+        assert_eq!(selected, view.row_ids[0]); // "Lumen Home", connected, selected on opening
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        assert_eq!(intent(&snap, &selected, "connect"), None);
+    }
+
+    /// The same for a connected VPN (a `conn:` row).
+    #[test]
+    fn enter_on_a_connected_vpn_leaves_it_alone() {
+        let mut snap = home();
+        let mut vpn = saved("u-wg", "Office", ConnectionKind::WireGuard, "wg0", None);
+        vpn.interface = None;
+        snap.connections.push(vpn);
+        snap.active.push(ActiveConnection {
+            path: "/a/wg".into(),
+            id: "Office".into(),
+            uuid: "u-wg".into(),
+            state: ActiveState::Activated,
+            devices: vec![],
+            connection: Some("/c/u-wg".into()),
+            specific_object: None,
+            vpn: false,
+        });
+        let state = UiState { page: Page::Vpn, selected: Some("conn:u-wg".into()), ..UiState::default() };
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(view.selected.as_deref(), Some("conn:u-wg"));
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        assert_eq!(intent(&snap, "conn:u-wg", "connect"), None);
     }
 
     #[test]
