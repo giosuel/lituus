@@ -23,6 +23,9 @@ pub struct Extras {
     pub wg_key: Option<String>,
     /// A note at the top: what an import did.
     pub banner: String,
+    /// The UUID of an import whose certificates were saved already: they're deleted if the
+    /// connection isn't.
+    pub import: Option<String>,
 }
 
 /// Settings in a [`Command`]: compared by identity, since only the editor makes them.
@@ -69,6 +72,8 @@ pub struct EditorState {
     routes_open: Option<bool>,
     /// A DNS server that couldn't be added, by family (v4, v6).
     dns_error: (String, String),
+    /// The DNS servers being typed, by family: not in the form until Enter, but Apply takes them.
+    typed_dns: (String, String),
     pub busy: bool,
     /// Shown instead of "No changes" until the next edit ("Saved.").
     pub note: Option<(String, &'static str)>,
@@ -76,9 +81,16 @@ pub struct EditorState {
     pub failure: Option<String>,
     /// The form goes to the window on the next render.
     reset: bool,
+    /// Just opened (or saved): the window's DNS fields still have the last editor's text.
+    fresh: bool,
     wg_key: Option<String>,
     wg_shown: bool,
     banner: String,
+    /// See [`Extras::import`].
+    import: Option<String>,
+    /// A save went out from this editor: an import's files may belong to a connection now, even
+    /// when no answer came back (closed while saving) or one came back failed after the add.
+    sent: bool,
 }
 
 impl EditorState {
@@ -188,13 +200,17 @@ impl EditorState {
             routes_backup: None,
             routes_open: None,
             dns_error: Default::default(),
+            typed_dns: Default::default(),
             busy: false,
             note: None,
             failure: None,
             reset: true,
+            fresh: true,
             wg_key: None,
             wg_shown: false,
             banner: String::new(),
+            import: None,
+            sent: false,
         }
     }
 
@@ -274,9 +290,10 @@ impl EditorState {
         }
     }
 
-    /// Switching to Manual with no addresses starts from what the device has now (or an empty
-    /// row to fill in).
-    fn start_manual(&mut self, ip4_before: usize, ip6_before: usize) {
+    /// The method changed. Switching to Manual with no addresses starts from what the device has
+    /// now (or an empty row to fill in); leaving Manual drops the rows still empty, which only it
+    /// asked for, and which would block saving.
+    fn follow_method(&mut self, ip4_before: usize, ip6_before: usize) {
         let ip4 = &mut self.form.ip4;
         if ip4_before != 1 && ip4.method == 1 && ip4.addresses.is_empty() {
             match &self.current_ip4 {
@@ -302,6 +319,12 @@ impl EditorState {
             ip6.addresses.push(Address { address: String::new(), prefix: "64".into() });
             self.reset = true;
         }
+        for (ip, before, manual) in [(&mut self.form.ip4, ip4_before, 1), (&mut self.form.ip6, ip6_before, 2)] {
+            if before == manual && ip.method != manual && ip.addresses.iter().any(|a| a.address.is_empty()) {
+                ip.addresses.retain(|a| !a.address.is_empty());
+                self.reset = true;
+            }
+        }
     }
 
     pub fn errors(&self) -> editor::Errors {
@@ -316,7 +339,7 @@ impl EditorState {
     }
 
     pub fn dirty(&self) -> bool {
-        self.initial.as_ref().is_none_or(|i| *i != self.form)
+        self.initial.as_ref().is_none_or(|i| *i != self.form) || self.typed_dns != Default::default()
     }
 
     fn name(&self) -> String {
@@ -758,7 +781,8 @@ pub fn render(window: &MainWindow, app: &mut App) {
     let errors = state.errors();
     if std::mem::take(&mut state.reset) {
         let form = window.get_editor_form();
-        window.set_editor_form(to_ui(state, (form.ip4.dns_input, form.ip6.dns_input)));
+        let inputs = dns_inputs(state, (form.ip4.dns_input, form.ip6.dns_input));
+        window.set_editor_form(to_ui(state, inputs));
         window.set_editor_tab(state.tab.id().into());
         window.set_editor_options(EditorOptions {
             zones: strings(state.zones.iter().map(|z| if z.is_empty() { "Default".to_owned() } else { z.clone() })),
@@ -780,6 +804,8 @@ pub fn render(window: &MainWindow, app: &mut App) {
             phase2: strings(editor::PHASE2.iter().map(|(_, l)| *l)),
             wg_public_key: "".into(),
             wg_shown_key: "".into(),
+            password_saved: false,
+            eap_password_saved: false,
             ovpn_auth: strings(crate::openvpn::AUTH.iter().map(|(_, l)| *l)),
             ovpn_tls_modes: strings(crate::openvpn::TLS_KEY_MODES.iter().map(|(_, l)| *l)),
             ovpn_compression: strings(crate::openvpn::COMPRESSION.iter().map(|(_, l)| *l)),
@@ -802,6 +828,9 @@ pub fn render(window: &MainWindow, app: &mut App) {
     let public = typed.or_else(|| state.wg_key.as_deref().and_then(crate::wireguard::public_key)).unwrap_or_default();
     options.wg_public_key = public.into();
     options.wg_shown_key = if state.wg_shown { state.wg_key.clone().unwrap_or_default().into() } else { "".into() };
+    // "Saved; type to change it" only when it is.
+    options.password_saved = editor::saved_password(state.initial.as_ref(), &state.form);
+    options.eap_password_saved = editor::saved_eap_password(state.kind, state.initial.as_ref(), &state.form);
     // The ports, and the devices the add-port dialog offers.
     let v = &state.form.virt;
     options.ports = model(
@@ -913,11 +942,24 @@ pub fn render(window: &MainWindow, app: &mut App) {
     window.set_editor_footer_tone(tone.into());
 }
 
+/// What the DNS fields show when the form goes to the window: the text being typed, which isn't
+/// part of the form, except in an editor that just opened. Its fields start empty, or a server
+/// half-typed for one connection would be saved with the next.
+fn dns_inputs(state: &mut EditorState, typed: (SharedString, SharedString)) -> (SharedString, SharedString) {
+    if std::mem::take(&mut state.fresh) { Default::default() } else { typed }
+}
+
 /// The form as the window has it now.
 fn read_form(window: &MainWindow, app: &mut App) {
     let ui = window.get_editor_form();
     if let Some(state) = app.editor.as_mut() {
         state.form = from_ui(state, &ui);
+        // A family that's off hides its DNS field, and isn't saved: what's left in it isn't a change.
+        let off = (editor::is_off(&state.form.ip4, false), editor::is_off(&state.form.ip6, true));
+        state.typed_dns = (
+            if off.0 { String::new() } else { ui.ip4.dns_input.trim().to_owned() },
+            if off.1 { String::new() } else { ui.ip6.dns_input.trim().to_owned() },
+        );
         if let Some(tab) = state.kind.tabs().iter().find(|t| t.id() == window.get_editor_tab().as_str()) {
             state.tab = *tab;
         }
@@ -939,7 +981,7 @@ pub fn connect(window: &MainWindow) {
                 state.note = None;
                 state.failure = None;
                 state.dns_error = Default::default();
-                state.start_manual(before.ip4.method, before.ip6.method);
+                state.follow_method(before.ip4.method, before.ip6.method);
                 // A VLAN's interface is named after its parent and ID until it's given a name.
                 let (b, v) = (&before.virt, &mut state.form.virt);
                 if state.kind == Kind::Vlan
@@ -970,6 +1012,9 @@ pub fn connect(window: &MainWindow) {
             {
                 state.form = initial;
                 state.dns_error = Default::default();
+                // What's being typed goes too.
+                state.typed_dns = Default::default();
+                state.fresh = true;
                 state.reset = true;
             }
         })
@@ -1058,6 +1103,11 @@ pub fn connect(window: &MainWindow) {
                     list.push(input);
                 }
                 state.dns_error = Default::default();
+                if v6 {
+                    state.typed_dns.1.clear()
+                } else {
+                    state.typed_dns.0.clear()
+                }
                 let mut form = to_ui(state, ("".into(), "".into()));
                 // Keep the other family's half-typed server.
                 if v6 {
@@ -1160,7 +1210,11 @@ pub fn connect(window: &MainWindow) {
         update(&weak, |app| {
             read_form(&window, app);
             if let Some(state) = app.editor.as_mut() {
-                take_typed(&mut state.form, &ui);
+                let errors = take_typed(&mut state.form, &ui);
+                if errors != Default::default() {
+                    state.dns_error = errors;
+                    return;
+                }
             }
             apply(app);
         });
@@ -1179,11 +1233,21 @@ fn allowed_range(input: &str) -> String {
 }
 
 /// A DNS server or an allowed range still in its field when Apply is pressed counts, as Enter or
-/// leaving the field would have added it (a click on Apply leaves the focus where it is).
-fn take_typed(form: &mut Form, ui: &EditorForm) {
+/// leaving the field would have added it (a click on Apply leaves the focus where it is). A
+/// server that isn't an address gives its error (v4, v6), rather than being dropped unsaid.
+fn take_typed(form: &mut Form, ui: &EditorForm) -> (String, String) {
+    let mut errors = (String::new(), String::new());
     for (v6, input) in [(false, ui.ip4.dns_input.trim()), (true, ui.ip6.dns_input.trim())] {
+        // A family that's off hides its fields and isn't saved (`editor::write`): text left in
+        // its DNS field doesn't count, and has no field to show an error under.
+        if input.is_empty() || editor::is_off(if v6 { &form.ip6 } else { &form.ip4 }, v6) {
+            continue;
+        }
         let list = if v6 { &mut form.ip6.dns } else { &mut form.ip4.dns };
-        if input.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_ipv6() == v6) && !list.iter().any(|d| d == input) {
+        if !input.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_ipv6() == v6) {
+            let error = format!("{input} isn't an {} address.", if v6 { "IPv6" } else { "IPv4" });
+            if v6 { errors.1 = error } else { errors.0 = error }
+        } else if !list.iter().any(|d| d == input) {
             list.push(input.to_owned());
         }
     }
@@ -1193,6 +1257,7 @@ fn take_typed(form: &mut Form, ui: &EditorForm) {
             peer.allowed_ips.push(allowed_range(input));
         }
     }
+    errors
 }
 
 /// Adds or removes a row (an address, a route, a DNS server) and shows the form again.
@@ -1210,7 +1275,21 @@ fn edit_rows(weak: &slint::Weak<MainWindow>, change: impl FnOnce(&mut EditorStat
 }
 
 fn close(app: &mut App) {
-    app.editor = None;
+    discard(app.editor.take());
+}
+
+/// An editor closed or replaced: an import that was never saved leaves no certificates behind.
+fn discard(state: Option<EditorState>) {
+    if let Some(uuid) = state.as_ref().and_then(unsaved_import) {
+        crate::openvpn::remove_files(&crate::home(), uuid);
+    }
+}
+
+/// The import whose files go with its editor: one never saved, and never sent to be saved. A
+/// save still on its way, or one that failed after the add, may have made a connection that
+/// uses them; at worst, a failed save leaves its few files behind.
+fn unsaved_import(state: &EditorState) -> Option<&str> {
+    state.import.as_deref().filter(|_| state.path.is_none() && !state.sent)
 }
 
 fn apply(app: &mut App) {
@@ -1240,6 +1319,7 @@ fn apply(app: &mut App) {
         (state.uuid.clone(), if form.security == 2 { "wep-key0" } else { "psk" }, state.name(), form.password.clone())
     });
     state.busy = true;
+    state.sent = true;
     let command = Command::SaveConnection {
         path: state.path.clone(),
         settings: Shared(Arc::new(settings)),
@@ -1307,7 +1387,8 @@ pub fn open(
     let mut state = EditorState::new(path, settings, zones, app.snapshot.as_ref(), new);
     state.wg_key = extras.wg_key;
     state.banner = extras.banner;
-    app.editor = Some(state);
+    state.import = extras.import;
+    discard(app.editor.replace(state));
 }
 
 /// A file was chosen for one of the editor's path fields ("eap.ca-cert", "ovpn.key", …).
@@ -1384,6 +1465,88 @@ mod tests {
         assert_eq!(from_ui(&state, &ui).oc, state.form.oc);
     }
 
+    /// An imported WireGuard file opens with its own private key: no "Generate" that would make
+    /// a key the server doesn't know.
+    #[test]
+    fn an_imported_conf_keeps_its_private_key() {
+        let text = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.2/24\n\n\
+            [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nAllowedIPs = 0.0.0.0/0\n\
+            Endpoint = vpn.example.com:51820\n";
+        let conf = crate::wireguard::parse(text).unwrap();
+        let settings = crate::wireguard::settings(&conf, "office", "6c1f0b5e-0000-4000-8000-000000000001", None);
+        let state = EditorState::new(None, settings, Vec::new(), None, None);
+        assert_eq!(state.form.wg.private_key, conf.private_key);
+        assert_eq!(state.errors().total(state.kind), 0);
+    }
+
+    /// Manual adds an empty address row to fill in; going back to Automatic takes it away again,
+    /// rather than leave a row the user never added blocking the save.
+    #[test]
+    fn leaving_manual_drops_the_row_it_added() {
+        let mut state = EditorState::new(None, Settings::new(), Vec::new(), None, Some(Kind::Ethernet));
+        state.form.ip4.method = 1;
+        state.follow_method(0, 0);
+        assert_eq!(state.form.ip4.addresses.len(), 1);
+        state.form.ip4.method = 0;
+        state.follow_method(1, 0);
+        assert!(state.form.ip4.addresses.is_empty());
+        assert_eq!(state.errors().total(state.kind), 0);
+    }
+
+    /// A server left in its field that isn't an address stops Apply with its error, rather than
+    /// being dropped while the footer says "Saved."; one that is makes Apply possible.
+    #[test]
+    fn a_half_typed_server_counts() {
+        let settings = editor::new_settings(Kind::Ethernet, "u-1");
+        let mut state = EditorState::new(Some("/c/1".into()), settings, Vec::new(), None, None);
+        assert!(!state.dirty());
+        state.typed_dns = ("8.8.4.4".into(), String::new());
+        assert!(state.dirty(), "Apply takes a server still being typed");
+        let ui = to_ui(&state, ("1.2.39.9.9.9".into(), "".into()));
+        let mut form = state.form.clone();
+        assert_eq!(take_typed(&mut form, &ui).0, "1.2.39.9.9.9 isn't an IPv4 address.");
+        assert!(form.ip4.dns.is_empty());
+    }
+
+    /// Text left in the DNS field of a family that's off (Disabled, or IPv6's Ignore) is hidden
+    /// with it: it neither stops Apply with an error nobody can see nor counts as a change.
+    #[test]
+    fn a_dns_field_hidden_with_its_family_doesnt_count() {
+        let settings = editor::new_settings(Kind::Ethernet, "u-1");
+        let mut state = EditorState::new(Some("/c/1".into()), settings, Vec::new(), None, None);
+        state.form.ip4.method = 4;
+        state.form.ip6.method = 4;
+        let ui = to_ui(&state, ("1.2.3".into(), "fd00::".into()));
+        let mut form = state.form.clone();
+        assert_eq!(take_typed(&mut form, &ui), Default::default());
+        assert!(form.ip4.dns.is_empty() && form.ip6.dns.is_empty());
+    }
+
+    /// An import's certificates go with its editor only if no save was ever sent: a save on its
+    /// way (the editor closed meanwhile) may have made the connection that uses them.
+    #[test]
+    fn an_import_sent_to_be_saved_keeps_its_files() {
+        let snap = home();
+        let mut state = EditorState::new(None, Settings::new(), Vec::new(), Some(&snap), Some(Kind::Ethernet));
+        state.import = Some("0b5e9c3a-1111-4222-8333-944455556666".into());
+        assert_eq!(unsaved_import(&state), Some("0b5e9c3a-1111-4222-8333-944455556666"));
+        state.sent = true;
+        assert_eq!(unsaved_import(&state), None, "a save went out");
+        state.sent = false;
+        state.path = Some("/c/9".into());
+        assert_eq!(unsaved_import(&state), None, "saved");
+    }
+
+    /// A server typed in one editor isn't in the next one's field, nor saved with it.
+    #[test]
+    fn a_new_editor_starts_with_empty_dns_fields() {
+        let snap = home();
+        let mut state = EditorState::new(None, Settings::new(), Vec::new(), Some(&snap), Some(Kind::Ethernet));
+        let typed = || (SharedString::from("1.0.0.1"), SharedString::from("2606:4700::1111"));
+        assert_eq!(dns_inputs(&mut state, typed()), Default::default());
+        assert_eq!(dns_inputs(&mut state, typed()), typed(), "in the same editor, typing goes on");
+    }
+
     /// A DNS server still in its field when Apply is pressed is added, as Enter would; one of the
     /// other family, or no address at all, isn't.
     #[test]
@@ -1392,7 +1555,7 @@ mod tests {
         let state = EditorState::new(None, Settings::new(), Vec::new(), Some(&snap), Some(Kind::Wifi));
         let ui = to_ui(&state, (" 9.9.9.9 ".into(), "9.9.9.9".into()));
         let mut form = state.form.clone();
-        take_typed(&mut form, &ui);
+        assert_eq!(take_typed(&mut form, &ui), (String::new(), "9.9.9.9 isn't an IPv6 address.".into()));
         assert_eq!(form.ip4.dns, ["9.9.9.9"]);
         assert!(form.ip6.dns.is_empty());
         take_typed(&mut form, &ui);

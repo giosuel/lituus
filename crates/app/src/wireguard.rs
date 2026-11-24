@@ -313,12 +313,17 @@ pub fn preshared_keys(secrets: &Settings) -> HashMap<String, String> {
         .collect()
 }
 
-/// Puts the saved pre-shared keys back into edited peers, which the editor writes without them.
+/// Puts the saved pre-shared keys back into the peers of an update that carries a new private
+/// key. NetworkManager keeps the secrets it has only when an update carries none: one with any
+/// secret replaces them all, so a new private key alone would drop the pre-shared keys. An update
+/// without a new private key is left without secrets, and keeps every saved one (NetworkManager
+/// puts the pre-shared keys back by public key itself); putting them in there would drop the
+/// private key instead.
 pub fn keep_preshared_keys(settings: &mut Settings, secrets: &Settings) {
     let keys = preshared_keys(secrets);
     let Some(wg) = settings.get_mut("wireguard") else { return };
     let peers = dicts(wg.get("peers"));
-    if keys.is_empty() || peers.is_empty() {
+    if keys.is_empty() || peers.is_empty() || !wg.contains_key("private-key") {
         return;
     }
     let peers: Vec<HashMap<String, Value<'static>>> = peers
@@ -454,6 +459,7 @@ PersistentKeepalive = 25
         assert_eq!(back.addresses, conf.addresses);
     }
 
+    /// A new private key goes with the saved pre-shared keys, or NetworkManager drops them.
     #[test]
     fn edited_peers_keep_their_preshared_keys() {
         let conf = parse(FILE).unwrap();
@@ -463,10 +469,36 @@ PersistentKeepalive = 25
         let bare: Vec<Peer> =
             conf.peers.iter().map(|p| Peer { preshared_key: String::new(), keepalive: 10, ..p.clone() }).collect();
         let mut s: Settings = HashMap::new();
+        put(&mut s, "wireguard", "private-key", Value::from(generate()));
         put(&mut s, "wireguard", "peers", peers_value(&bare));
         keep_preshared_keys(&mut s, &secrets);
         let mut secrets_after: Settings = HashMap::new();
         secrets_after.insert("wireguard".into(), s["wireguard"].clone());
         assert_eq!(preshared_keys(&secrets_after)[&conf.peers[0].public_key], conf.peers[0].preshared_key);
+    }
+
+    /// Any other edit carries no secret at all, so NetworkManager keeps them all; with only the
+    /// pre-shared keys in it, the private key would be dropped.
+    #[test]
+    fn a_saved_edit_never_carries_only_some_of_the_secrets() {
+        let conf = parse(FILE).unwrap();
+        // What GetSettings gives for the saved connection: no secrets.
+        let mut s = settings(&conf, "wg-home", "u-1", None);
+        s.get_mut("wireguard").unwrap().remove("private-key");
+        let bare: Vec<Peer> = conf.peers.iter().map(|p| Peer { preshared_key: String::new(), ..p.clone() }).collect();
+        put(&mut s, "wireguard", "peers", peers_value(&bare));
+        // What GetSecrets("wireguard") gives.
+        let mut secrets: Settings = HashMap::new();
+        put(&mut secrets, "wireguard", "private-key", Value::from(KEY));
+        put(&mut secrets, "wireguard", "peers", peers_value(&conf.peers));
+        // An edit that typed no new private key.
+        keep_preshared_keys(&mut s, &secrets);
+        let mut sent: Settings = HashMap::new();
+        sent.insert("wireguard".into(), s["wireguard"].clone());
+        assert_eq!(
+            !preshared_keys(&sent).is_empty(),
+            s["wireguard"].contains_key("private-key"),
+            "Update2 with a pre-shared key but no private key: NetworkManager keeps only the secrets it is sent"
+        );
     }
 }

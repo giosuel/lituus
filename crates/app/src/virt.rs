@@ -231,6 +231,10 @@ pub fn candidates(snap: &Snapshot, kind: crate::editor::Kind, own: &str, form: &
             });
             let blocked = if d.kind == DeviceKind::Wifi {
                 "Wi-Fi can't be a port: most access points drop frames from other devices.".into()
+            } else if d.kind != DeviceKind::Ethernet {
+                // A port is added as an Ethernet profile, which NetworkManager can't bring up on a
+                // bond or VLAN: they join a bridge from their own connection's settings.
+                "Only Ethernet devices can be added here.".into()
             } else if let Some(other) = other_controller {
                 format!("Already a port of {other}")
             } else {
@@ -379,13 +383,17 @@ pub fn check(kind: crate::editor::Kind, f: &VirtForm) -> (String, String, String
             }
         }
         Kind::Bridge => {
-            let ok = range(&f.stp_priority, 0, 65535)
-                && range(&f.forward_delay, 2, 30)
-                && range(&f.hello_time, 1, 10)
-                && range(&f.max_age, 6, 40)
-                && range(&f.ageing_time, 0, 1_000_000);
-            if !ok {
+            // The STP timers count only with STP on, as in NetworkManager (nm-setting-bridge.c),
+            // and only then are they shown: libvirt's bridges have forward delay 0 and STP off.
+            let timers = !f.stp
+                || (range(&f.stp_priority, 0, 65535)
+                    && range(&f.forward_delay, 2, 30)
+                    && range(&f.hello_time, 1, 10)
+                    && range(&f.max_age, 6, 40));
+            if !timers {
                 e.1 = "Priority 0 to 65535; forward delay 2 to 30 s; hello time 1 to 10 s; max age 6 to 40 s.".into();
+            } else if !range(&f.ageing_time, 0, 1_000_000) {
+                e.1 = "The MAC ageing time is from 0 to 1000000 seconds.".into();
             }
         }
         Kind::Bond => {
@@ -527,6 +535,37 @@ mod tests {
         assert_eq!(number(&s, "bridge", "forward-delay"), Some(15));
         assert_eq!(number(&s, "bridge", "priority"), None);
         assert!(!check(Kind::Bridge, &VirtForm { hello_time: "11".into(), ..b }).1.is_empty());
+    }
+
+    /// A bridge lists a bond and a VLAN, but they can't be added: a port is an Ethernet profile.
+    #[test]
+    fn a_bridge_adds_only_ethernet_ports() {
+        let mut snap = crate::view::tests::home();
+        let wired = snap.devices.iter().find(|d| d.kind == DeviceKind::Ethernet).unwrap().clone();
+        for (interface, kind) in [("bond0", DeviceKind::Bond), ("enp3s0.20", DeviceKind::Vlan)] {
+            snap.devices.push(lituus_nm::Device {
+                path: format!("/d/{interface}"),
+                interface: interface.into(),
+                kind,
+                active_connection: None,
+                ..wired.clone()
+            });
+        }
+        let bridge = VirtForm { interface: "br0".into(), ..VirtForm::default() };
+        let blocked: Vec<(String, bool)> = candidates(&snap, Kind::Bridge, "u-br0", &bridge)
+            .into_iter()
+            .filter(|c| c.icon != "wifi")
+            .map(|c| (c.interface, !c.blocked.is_empty()))
+            .collect();
+        assert_eq!(blocked, [(wired.interface.clone(), false), ("bond0".into(), true), ("enp3s0.20".into(), true)]);
+    }
+
+    #[test]
+    fn stp_timers_are_not_checked_with_stp_off() {
+        let f = VirtForm { interface: "br0".into(), stp: false, forward_delay: "0".into(), ..VirtForm::default() };
+        assert_eq!(check(Kind::Bridge, &f).1, "", "hidden timers must not block saving");
+        assert!(!check(Kind::Bridge, &VirtForm { stp: true, ..f.clone() }).1.is_empty());
+        assert!(!check(Kind::Bridge, &VirtForm { ageing_time: "x".into(), ..f }).1.is_empty());
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! so that a request waiting for the user doesn't hold up `CancelGetSecrets` and the others.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
@@ -79,7 +80,7 @@ impl AgentConnection {
 
     /// The flags of a secret (its `<key>-flags`); for VPN secrets they're in `vpn.data`.
     pub fn secret_flags(&self, setting: &str, key: &str) -> u32 {
-        let flags = format!("{key}-flags");
+        let flags = flags_key(key);
         let group = self.settings.get(setting);
         if setting == "vpn" {
             let data =
@@ -104,15 +105,22 @@ impl AgentConnection {
             }
             for (key, value) in values {
                 let Ok(value) = <&str>::try_from(&**value) else { continue };
-                if values.contains_key(&format!("{key}-flags"))
-                    && self.secret_flags(setting, key) & secret::AGENT_OWNED != 0
-                {
+                if values.contains_key(&flags_key(key)) && self.secret_flags(setting, key) & secret::AGENT_OWNED != 0 {
                     found.push((setting.clone(), key.clone(), value.to_owned()));
                 }
             }
         }
         found.sort();
         found
+    }
+}
+
+/// Where a secret's flags are: `<key>-flags`, except that WEP's four keys share `wep-key-flags`.
+fn flags_key(key: &str) -> String {
+    if matches!(key, "wep-key0" | "wep-key1" | "wep-key2" | "wep-key3") {
+        "wep-key-flags".into()
+    } else {
+        format!("{key}-flags")
     }
 }
 
@@ -204,7 +212,6 @@ impl crate::Client {
     pub async fn register_agent(&self, identifier: &str) -> Result<mpsc::UnboundedReceiver<AgentEvent>, Error> {
         let conn = self.connection().clone();
         let (events, receiver) = mpsc::unbounded_channel();
-        let calls = MessageStream::from(&conn);
         let owner_rule = MatchRule::builder()
             .msg_type(MessageType::Signal)
             .sender("org.freedesktop.DBus")?
@@ -213,23 +220,31 @@ impl crate::Client {
             .arg(0, BUS_NAME)?
             .build();
         let mut owners = MessageStream::for_match_rule(owner_rule, &conn, Some(16)).await?;
+        // NetworkManager's unique name, the only caller the agent answers: read once, before the
+        // stream of calls exists, and then kept current from `owners` (see `serve`).
+        let dbus = DBusProxy::new(&conn).await?;
+        let owner = dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await.ok();
+        let owner = Arc::new(Mutex::new(owner.map(|o| o.to_string())));
+        // Read from now on, so no call is missed; and drained from now on, so the registration's
+        // own reply can't get stuck behind it.
+        tokio::spawn(serve(conn.clone(), MessageStream::from(&conn), events.clone(), owner.clone()));
         register(&conn, identifier).await?;
 
         let identifier = identifier.to_owned();
-        let (c, e) = (conn.clone(), events.clone());
+        let (c, e) = (conn, events);
         tokio::spawn(async move {
             // NetworkManager forgets its agents when it stops.
             while let Some(Ok(message)) = owners.next().await {
                 if e.is_closed() {
                     break;
                 }
-                let new_owner = message.body().deserialize::<(String, String, String)>().map(|(_, _, n)| n);
-                if new_owner.is_ok_and(|n| !n.is_empty()) {
+                let Ok((_, _, new_owner)) = message.body().deserialize::<(String, String, String)>() else { continue };
+                *owner.lock().expect("never poisoned") = Some(new_owner.clone()).filter(|n| !n.is_empty());
+                if !new_owner.is_empty() {
                     let _ = register(&c, &identifier).await;
                 }
             }
         });
-        tokio::spawn(serve(conn, calls, events));
         Ok(receiver)
     }
 }
@@ -273,8 +288,17 @@ const INTROSPECTION: &str = r#"<node>
   </interface>
 </node>"#;
 
-async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::UnboundedSender<AgentEvent>) {
-    let dbus = DBusProxy::new(&conn).await.ok();
+/// Answers the calls to the agent. It reads the connection's unfiltered stream, which gets every
+/// message (replies and signals too) and holds 64: while it's full, zbus reads nothing more off
+/// the connection. So this loop never waits for the reply to a call of its own, which could be
+/// stuck behind those 64 (a snapshot's answers, a burst of signals) with nothing left to drain
+/// them: the whole Network page would hang. It only sends replies, and hands the rest to tasks.
+async fn serve(
+    conn: Connection,
+    mut calls: MessageStream,
+    events: mpsc::UnboundedSender<AgentEvent>,
+    owner: Arc<Mutex<Option<String>>>,
+) {
     while let Some(Ok(message)) = calls.next().await {
         if events.is_closed() {
             break;
@@ -294,13 +318,8 @@ async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::Unbound
         let (conn, events) = (conn.clone(), events.clone());
         // Only NetworkManager may ask: anyone else could show a password dialog of their own
         // making, or read the keyring through the agent.
-        let from_nm = match &dbus {
-            Some(dbus) => match dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await {
-                Ok(owner) => header.sender().is_some_and(|s| s.as_str() == owner.as_str()),
-                Err(_) => false,
-            },
-            None => false,
-        };
+        let from_nm =
+            header.sender().is_some_and(|s| owner.lock().expect("never poisoned").as_deref() == Some(s.as_str()));
         tokio::spawn(async move {
             let header = message.header();
             if !from_nm {
@@ -403,6 +422,19 @@ mod tests {
         assert_eq!(c.ssid, "Aster Café".as_bytes());
         assert_eq!(c.string("802-11-wireless-security", "key-mgmt"), Some("wpa-psk"));
         assert_eq!(c.agent_owned(), vec![("802-11-wireless-security".into(), "psk".into(), "secret!".into())]);
+    }
+
+    /// A new WEP key from the password dialog goes to the keyring like a WPA one: its flags are
+    /// WEP's shared `wep-key-flags`.
+    #[test]
+    fn wep_keys_share_one_flags_key() {
+        let s = settings(&[(
+            "802-11-wireless-security",
+            &[("key-mgmt", "none".into()), ("wep-key0", "abcde".into()), ("wep-key-flags", 1u32.into())],
+        )]);
+        let c = AgentConnection::new(s, "/c/3".into());
+        assert_eq!(c.secret_flags("802-11-wireless-security", "wep-key0"), 1);
+        assert_eq!(c.agent_owned(), vec![("802-11-wireless-security".into(), "wep-key0".into(), "abcde".into())]);
     }
 
     #[test]

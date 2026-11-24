@@ -38,7 +38,8 @@ pub fn settings(ssid: &str, password: &str, band: usize, uuid: &str, owner: Opti
     s
 }
 
-/// Writes the name, password and band into a hotspot's settings.
+/// Writes the name, password and band into a hotspot's settings. An empty password leaves the
+/// saved one: the update then carries no secret, and NetworkManager keeps it.
 pub fn apply(s: &mut Settings, ssid: &str, password: &str, band: usize) {
     put(s, "802-11-wireless", "ssid", Value::from(ssid.as_bytes().to_vec()));
     match BANDS[band.min(2)] {
@@ -50,24 +51,34 @@ pub fn apply(s: &mut Settings, ssid: &str, password: &str, band: usize) {
         }
         band => put(s, "802-11-wireless", "band", Value::from(band)),
     }
-    put(s, "802-11-wireless-security", "psk", Value::from(password));
+    if !password.is_empty() {
+        put(s, "802-11-wireless-security", "psk", Value::from(password));
+    }
 }
 
-const WORDS: [&str; 48] = [
-    "amber", "birch", "brook", "cedar", "cloud", "coral", "delta", "ember", "fern", "frost", "glade", "harbor",
-    "hazel", "heron", "iris", "juniper", "kelp", "lark", "linden", "lotus", "maple", "meadow", "mist", "moss",
-    "nectar", "oak", "orchid", "pebble", "pine", "plume", "quartz", "rain", "reed", "ridge", "river", "sage", "shore",
-    "slate", "spruce", "stone", "tidal", "thistle", "tulip", "violet", "willow", "wren", "yarrow", "zephyr",
-];
+/// Whether the hotspot's (name, password) are wrong: a name of 1 to 32 bytes, and a WPA2
+/// password of 8 to 63 characters, or none to keep a saved hotspot's own.
+pub fn invalid(ssid: &str, password: &str, saved: bool) -> (bool, bool) {
+    let ssid = ssid.trim();
+    let password = if password.is_empty() { !saved } else { !(8..=63).contains(&password.chars().count()) };
+    (ssid.is_empty() || ssid.len() > 32, password)
+}
 
-/// A password that's easy to read out: two words and a number, such as "tidal-maple-41".
-pub fn new_password() -> String {
-    let mut bytes = [0u8; 3];
-    if let Ok(mut random) = std::fs::File::open("/dev/urandom") {
-        let _ = std::io::Read::read_exact(&mut random, &mut bytes);
-    }
-    let word = |b: u8| WORDS[b as usize % WORDS.len()];
-    format!("{}-{}-{}", word(bytes[0]), word(bytes[1]), 10 + bytes[2] % 90)
+/// What a suggested password is made of: lower case letters and digits, without the 0, 1, l and
+/// o that are easy to mix up. 32 of them, so each random byte picks one evenly.
+const ALPHABET: &[u8; 32] = b"23456789abcdefghijkmnpqrstuvwxyz";
+/// 12 of them: 60 bits. WPA2 is cracked offline from one captured handshake, and the scheme is
+/// public, so that's what an attacker has to try (two words and a number had 18 bits: seconds).
+const LENGTH: usize = 12;
+
+/// A password that's easy to type on a phone: twelve letters and digits in groups of four, such
+/// as "k7mq-x2hd-9fwa". `None` when there are no random numbers to make one from.
+pub fn new_password() -> Option<String> {
+    let mut bytes = [0u8; LENGTH];
+    let mut random = std::fs::File::open("/dev/urandom").ok()?;
+    std::io::Read::read_exact(&mut random, &mut bytes).ok()?;
+    let chars: Vec<char> = bytes.iter().map(|b| char::from(ALPHABET[usize::from(b % 32)])).collect();
+    Some(chars.chunks(4).map(|group| group.iter().collect::<String>()).collect::<Vec<_>>().join("-"))
 }
 
 /// A device on the hotspot, from dnsmasq's lease file.
@@ -114,9 +125,34 @@ mod tests {
         assert_eq!(<&str>::try_from(&*s["802-11-wireless-security"]["psk"]).unwrap(), "tidal-maple-41");
     }
 
+    /// Count what an attacker has to try.
+    #[test]
+    fn the_suggested_password_is_not_guessable() {
+        let bits = (ALPHABET.len() as f64).log2() * LENGTH as f64;
+        assert!(bits >= 60.0, "{bits:.1} bits: a captured WPA2 handshake is cracked offline");
+        assert_eq!(256 % ALPHABET.len(), 0, "each letter as likely as the others");
+        let p = new_password().unwrap();
+        assert!(p.split('-').all(|g| g.len() == 4 && g.bytes().all(|b| ALPHABET.contains(&b))), "{p}");
+        assert_ne!(p, new_password().unwrap());
+    }
+
+    #[test]
+    fn names_and_passwords_are_checked() {
+        assert_eq!(invalid("thinkpad-x1", "k7mq-x2hd-9fwa", false), (false, false));
+        assert_eq!(invalid(" ", "abc", true), (true, true));
+        assert_eq!(invalid(&"x".repeat(33), &"y".repeat(64), true), (true, true));
+        // A saved hotspot whose password couldn't be read starts with the one it has.
+        assert_eq!(invalid("thinkpad-x1", "", true), (false, false));
+        assert_eq!(invalid("thinkpad-x1", "", false), (false, true));
+        let mut s = settings("thinkpad-x1", "k7mq-x2hd-9fwa", 0, "u-1", None);
+        s.get_mut("802-11-wireless-security").unwrap().remove("psk");
+        apply(&mut s, "thinkpad-x1", "", 1);
+        assert!(!s["802-11-wireless-security"].contains_key("psk"), "no secret: NetworkManager keeps its own");
+    }
+
     #[test]
     fn passwords_and_leases() {
-        let p = new_password();
+        let p = new_password().unwrap();
         assert!(p.len() >= 8 && p.matches('-').count() == 2, "{p}");
         let leases =
             "1792600000 aa:bb:cc:dd:ee:ff 10.42.0.12 Pixel-8 01:aa\n1792600100 11:22:33:44:55:66 10.42.0.37 * *\n";

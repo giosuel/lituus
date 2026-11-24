@@ -207,6 +207,9 @@ export struct EditorOptions {
     /// pressed.
     wg-public-key: string,
     wg-shown-key: string,
+    /// A Wi-Fi or 802.1X password is saved already: an empty field keeps it.
+    password-saved: bool,
+    eap-password-saved: bool,
     ovpn-auth: [string],
     ovpn-tls-modes: [string],
     ovpn-compression: [string],
@@ -357,7 +360,7 @@ component EapPage inherits VerticalLayout {
     }
     if !root.tls: FormRow {
         label: "Password";
-        HorizontalLayout { alignment: start; TextField { text <=> root.eap.password; password: true; width: 360px; label: "Password"; placeholder: root.new ? "" : "Saved; type to change it"; invalid: root.errors.eap-secret != ""; } }
+        HorizontalLayout { alignment: start; TextField { text <=> root.eap.password; password: true; width: 360px; label: "Password"; placeholder: root.options.eap-password-saved ? "Saved; type to change it" : ""; invalid: root.errors.eap-secret != ""; } }
         if root.errors.eap-secret != "": Error { text: root.errors.eap-secret; }
         Storage { storage <=> root.eap.storage; keyring: root.options.keyring; }
     }
@@ -384,6 +387,8 @@ component EapPage inherits VerticalLayout {
         label-top: 2px;
         CheckBox { checked: root.eap.system-ca; text: "Use the system's certificates"; toggled(on) => { root.eap.system-ca = on; } }
         FileRow { path <=> root.eap.ca-cert; label: "CA certificate"; choose => { root.choose-file("eap.ca-cert"); } }
+        // With TLS, the private key's row shows it.
+        if !root.tls && root.errors.eap-certs != "": Error { text: root.errors.eap-certs; }
         if !root.eap.system-ca && root.eap.ca-cert == "": Hint { text: "Without a CA certificate, any server is believed. Choose one, or the system's."; color: Theme.warn-text; }
     }
     FormRow {
@@ -824,7 +829,7 @@ export component Editor inherits Rectangle {
                             password: true;
                             width: 360px;
                             label: "Password";
-                            placeholder: root.new ? "" : "Saved; type to change it";
+                            placeholder: root.options.password-saved ? "Saved; type to change it" : "";
                             invalid: root.errors.password != "";
                         } }
                         if root.errors.password != "": Error { text: root.errors.password; }
@@ -1259,6 +1264,8 @@ export component Editor inherits Rectangle {
                             HorizontalLayout { alignment: start; TextField { text <=> root.form.virt.ageing-time; mono: true; width: 120px; label: "MAC ageing time"; placeholder: "300"; } }
                             Hint { text: "seconds"; vertical-alignment: center; }
                         }
+                        // With STP off, the timers' row (and its error) is hidden.
+                        if root.errors.virt-settings != "" && !root.form.virt.stp: Error { text: root.errors.virt-settings; }
                     }
                     FormRow {
                         label: "VLAN filtering";

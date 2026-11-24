@@ -702,6 +702,18 @@ pub(crate) mod tests {
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&path, perms).unwrap();
+        // A test running beside this one may have forked while the script was open for writing,
+        // and its child holds that until it execs: running the script then fails with "Text file
+        // busy" (N-10). Run it once, without arguments (it stops at once), until it isn't.
+        for _ in 0..200 {
+            let quiet = || std::process::Stdio::null();
+            match std::process::Command::new(&path).stdin(quiet()).stdout(quiet()).stderr(quiet()).status() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                _ => break,
+            }
+        }
         path
     }
 

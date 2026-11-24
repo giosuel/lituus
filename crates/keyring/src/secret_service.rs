@@ -2,6 +2,7 @@
 //! over the user's own session bus, which every process of the user can read from anyway.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use zbus::message::Type as MessageType;
@@ -22,14 +23,45 @@ type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 #[derive(Debug)]
 pub(crate) struct SecretService {
     conn: Connection,
-    session: OwnedObjectPath,
+    /// The session secrets travel in. It ends with the service's process: see [`Self::in_session`].
+    session: Mutex<OwnedObjectPath>,
+}
+
+async fn open_session(conn: &Connection) -> zbus::Result<OwnedObjectPath> {
+    let (_, session): (OwnedValue, OwnedObjectPath) =
+        call(conn, SERVICE, SERVICE_IFACE, "OpenSession", &("plain", Value::from(""))).await?;
+    Ok(session)
+}
+
+/// The Secret Service doesn't know the session: it was restarted since it was opened.
+fn session_gone(error: &zbus::Error) -> bool {
+    let zbus::Error::MethodError(name, _, _) = error else { return false };
+    matches!(name.as_str(), "org.freedesktop.Secret.Error.NoSession" | "org.freedesktop.DBus.Error.UnknownObject")
 }
 
 impl SecretService {
     pub(crate) async fn connect(conn: Connection) -> Result<Self, Error> {
-        let (_, session): (OwnedValue, OwnedObjectPath) =
-            call(&conn, SERVICE, SERVICE_IFACE, "OpenSession", &("plain", Value::from(""))).await?;
-        Ok(Self { conn, session })
+        let session = open_session(&conn).await?;
+        Ok(Self { conn, session: Mutex::new(session) })
+    }
+
+    /// Makes a call that takes the session. When the service went away and came back while
+    /// Lituus kept running (KeePassXC closed and opened again, `gnome-keyring-daemon --replace`,
+    /// a crash), the session went with the old process: a new one is opened, and the call made
+    /// once more.
+    async fn in_session<T, F>(&self, call: impl Fn(OwnedObjectPath) -> F) -> Result<T, Error>
+    where
+        F: std::future::Future<Output = zbus::Result<T>>,
+    {
+        let session = self.session.lock().expect("never poisoned").clone();
+        match call(session).await {
+            Err(error) if session_gone(&error) => {
+                let session = open_session(&self.conn).await?;
+                *self.session.lock().expect("never poisoned") = session.clone();
+                Ok(call(session).await?)
+            }
+            other => Ok(other?),
+        }
     }
 
     pub(crate) async fn store(&self, entry: Entry<'_>, connection: &str, secret: &str) -> Result<(), Error> {
@@ -46,15 +78,14 @@ impl SecretService {
             ("org.freedesktop.Secret.Item.Label", Value::from(label)),
             ("org.freedesktop.Secret.Item.Attributes", Value::from(attributes)),
         ]);
-        let secret: Secret = (self.session.clone(), Vec::new(), secret.as_bytes().to_vec(), "text/plain".into());
-        let (_, prompt): (OwnedObjectPath, OwnedObjectPath) = call(
-            &self.conn,
-            collection.as_str(),
-            "org.freedesktop.Secret.Collection",
-            "CreateItem",
-            &(properties, secret, true),
-        )
-        .await?;
+        let (conn, collection, properties) = (&self.conn, collection.as_str(), &properties);
+        let (_, prompt): (OwnedObjectPath, OwnedObjectPath) = self
+            .in_session(|session| async move {
+                let secret: Secret = (session, Vec::new(), secret.as_bytes().to_vec(), "text/plain".into());
+                call(conn, collection, "org.freedesktop.Secret.Collection", "CreateItem", &(properties, secret, true))
+                    .await
+            })
+            .await?;
         self.prompt(&prompt).await.map(drop)
     }
 
@@ -64,8 +95,12 @@ impl SecretService {
         if items.is_empty() {
             return Ok(HashMap::new());
         }
-        let secrets: HashMap<OwnedObjectPath, Secret> =
-            call(&self.conn, SERVICE, SERVICE_IFACE, "GetSecrets", &(&items, &self.session)).await?;
+        let (conn, items) = (&self.conn, &items);
+        let secrets: HashMap<OwnedObjectPath, Secret> = self
+            .in_session(
+                |session| async move { call(conn, SERVICE, SERVICE_IFACE, "GetSecrets", &(items, session)).await },
+            )
+            .await?;
         let mut found = HashMap::new();
         for (item, (_, _, value, _)) in secrets {
             let attributes: HashMap<String, String> = self.property(&item, "Attributes").await?;

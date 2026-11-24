@@ -524,8 +524,27 @@ fn read_cert(s: &Settings, key: &str) -> String {
     text.trim_end_matches('\0').strip_prefix("file://").unwrap_or("").to_owned()
 }
 
+/// A file path as typed, with `~/` for the home folder.
+pub fn expand_path(path: &str) -> String {
+    let path = path.trim();
+    let home = || std::env::var("HOME").unwrap_or_default().trim_end_matches('/').to_owned();
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", home()),
+        None if path == "~" => home(),
+        None => path.to_owned(),
+    }
+}
+
+/// What's wrong with a typed file path: NetworkManager's VPN plugins and wpa_supplicant run as
+/// root, in `/`, so a path that doesn't start there (or at `~/`) leads nowhere.
+pub fn path_problem(path: &str) -> Option<String> {
+    let path = path.trim();
+    (!path.is_empty() && !std::path::Path::new(&expand_path(path)).is_absolute())
+        .then(|| format!("Type the full path of {path}, starting with / or ~/."))
+}
+
 fn cert_value(path: &str) -> Value<'static> {
-    let mut bytes = format!("file://{}", path.trim()).into_bytes();
+    let mut bytes = format!("file://{}", expand_path(path)).into_bytes();
     bytes.push(0);
     Value::from(bytes)
 }
@@ -580,7 +599,8 @@ fn read_wg(s: &Settings) -> WgForm {
     let nonzero = |key: &str| int(s, "wireguard", key).filter(|&n| n > 0).map(|n| n.to_string()).unwrap_or_default();
     WgForm {
         interface: string(s, "connection", "interface-name").unwrap_or_default(),
-        private_key: String::new(),
+        // A saved connection's settings come without secrets; an imported file's have its key.
+        private_key: string(s, "wireguard", "private-key").unwrap_or_default(),
         public_key: String::new(),
         listen_port: nonzero("listen-port"),
         fwmark: nonzero("fwmark"),
@@ -818,16 +838,22 @@ fn check_eap(kind: Kind, initial: Option<&Form>, f: &Form, e: &mut Errors) {
     }
     let tls = EAP_METHODS[x.method].0 == "tls";
     // A password is needed unless one is saved already for the same way of signing in.
-    let had = initial.is_some_and(|i| {
-        let was_enterprise = if kind == Kind::Wifi { i.security >= 5 } else { i.eap.enabled };
-        was_enterprise && i.eap.method == x.method
-    });
+    let had = saved_eap_password(kind, initial, f);
     let secret = if tls { &x.key_password } else { &x.password };
     if secret.is_empty() && !had && x.storage != 2 && !tls {
         e.eap_secret = "Type the password.".into();
     }
     if tls && (x.client_cert.trim().is_empty() || x.private_key.trim().is_empty()) {
         e.eap_certs = "TLS needs your certificate and private key files.".into();
+    }
+    let mut paths = vec![&x.ca_cert];
+    if tls {
+        paths.extend([&x.client_cert, &x.private_key]);
+    }
+    if e.eap_certs.is_empty()
+        && let Some(problem) = paths.into_iter().find_map(|p| path_problem(p))
+    {
+        e.eap_certs = problem;
     }
 }
 
@@ -873,9 +899,23 @@ fn check_wg(initial: Option<&Form>, w: &WgForm, e: &mut Errors) {
     }
 }
 
+/// Whether the Wi-Fi password is saved already, so an empty field keeps it: the connection had
+/// the same kind of security when it was read, with its password kept (not asked each time).
+pub fn saved_password(initial: Option<&Form>, f: &Form) -> bool {
+    initial.is_some_and(|i| i.security == f.security && matches!(i.security, 2..=4) && i.storage != 2)
+}
+
+/// The same for the 802.1X password: saved for the same way of signing in.
+pub fn saved_eap_password(kind: Kind, initial: Option<&Form>, f: &Form) -> bool {
+    initial.is_some_and(|i| {
+        let was_enterprise = if kind == Kind::Wifi { i.security >= 5 } else { i.eap.enabled };
+        was_enterprise && i.eap.method == f.eap.method && i.eap.storage != 2
+    })
+}
+
 fn check_password(initial: Option<&Form>, f: &Form) -> String {
     let needs = matches!(f.security, 2..=4);
-    let had_one = initial.is_some_and(|i| i.security == f.security && matches!(i.security, 2..=4));
+    let had_one = saved_password(initial, f);
     if !needs || (f.password.is_empty() && (had_one || f.storage == 2)) {
         return String::new();
     }
@@ -903,8 +943,17 @@ fn in_subnet(ip: Ipv4Addr, network: Ipv4Addr, prefix: u32) -> bool {
     u32::from(ip) & mask == u32::from(network) & mask
 }
 
+/// Disabled (and IPv6's Ignore): the page hides everything but the method.
+pub(crate) fn is_off(ip: &IpForm, v6: bool) -> bool {
+    if v6 { ip.method >= 4 } else { ip.method == 4 }
+}
+
 fn check_ip(ip: &IpForm, v6: bool) -> IpErrors {
     let mut e = IpErrors::default();
+    // The rest is hidden, and isn't saved (see write_ip).
+    if is_off(ip, v6) {
+        return e;
+    }
     let family = if v6 { "IPv6" } else { "IPv4" };
     let max_prefix = if v6 { 128 } else { 32 };
     let manual = if v6 { ip.method == 2 } else { ip.method == 1 };
@@ -946,6 +995,16 @@ fn check_ip(ip: &IpForm, v6: bool) -> IpErrors {
     }
     if let Some(bad) = ip.dns.iter().find(|d| parse_ip(d, v6).is_none()) {
         e.dns = format!("{bad} isn't an {family} address.");
+    }
+    // NetworkManager refuses these (nm-setting-ip4-config.c, nm-setting-ip6-config.c: verify).
+    let link_local = if v6 { ip.method == 3 } else { ip.method == 2 };
+    let shared = !v6 && ip.method == 3;
+    if link_local && !ip.addresses.is_empty() && e.addresses.is_empty() {
+        e.addresses = "Link-local takes no addresses of its own: remove them.".into();
+    }
+    if (link_local || shared) && (!ip.dns.is_empty() || !ip.search.trim().is_empty()) && e.dns.is_empty() {
+        let method = if shared { "Shared" } else { "Link-local" };
+        e.dns = format!("{method} takes no DNS servers or search domains: remove them.");
     }
     for r in &ip.routes {
         if r.dest.trim().is_empty() {
@@ -1181,6 +1240,9 @@ fn write_eap(s: &mut Settings, kind: Kind, initial: Option<&EapForm>, e: &EapFor
         put(s, X, "eap", Value::from(vec![EAP_METHODS[e.method].0.to_owned()]));
     }
     if edited!(phase2) || edited!(method) {
+        // The form shows phase2-autheap (an inner EAP method) when there's no phase2-auth, and
+        // TTLS goes by it when both are there: the choice made here replaces it.
+        remove(s, X, "phase2-autheap");
         if matches!(EAP_METHODS[e.method].0, "peap" | "ttls") {
             put(s, X, "phase2-auth", Value::from(PHASE2[e.phase2].0));
         } else {
@@ -1254,12 +1316,15 @@ fn write_wg(s: &mut Settings, initial: Option<&WgForm>, w: &WgForm) {
         put(s, "wireguard", "peer-routes", Value::from(w.peer_routes));
     }
     if edited!(peers) {
+        // The form has no pre-shared keys. A saved connection's settings have none either
+        // (NetworkManager keeps them), but an imported file's do: keep each peer's.
+        let preshared = crate::wireguard::preshared_keys(s);
         let peers: Vec<crate::wireguard::Peer> = w
             .peers
             .iter()
             .map(|p| crate::wireguard::Peer {
                 public_key: p.public_key.trim().to_owned(),
-                preshared_key: String::new(),
+                preshared_key: preshared.get(p.public_key.trim()).cloned().unwrap_or_default(),
                 endpoint: p.endpoint.trim().to_owned(),
                 allowed_ips: p.allowed_ips.clone(),
                 keepalive: p.keepalive.trim().parse().unwrap_or(0),
@@ -1293,8 +1358,9 @@ fn write_ip(s: &mut Settings, setting: &str, v6: bool, initial: Option<&IpForm>,
             .collect();
         put(s, setting, "address-data", Value::from(data));
     }
-    if edited!(gateway) {
-        if ip.gateway.trim().is_empty() {
+    if edited!(gateway) || edited!(addresses) {
+        // NetworkManager refuses a gateway without addresses, and its field goes with the first.
+        if ip.gateway.trim().is_empty() || ip.addresses.is_empty() {
             remove(s, setting, "gateway")
         } else {
             put(s, setting, "gateway", Value::from(ip.gateway.trim()))
@@ -1363,6 +1429,13 @@ fn write_ip(s: &mut Settings, setting: &str, v6: bool, initial: Option<&IpForm>,
         }
         if edited!(stable_privacy) {
             put(s, setting, "addr-gen-mode", Value::from(if ip.stable_privacy { 1i32 } else { 0i32 }));
+        }
+    }
+    // Switched off: NetworkManager refuses addresses, a gateway, DNS servers and search domains
+    // with Disabled or Ignore, and the page hides them, so they go.
+    if is_off(ip, v6) {
+        for key in ["address-data", "addresses", "gateway", "dns", "dns-data", "dns-search"] {
+            remove(s, setting, key);
         }
     }
 }
@@ -1574,5 +1647,182 @@ mod tests {
         assert_eq!(read(&s).1.ip6, f.ip6);
         f.ip6.routes[0].prefix = "200".into();
         assert_eq!(check(kind, None, &f).ip6.routes, "The prefix of fd00:: is from 0 to 128.");
+    }
+
+    /// "Saved; type to change it" only where the check counts a password as saved.
+    #[test]
+    fn a_password_is_saved_only_for_the_same_security() {
+        let original = home();
+        let (kind, initial) = read(&original);
+        assert!(saved_password(Some(&initial), &initial));
+        assert!(!saved_password(None, &initial));
+        let open = Form { security: 0, ..initial.clone() };
+        assert!(!saved_password(Some(&open), &initial), "an open network had none");
+        let wpa3 = Form { security: 4, ..initial.clone() };
+        assert!(!saved_password(Some(&initial), &wpa3));
+        assert_eq!(check(kind, Some(&initial), &wpa3).password, "Type the network's password.");
+        let asked = Form { storage: 2, ..initial.clone() };
+        assert!(!saved_password(Some(&asked), &initial), "asked each time: nothing saved");
+        let eduroam = enterprise_settings(b"eduroam", false, "u-1");
+        let (kind, initial) = read(&eduroam);
+        assert!(saved_eap_password(kind, Some(&initial), &initial));
+        assert!(!saved_eap_password(kind, None, &initial));
+    }
+
+    /// A TTLS connection set up with an inner EAP method (by nm-connection-editor or an eduroam
+    /// profile) signs in with the inner method chosen here, not the old one.
+    #[test]
+    fn a_new_inner_method_replaces_phase2_autheap() {
+        let s = settings(&[
+            ("connection", vec![("type", Value::from("802-11-wireless")), ("id", Value::from("corp"))]),
+            ("802-11-wireless", vec![("ssid", Value::from(b"corp".to_vec()))]),
+            ("802-11-wireless-security", vec![("key-mgmt", Value::from("wpa-eap"))]),
+            (
+                "802-1x",
+                vec![
+                    ("eap", Value::from(vec!["ttls".to_owned()])),
+                    ("identity", Value::from("a")),
+                    ("phase2-autheap", Value::from("gtc")),
+                ],
+            ),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(PHASE2[initial.eap.phase2].0, "gtc");
+        let mut f = initial.clone();
+        f.eap.phase2 = 0; // MSCHAPv2
+        let out = write(kind, &s, Some(&initial), &f, "me");
+        assert!(get(&out, "802-1x", "phase2-autheap").is_none(), "the old EAP inner method still wins");
+        assert_eq!(string(&out, "802-1x", "phase2-auth").as_deref(), Some("mschapv2"));
+        // Unchanged, it stays as it was.
+        let out = write(kind, &s, Some(&initial), &initial, "me");
+        assert_eq!(string(&out, "802-1x", "phase2-autheap").as_deref(), Some("gtc"));
+    }
+
+    /// wpa_supplicant runs as root in /: `~/` is expanded, and a relative path refused.
+    #[test]
+    fn a_typed_home_path_is_expanded_or_refused() {
+        let mut f = new_form(Kind::Ethernet, "wired");
+        f.eap = EapForm {
+            enabled: true,
+            method: 2,
+            identity: "a".into(),
+            client_cert: "~/c.pem".into(),
+            private_key: "k.pem".into(),
+            ..f.eap
+        };
+        assert_eq!(check(Kind::Ethernet, None, &f).eap_certs, "Type the full path of k.pem, starting with / or ~/.");
+        f.eap.private_key = "/etc/k.pem".into();
+        assert_eq!(check(Kind::Ethernet, None, &f).eap_certs, "");
+        let s = write(Kind::Ethernet, &new_settings(Kind::Ethernet, "u"), None, &f, "me");
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            bytes(&s, "802-1x", "client-cert"),
+            format!("file://{}/c.pem\0", home.trim_end_matches('/')).into_bytes()
+        );
+    }
+
+    // 01-7: nm-setting-ip4-config.c and nm-setting-ip6-config.c verify(): no DNS, search domains
+    // or addresses with disabled, ignore or link-local; no DNS with shared.
+    #[test]
+    fn switching_ipv4_off_drops_what_networkmanager_refuses_with_it() {
+        let address = HashMap::from([("address", Value::from("192.168.1.20")), ("prefix", Value::from(24u32))]);
+        let s = settings(&[
+            ("connection", vec![("id", "Office".into()), ("uuid", "u".into()), ("type", "802-3-ethernet".into())]),
+            (
+                "ipv4",
+                vec![
+                    ("method", "manual".into()),
+                    ("address-data", Value::from(vec![address])),
+                    ("gateway", "192.168.1.1".into()),
+                    ("dns", Value::from(vec![u32::from_ne_bytes([9, 9, 9, 9])])),
+                    ("dns-search", Value::from(vec!["home.arpa".to_owned()])),
+                ],
+            ),
+            ("ipv6", vec![("method", "auto".into())]),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(initial.ip4.addresses.len(), 1);
+        let mut form = initial.clone();
+        form.ip4.method = 4; // Disabled: the page hides addresses, gateway and DNS.
+        assert_eq!(check(kind, Some(&initial), &form).total(kind), 0);
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert_eq!(<&str>::try_from(&*out["ipv4"]["method"]).unwrap(), "disabled");
+        let left: Vec<&str> = ["address-data", "addresses", "gateway", "dns", "dns-data", "dns-search"]
+            .into_iter()
+            .filter(|key| out["ipv4"].get(*key).is_some_and(|v| !is_empty_list(v)))
+            .collect();
+        assert!(left.is_empty(), "{left:?} with method=disabled: NetworkManager refuses the save");
+
+        // Link-local and Shared show the rows, so they say what to remove.
+        form.ip4.method = 2;
+        let e = check(kind, Some(&initial), &form);
+        assert_eq!(e.ip4.addresses, "Link-local takes no addresses of its own: remove them.");
+        assert_eq!(e.ip4.dns, "Link-local takes no DNS servers or search domains: remove them.");
+        form.ip4.method = 3;
+        let e = check(kind, Some(&initial), &form);
+        assert_eq!(
+            (e.ip4.addresses.as_str(), e.ip4.dns.as_str()),
+            ("", "Shared takes no DNS servers or search domains: remove them.")
+        );
+        // The last address removed takes the gateway with it.
+        form.ip4.method = 0;
+        form.ip4.addresses.clear();
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert!(!out["ipv4"].contains_key("gateway"));
+    }
+
+    #[test]
+    fn switching_ipv6_to_ignore_drops_its_dns_servers() {
+        let quad9 = std::net::Ipv6Addr::from([0x2620, 0xfe, 0, 0, 0, 0, 0, 0xfe]).octets().to_vec();
+        let s = settings(&[
+            ("connection", vec![("id", "Office".into()), ("uuid", "u".into()), ("type", "802-3-ethernet".into())]),
+            ("ipv4", vec![("method", "auto".into())]),
+            ("ipv6", vec![("method", "auto".into()), ("dns", Value::from(vec![quad9]))]),
+        ]);
+        let (kind, initial) = read(&s);
+        assert_eq!(initial.ip6.dns.len(), 1);
+        let mut form = initial.clone();
+        form.ip6.method = 4; // Ignore.
+        assert_eq!(check(kind, Some(&initial), &form).total(kind), 0);
+        let out = write(kind, &s, Some(&initial), &form, "me");
+        assert_eq!(<&str>::try_from(&*out["ipv6"]["method"]).unwrap(), "ignore");
+        assert!(
+            out["ipv6"].get("dns").is_none_or(is_empty_list),
+            "ipv6.dns with method=ignore: NetworkManager refuses the save"
+        );
+    }
+
+    fn is_empty_list(v: &OwnedValue) -> bool {
+        matches!(&**v, Value::Array(a) if a.is_empty())
+    }
+
+    const WG_FILE: &str = "[Interface]\nPrivateKey = dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=\nAddress = 10.8.0.2/24\n\n\
+        [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\n\
+        PresharedKey = /UwcSPg38hW/D9Y3tcS1FOV0K1wuURMbS0sesJEP5ak=\nEndpoint = vpn.example.org:51820\nAllowedIPs = 0.0.0.0/0\n";
+
+    /// An imported file opens as a new connection read from its settings: the file's private
+    /// key is the one saved, without asking for one.
+    #[test]
+    fn an_imported_wireguard_file_needs_no_new_private_key() {
+        let conf = crate::wireguard::parse(WG_FILE).unwrap();
+        let imported = crate::wireguard::settings(&conf, "wg-home", "u-1", Some("me"));
+        let (kind, form) = read(&imported);
+        assert_eq!(check(kind, None, &form).wg_key, "", "the file's private key counts");
+        let saved = write(kind, &imported, None, &form, "me");
+        assert_eq!(
+            <&str>::try_from(&*saved["wireguard"]["private-key"]).unwrap(),
+            "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo="
+        );
+    }
+
+    #[test]
+    fn an_imported_wireguard_file_keeps_its_preshared_keys() {
+        let conf = crate::wireguard::parse(WG_FILE).unwrap();
+        let imported = crate::wireguard::settings(&conf, "wg-home", "u-1", Some("me"));
+        let (kind, form) = read(&imported);
+        let saved = write(kind, &imported, None, &form, "me");
+        let mut wg: Settings = HashMap::new();
+        wg.insert("wireguard".into(), saved["wireguard"].clone());
+        assert_eq!(crate::wireguard::preshared_keys(&wg).len(), 1, "the peer's pre-shared key is saved");
     }
 }

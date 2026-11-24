@@ -19,11 +19,15 @@ pub const WIFI_SECURITY: &str = "802-11-wireless-security";
 #[derive(Clone, Default)]
 pub struct Keyrings(Arc<Mutex<Option<Arc<Keyring>>>>);
 
+/// How long opening the keyring may take. The bus starts a Secret Service on demand, and one that
+/// never comes up would keep every caller waiting for the bus to give up (two minutes).
+const OPENING: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Keyrings {
     pub async fn get(&self) -> Option<Arc<Keyring>> {
         let mut keyring = self.0.lock().await;
         if keyring.is_none() {
-            *keyring = Keyring::session().await.map(Arc::new);
+            *keyring = tokio::time::timeout(OPENING, Keyring::session()).await.ok().flatten().map(Arc::new);
         }
         keyring.clone()
     }
@@ -83,8 +87,10 @@ fn prompt_secret(request: &SecretRequest) -> Option<(KeyMgmt, &'static str, Stri
             let key = if tls { "private-key-password" } else { "password" };
             Some((KeyMgmt::Sae, key, c.string("802-1x", "identity").unwrap_or_default().to_owned()))
         }
-        // OpenVPN: the password, or the private key's password with certificates only.
-        "vpn" => {
+        // OpenVPN: the password, or the private key's password with certificates only. Other
+        // plugins name their secrets their own way: they're left to an agent with the plugin's
+        // own dialog (nm-applet, GNOME Shell), which NetworkManager asks next.
+        "vpn" if crate::openvpn::is_openvpn(&c.settings) => {
             let data = c
                 .settings
                 .get("vpn")
@@ -211,11 +217,13 @@ async fn get_secrets(request: SecretRequest, keyrings: &Keyrings, ui: &impl Ui) 
     // A rejected password isn't looked up again.
     if !request.request_new()
         && let Some(keyring) = &keyring
-        && let Ok(found) = keyring.find(&request.connection.uuid, &request.setting).await
-        && !found.is_empty()
     {
-        request.reply(Ok(found));
-        return;
+        match keyring.find(&request.connection.uuid, &request.setting).await {
+            Ok(found) if !found.is_empty() => return request.reply(Ok(found)),
+            Ok(_) => {}
+            // The dialog asks, as if nothing were saved.
+            Err(error) => eprintln!("lituus: couldn't read the password of {}: {error}", request.connection.id),
+        }
     }
     let (Some((key_mgmt, key, user)), true) = (prompt_secret(&request), request.interactive()) else {
         request.reply(Err(Refusal::NoSecrets));
@@ -323,8 +331,17 @@ mod tests {
         let tls = request(&[("802-1x", "eap", vec!["tls".to_owned()].into())], "802-1x");
         assert_eq!(prompt_secret(&tls).unwrap().1, "private-key-password");
         let data = HashMap::from([("connection-type", "password"), ("username", "ab12cd")]);
-        let vpn = request(&[("vpn", "data", data.into())], "vpn");
+        let vpn = request(
+            &[("vpn", "service-type", crate::openvpn::SERVICE.into()), ("vpn", "data", data.clone().into())],
+            "vpn",
+        );
         assert_eq!(prompt_secret(&vpn).map(|(_, k, u)| (k, u)), Some(("password", "ab12cd".to_owned())));
+        // vpnc wants "Xauth password", libreswan "xauthpassword": not Lituus's to ask.
+        let vpnc = request(
+            &[("vpn", "service-type", "org.freedesktop.NetworkManager.vpnc".into()), ("vpn", "data", data.into())],
+            "vpn",
+        );
+        assert!(prompt_secret(&vpnc).is_none());
         let psk = request(&[(WIFI_SECURITY, "key-mgmt", "wpa-psk".into())], WIFI_SECURITY);
         assert_eq!(prompt_secret(&psk).unwrap().1, "psk");
     }

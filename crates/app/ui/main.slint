@@ -252,6 +252,8 @@ export component MainWindow inherits Window {
     in property <[HostRow]> hotspot-clients;
     in-out property <string> hotspot-ssid;
     in-out property <string> hotspot-password;
+    in property <bool> hotspot-ssid-invalid;
+    in property <bool> hotspot-password-invalid;
     in-out property <int> hotspot-band;
     // Sharing a network: its QR code and password.
     in property <bool> share-open;
@@ -638,11 +640,21 @@ export component MainWindow inherits Window {
                                     horizontal-stretch: 1;
                                     preferred-width: 720px;
                                     max-width: 720px;
+                                    // The page's own messages: why the switch did nothing, or
+                                    // why the hotspot didn't start.
+                                    if root.message != "": Notice {
+                                        tone: root.message-tone;
+                                        title: root.message-title;
+                                        text: root.message;
+                                        action: root.message-action;
+                                        action-clicked => { root.message-action-clicked(); }
+                                        dismissed => { root.dismiss-message(); }
+                                    }
                                     FormRow {
                                         label: "Network name";
                                         HorizontalLayout {
                                             alignment: start;
-                                            TextField { text <=> root.hotspot-ssid; mono: true; label: "Network name"; enabled: !root.hotspot-on; horizontal-stretch: 1; preferred-width: 360px; max-width: 360px; edited => { root.hotspot-edited(); } }
+                                            TextField { text <=> root.hotspot-ssid; mono: true; label: "Network name"; enabled: !root.hotspot-on; invalid: root.hotspot-ssid-invalid && !root.hotspot-on; horizontal-stretch: 1; preferred-width: 360px; max-width: 360px; edited => { root.hotspot-edited(); } }
                                         }
                                     }
                                     FormRow {
@@ -650,7 +662,7 @@ export component MainWindow inherits Window {
                                         HorizontalLayout {
                                             spacing: 10px;
                                             alignment: start;
-                                            TextField { text <=> root.hotspot-password; mono: true; label: "Password"; enabled: !root.hotspot-on; horizontal-stretch: 1; preferred-width: 360px; max-width: 360px; edited => { root.hotspot-edited(); } }
+                                            TextField { text <=> root.hotspot-password; mono: true; label: "Password"; enabled: !root.hotspot-on; invalid: root.hotspot-password-invalid && !root.hotspot-on; horizontal-stretch: 1; preferred-width: 360px; max-width: 360px; edited => { root.hotspot-edited(); } }
                                             Button { label: "Generate"; button-height: Size.button-dialog; horizontal-stretch: 0; enabled: !root.hotspot-on; clicked => { root.hotspot-new-password(); } }
                                         }
                                     }
@@ -698,12 +710,13 @@ export component MainWindow inherits Window {
                                         border-radius: 12px;
                                         background: white;
                                         Image { source: root.hotspot-qr; width: 200px; height: 200px; image-rendering: pixelated; }
-                                        // Nothing answers it while the hotspot is off: dimmed, under
-                                        // a veil rather than an opacity layer.
-                                        Rectangle { border-radius: parent.border-radius; background: Theme.surface.with-alpha(0.82); visible: !root.hotspot-on; }
+                                        // Nothing answers it while the hotspot is off (and there's none
+                                        // without a password): dimmed, under a veil rather than an
+                                        // opacity layer.
+                                        Rectangle { border-radius: parent.border-radius; background: Theme.surface.with-alpha(0.82); visible: !root.hotspot-on || root.hotspot-password == ""; }
                                     }
                                     Text {
-                                        text: root.hotspot-on ? "Scan with a phone camera to join" : "Turn the hotspot on to share";
+                                        text: root.hotspot-password == "" ? "No code without the password" : root.hotspot-on ? "Scan with a phone camera to join" : "Turn the hotspot on to share";
                                         color: Theme.muted;
                                         font-size: Type.note;
                                         horizontal-alignment: center;

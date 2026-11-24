@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use lituus_nm::Settings;
 use zbus::zvariant::{OwnedValue, Value};
 
+use crate::editor::{expand_path, path_problem};
+
 pub const SERVICE: &str = "org.freedesktop.NetworkManager.openvpn";
 
 /// `connection-type`, by the Authentication choice.
@@ -153,11 +155,13 @@ pub fn write(s: &mut Settings, initial: Option<&OvpnForm>, f: &OvpnForm) {
     if edited!(username) {
         set("username", &f.username);
     }
+    // NetworkManager-openvpn runs as root: `~/` means nothing to it.
+    let files = [&f.ca, &f.cert, &f.key, &f.static_key].map(|p| expand_path(p));
     for (key, value, changed) in [
-        ("ca", &f.ca, edited!(ca)),
-        ("cert", &f.cert, edited!(cert)),
-        ("key", &f.key, edited!(key)),
-        ("static-key", &f.static_key, edited!(static_key)),
+        ("ca", &files[0], edited!(ca)),
+        ("cert", &files[1], edited!(cert)),
+        ("key", &files[2], edited!(key)),
+        ("static-key", &files[3], edited!(static_key)),
         ("cipher", &f.cipher, edited!(cipher)),
         ("tunnel-mtu", &f.mtu, edited!(mtu)),
         ("fragment-size", &f.fragment, edited!(fragment)),
@@ -172,7 +176,7 @@ pub fn write(s: &mut Settings, initial: Option<&OvpnForm>, f: &OvpnForm) {
             set(key, "");
         }
         set("ta-dir", "");
-        set(TLS_KEY_MODES[f.tls_key_mode].0, &f.tls_key);
+        set(TLS_KEY_MODES[f.tls_key_mode].0, &expand_path(&f.tls_key));
         if f.tls_key_mode == 0 && !f.tls_key.trim().is_empty() {
             set("ta-dir", &f.tls_key_direction);
         }
@@ -215,6 +219,29 @@ pub fn write(s: &mut Settings, initial: Option<&OvpnForm>, f: &OvpnForm) {
     }
 }
 
+fn strings(value: Option<&OwnedValue>) -> HashMap<String, String> {
+    value.and_then(|v| <HashMap<String, String>>::try_from(v.clone()).ok()).unwrap_or_default()
+}
+
+/// Puts the saved secrets back beside a newly typed one, from NetworkManager's
+/// `GetSecrets("vpn")`. NetworkManager keeps its saved secrets only when an update carries none:
+/// one with a new password alone would make it forget the private key's password, and the other
+/// way round. Only the ones it keeps itself (flags 0) go back; the keyring keeps the others.
+pub fn keep_secrets(settings: &mut Settings, saved: &Settings) {
+    let Some(vpn) = settings.get_mut("vpn") else { return };
+    let mut secrets = strings(vpn.get("secrets"));
+    if secrets.is_empty() {
+        return;
+    }
+    let data = strings(vpn.get("data"));
+    for (key, value) in strings(saved.get("vpn").and_then(|v| v.get("secrets"))) {
+        if data.get(&format!("{key}-flags")).is_none_or(|flags| flags == "0") {
+            secrets.entry(key).or_insert(value);
+        }
+    }
+    vpn.insert("secrets".into(), OwnedValue::try_from(Value::from(secrets)).expect("a dict"));
+}
+
 /// What's wrong with the form, as (username, secret, files) problems.
 pub fn check(initial: Option<&OvpnForm>, f: &OvpnForm) -> (String, String, String) {
     let mut problems = (String::new(), String::new(), String::new());
@@ -231,8 +258,40 @@ pub fn check(initial: Option<&OvpnForm>, f: &OvpnForm) -> (String, String, Strin
     } else if auth == "static-key" && f.static_key.trim().is_empty() {
         problems.2 = "Choose the static key file.".into();
     }
+    // The files the page shows, for this way of signing in.
+    let mut paths = vec![&f.tls_key];
+    match auth {
+        "static-key" => paths.push(&f.static_key),
+        "password" => paths.push(&f.ca),
+        _ => paths.extend([&f.ca, &f.cert, &f.key]),
+    }
+    if problems.2.is_empty()
+        && let Some(problem) = paths.into_iter().find_map(|p| path_problem(p))
+    {
+        problems.2 = problem;
+    }
     let _ = initial;
     problems
+}
+
+/// Where an imported file's inline certificates and keys go: a folder of the new connection's
+/// own, so two files with one name (most providers call theirs client.ovpn) keep theirs apart.
+pub fn cert_dir(home: &Path, uuid: &str) -> PathBuf {
+    home.join(".local/share/lituus/certificates").join(uuid)
+}
+
+/// Deletes a connection's imported certificates and keys: it was forgotten, or its import was
+/// never saved.
+pub fn remove_files(home: &Path, uuid: &str) {
+    // A UUID names the folder; nothing else may reach outside it.
+    if uuid.is_empty() || !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir_all(cert_dir(home, uuid))
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("lituus: couldn't delete the certificates of {uuid}: {error}");
+    }
 }
 
 /// A `.ovpn` file, turned into NetworkManager-openvpn's settings. Certificates and keys written
@@ -477,5 +536,57 @@ abcd
         let after = data(&s);
         assert_eq!(after["remote"], "vpn3.uzh.ch:1194");
         assert_eq!(after.len(), before.len());
+    }
+
+    /// NetworkManager-openvpn runs as root: `~/` is expanded, and a relative path refused.
+    #[test]
+    fn typed_paths_are_whole() {
+        let f = OvpnForm {
+            gateway: "vpn.example.org".into(),
+            auth: 1,
+            cert: "~/c.pem".into(),
+            key: "k.pem".into(),
+            ..OvpnForm::default()
+        };
+        assert_eq!(check(None, &f).2, "Type the full path of k.pem, starting with / or ~/.");
+        let mut s: Settings = HashMap::new();
+        write(&mut s, None, &OvpnForm { key: "/k.pem".into(), ..f });
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(data(&s)["cert"], format!("{}/c.pem", home.trim_end_matches('/')));
+    }
+
+    /// A new password goes with the saved private key password, or NetworkManager drops that one;
+    /// an edit without a new secret goes without any.
+    #[test]
+    fn a_new_password_is_never_sent_without_the_other_saved_secret() {
+        // GetSettings of a saved password-tls connection ("All users"): no secrets.
+        let saved = OvpnForm {
+            gateway: "vpn.example.org:1194".into(),
+            auth: 2,
+            username: "ab".into(),
+            cert: "/c.pem".into(),
+            key: "/k.pem".into(),
+            storage: 1,
+            ..OvpnForm::default()
+        };
+        let mut s: Settings = HashMap::new();
+        write(&mut s, None, &saved);
+        assert!(!s["vpn"].contains_key("secrets"));
+        // What GetSecrets("vpn") gives.
+        let mut kept: Settings = HashMap::new();
+        let both = Value::from(HashMap::from([("password", "old"), ("cert-pass", "key-pass")]));
+        kept.entry("vpn".into()).or_default().insert("secrets".into(), OwnedValue::try_from(both).unwrap());
+
+        let mut renamed = s.clone();
+        write(&mut renamed, Some(&saved), &OvpnForm { gateway: "vpn2.example.org:1194".into(), ..saved.clone() });
+        keep_secrets(&mut renamed, &kept);
+        assert!(!renamed["vpn"].contains_key("secrets"), "NetworkManager keeps them all");
+
+        let edited = OvpnForm { password: "new".into(), ..saved.clone() };
+        write(&mut s, Some(&saved), &edited);
+        keep_secrets(&mut s, &kept);
+        let secrets = <HashMap<String, String>>::try_from(s["vpn"]["secrets"].clone()).unwrap();
+        assert_eq!(secrets.get("cert-pass").map(String::as_str), Some("key-pass"), "only {secrets:?} is sent");
+        assert_eq!(secrets["password"], "new");
     }
 }

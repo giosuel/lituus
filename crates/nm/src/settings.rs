@@ -2,7 +2,7 @@
 //! (NetworkManager replaces it), so the editor starts from what [`Client::settings`] read and
 //! changes only the keys the user touched: settings it doesn't know, from plugins or newer
 //! NetworkManager versions, survive. Secrets aren't in that map; NetworkManager keeps the ones it
-//! has when an update leaves them out.
+//! has when an update carries none, but an update with any secret replaces them all.
 
 use std::collections::HashMap;
 

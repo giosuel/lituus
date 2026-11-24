@@ -1005,7 +1005,7 @@ fn connect_callbacks(window: &MainWindow) {
     let weak = window.as_weak();
     window.on_hotspot_new_password(move || {
         let Some(window) = weak.upgrade() else { return };
-        window.set_hotspot_password(hotspot::new_password().into());
+        window.set_hotspot_password(hotspot::new_password().unwrap_or_default().into());
         update(&weak, |_| {});
     });
     let weak = window.as_weak();
@@ -1022,8 +1022,9 @@ fn connect_callbacks(window: &MainWindow) {
                 return send(app, view::Command::StopHotspot { active });
             }
             let Some(device) = h.device else { return };
-            if ssid.is_empty() || ssid.len() > 32 || !(8..=63).contains(&password.chars().count()) {
+            if hotspot::invalid(&ssid, &password, h.connection.is_some()) != (false, false) {
                 app.message_title.clear();
+                app.retry = None;
                 app.message = Some((
                     "The hotspot needs a name (1 to 32 bytes) and a password of 8 to 63 characters.".into(),
                     "danger",
@@ -1233,7 +1234,7 @@ fn open_hotspot(app: &mut App) {
     let Some(snap) = &app.snapshot else { return };
     match view::hotspot_view(snap).connection {
         Some(connection) => send(app, view::Command::LoadHotspot { connection }),
-        None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password(), 0)),
+        None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password().unwrap_or_default(), 0)),
     }
 }
 
@@ -1247,12 +1248,24 @@ fn render_hotspot(window: &MainWindow, app: &mut App, view: Option<&view::Hotspo
         window.set_hotspot_password(password.into());
         window.set_hotspot_band(band as i32);
     }
-    let text = qr::wifi_text(&window.get_hotspot_ssid(), Some(&window.get_hotspot_password()), false, false);
-    if text != app.hotspot_qr
-        && let Some(image) = qr::image(&text, 8)
-    {
-        window.set_hotspot_qr(image);
-        app.hotspot_qr = text;
+    // Marked as they're typed, not only when the switch refuses them.
+    let (ssid, password) =
+        hotspot::invalid(&window.get_hotspot_ssid(), &window.get_hotspot_password(), h.connection.is_some());
+    window.set_hotspot_ssid_invalid(ssid);
+    window.set_hotspot_password_invalid(password);
+    // No code without the password (one that couldn't be read): nothing could join with it.
+    let password = window.get_hotspot_password();
+    let text = if password.is_empty() {
+        String::new()
+    } else {
+        qr::wifi_text(&window.get_hotspot_ssid(), Some(&password), false, false)
+    };
+    if text != app.hotspot_qr {
+        let image = if text.is_empty() { Some(slint::Image::default()) } else { qr::image(&text, 8) };
+        if let Some(image) = image {
+            window.set_hotspot_qr(image);
+            app.hotspot_qr = text;
+        }
     }
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let clients = if h.active.is_some() { hotspot::clients(&h.interface) } else { Vec::new() };
@@ -2002,8 +2015,13 @@ fn spawn_network_manager(
             // The OpenConnect VPNs' settings paths, from the last snapshot.
             let mut oc_paths = Arc::new(std::collections::HashSet::new());
             let ui = AgentUi(weak.clone());
+            // Which keyring there is: found beside NetworkManager, not before it, so a keyring that's
+            // slow to start doesn't hold up the Network pages. One look at a time.
+            let mut probe: Option<tokio::task::JoinHandle<()>> = None;
             loop {
-                tell_keyring(&weak, &keyrings).await;
+                if probe.as_ref().is_none_or(|p| p.is_finished()) {
+                    probe = Some(tokio::spawn(tell_keyring(weak.clone(), keyrings.clone())));
+                }
                 let result = async {
                     let client = lituus_nm::Client::system().await?;
                     let mut snapshots = Box::pin(client.watch().await?);
@@ -2065,7 +2083,7 @@ fn spawn_network_manager(
     });
 }
 
-async fn tell_keyring(weak: &slint::Weak<MainWindow>, keyrings: &secrets::Keyrings) {
+async fn tell_keyring(weak: slint::Weak<MainWindow>, keyrings: secrets::Keyrings) {
     let name = keyrings.get().await.map(|k| k.name());
     let _ = weak.upgrade_in_event_loop(move |window| {
         APP.with(|app| app.borrow_mut().keyring = name);
@@ -2323,6 +2341,14 @@ async fn run(
             let settings = client.settings(connection).await?;
             let password =
                 client.secrets(connection, secrets::WIFI_SECURITY).await.ok().and_then(|s| s.get("psk").cloned());
+            // It may need polkit, or a keyring that isn't there. A made-up one would show a wrong
+            // code, and starting the hotspot would replace the password its devices know.
+            if password.is_none() {
+                notice(
+                    weak,
+                    "Couldn't read the hotspot's password, so there's no code to scan. Starting it keeps the saved password; type or generate one to change it.",
+                );
+            }
             let ssid = settings
                 .get("802-11-wireless")
                 .and_then(|w| w.get("ssid"))
@@ -2334,7 +2360,7 @@ async fn run(
                 .and_then(|w| w.get("band"))
                 .and_then(|v| <&str>::try_from(&**v).ok())
                 .map_or(0, |b| hotspot::BANDS.iter().position(|x| *x == b).unwrap_or(0));
-            let fields = (ssid, password.unwrap_or_else(hotspot::new_password), band);
+            let fields = (ssid, password.unwrap_or_default(), band);
             let _ = weak.upgrade_in_event_loop(move |window| {
                 APP.with(|app| app.borrow_mut().hotspot_fields = Some(fields));
                 render(&window);
@@ -2365,7 +2391,19 @@ async fn run(
         SetAirplane { wifi, wwan, .. } => return client.set_radios(*wifi, *wwan).await.map(|()| None),
         Rescan { device } => return client.request_scan(device).await.map(|()| None),
         Deactivate { active } => return client.deactivate(active).await.map(|()| None),
-        Forget { connection } => return client.forget(connection).await.map(|()| None),
+        Forget { connection } => {
+            // An imported OpenVPN file's certificates and key go with it.
+            let settings = client.settings(connection).await.ok();
+            let uuid = settings
+                .as_ref()
+                .and_then(|s| s.get("connection")?.get("uuid"))
+                .and_then(|u| <&str>::try_from(&**u).ok());
+            client.forget(connection).await?;
+            if let Some(uuid) = uuid {
+                openvpn::remove_files(&home(), uuid);
+            }
+            return Ok(None);
+        }
         Tether { device, address, name } => return client.tether(device, address, name).await.map(|_| None),
         CancelSignIn { uuid } => {
             vpns.sign_ins.cancel(uuid);
@@ -2546,9 +2584,14 @@ fn notice(weak: &slint::Weak<MainWindow>, text: &str) {
     });
 }
 
+/// The user's home folder.
+fn home() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+}
+
 /// The base of an imported VPN connection: its name, started by hand, and the user's own.
-fn imported_settings(kind: editor::Kind, name: &str, owner: Option<&str>) -> lituus_nm::Settings {
-    let mut settings = editor::new_settings(kind, &secrets::new_uuid());
+fn imported_settings(kind: editor::Kind, uuid: &str, name: &str, owner: Option<&str>) -> lituus_nm::Settings {
+    let mut settings = editor::new_settings(kind, uuid);
     let connection = settings.entry("connection".into()).or_default();
     let mut put = |k: &str, v: zbus::zvariant::Value| {
         connection.insert(k.into(), zbus::zvariant::OwnedValue::try_from(v).expect("no fds"));
@@ -2599,9 +2642,7 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
         if !openvpn::plugin_installed() {
             return notice(weak, OPENVPN_MISSING);
         }
-        let name = file.trim_end_matches(".ovpn").trim_end_matches(".conf").to_owned();
-        let home = std::env::var("HOME").unwrap_or_default();
-        let dir = std::path::PathBuf::from(home).join(".local/share/lituus/certificates").join(&name);
+        let dir = openvpn::cert_dir(&home(), &uuid);
         let full = path.to_string_lossy().into_owned();
         let imported = match openvpn::import(&text, &full, &dir) {
             Ok(imported) => imported,
@@ -2609,10 +2650,11 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
         };
         for (path, contents) in &imported.files {
             if let Err(e) = lituus_fs::write_private(path, contents) {
+                openvpn::remove_files(&home(), &uuid);
                 return notice(weak, &format!("Couldn't save {}: {e}.", path.display()));
             }
         }
-        let mut settings = imported_settings(editor::Kind::OpenVpn, &imported.name, owner.as_deref());
+        let mut settings = imported_settings(editor::Kind::OpenVpn, &uuid, &imported.name, owner.as_deref());
         openvpn::write(&mut settings, None, &imported.form);
         let mut banner = format!("Imported from {file}");
         if !imported.files.is_empty() {
@@ -2631,7 +2673,8 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
     let zones = client.firewall_zones().await;
     let _ = weak.upgrade_in_event_loop(move |window| {
         APP.with(|app| {
-            let extras = editing::Extras { wg_key: None, banner };
+            // An OpenVPN file's certificates are on disk already: they go if it isn't saved.
+            let extras = editing::Extras { banner, import: (!looks_wireguard).then_some(uuid), ..Default::default() };
             editing::open(&mut app.borrow_mut(), None, settings, zones, None, extras)
         });
         render(&window);
@@ -2649,7 +2692,7 @@ async fn import_saml(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>,
     };
     let owner = secrets::username();
     let settings_of = |name: &str, form: &openconnect::OcForm| {
-        let mut settings = imported_settings(editor::Kind::OpenConnect, name, owner.as_deref());
+        let mut settings = imported_settings(editor::Kind::OpenConnect, &secrets::new_uuid(), name, owner.as_deref());
         openconnect::write(&mut settings, None, form);
         settings
     };
@@ -2659,7 +2702,7 @@ async fn import_saml(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>,
         let zones = client.firewall_zones().await;
         let _ = weak.upgrade_in_event_loop(move |window| {
             APP.with(|app| {
-                let extras = editing::Extras { wg_key: None, banner };
+                let extras = editing::Extras { banner, ..Default::default() };
                 editing::open(&mut app.borrow_mut(), None, settings, zones, None, extras)
             });
             render(&window);
@@ -2746,11 +2789,19 @@ async fn save_connection(
     let path = match path {
         Some(path) => {
             let mut settings = settings.clone();
-            // Edited WireGuard peers come without their pre-shared keys; put the saved ones back.
-            if settings.get("wireguard").is_some_and(|w| w.contains_key("peers"))
+            // A new WireGuard private key replaces every saved secret: put the pre-shared keys
+            // back with it. Without one, the update carries no secret and NetworkManager keeps
+            // them all.
+            if settings.get("wireguard").is_some_and(|w| w.contains_key("private-key"))
                 && let Ok(secrets) = client.secrets_raw(path, "wireguard").await
             {
                 wireguard::keep_preshared_keys(&mut settings, &secrets);
+            }
+            // The same for a new VPN password: the others go with it.
+            if settings.get("vpn").is_some_and(|v| v.contains_key("secrets"))
+                && let Ok(saved) = client.secrets_raw(path, "vpn").await
+            {
+                openvpn::keep_secrets(&mut settings, &saved);
             }
             client.update(path, &settings).await.map_err(explain)?;
             path.to_owned()
@@ -4418,6 +4469,8 @@ mod tests {
         window.set_page("hotspot".into());
         window.set_hotspot_available(true);
         let shown = |text: &str| ElementHandle::find_by_accessible_label(&window, text).next().is_some();
+        assert!(shown("No code without the password"));
+        window.set_hotspot_password("k7mq-x2hd-9fwa".into());
         assert!(shown("Turn the hotspot on to share") && !shown("Scan with a phone camera to join"));
         window.set_hotspot_on(true);
         assert!(!shown("Turn the hotspot on to share") && shown("Scan with a phone camera to join"));
@@ -4585,6 +4638,19 @@ mod tests {
         assert_eq!(*log.borrow(), ["action", "dismiss"]);
     }
 
+    /// The hotspot page shows its own messages (why the switch did nothing, why the hotspot
+    /// didn't start), not the next Wi-Fi page.
+    #[test]
+    fn the_hotspot_page_shows_its_own_messages() {
+        let window = window();
+        window.set_page("hotspot".into());
+        window.set_hotspot_available(true);
+        let text = "The hotspot needs a name (1 to 32 bytes) and a password of 8 to 63 characters.";
+        window.set_message_tone("danger".into());
+        window.set_message(text.into());
+        assert!(ElementHandle::find_by_accessible_label(&window, text).next().is_some());
+    }
+
     #[test]
     fn the_network_chevron_folds_its_pages() {
         i_slint_backend_testing::init_no_event_loop();
@@ -4747,6 +4813,33 @@ mod tests {
         // The window notes its new height on its next turn.
         mock_elapsed_time(Duration::from_millis(50));
         assert!(name_bottom() <= 18.0 + 136.0, "{}", name_bottom());
+    }
+
+    /// Two providers both call their file client.ovpn (most do): each connection keeps its own
+    /// certificates and key, and forgetting one takes only its own.
+    #[test]
+    fn a_second_openvpn_file_with_the_same_name_keeps_the_first_one_s_key() {
+        let home = std::env::temp_dir().join(format!("lituus-ovpn-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let file = |key: &str| format!("client\nremote vpn.example.org 1194\n<ca>\nCA\n</ca>\n<key>\n{key}\n</key>\n");
+        // What import_file does with the chosen file, for a new connection.
+        let import = |text: &str, path: &str| {
+            let uuid = super::secrets::new_uuid();
+            let imported = super::openvpn::import(text, path, &super::openvpn::cert_dir(&home, &uuid)).unwrap();
+            for (path, contents) in &imported.files {
+                lituus_fs::write_private(path, contents).unwrap();
+            }
+            (uuid, std::path::PathBuf::from(imported.form.key))
+        };
+        let (first_uuid, first) = import(&file("KEY-A"), "/home/u/a/client.ovpn");
+        let (_, second) = import(&file("KEY-B"), "/home/u/b/client.ovpn");
+        let first_key = std::fs::read_to_string(&first).unwrap();
+        super::openvpn::remove_files(&home, &first_uuid);
+        let left = (first.exists(), second.exists());
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(first_key, "KEY-A\n", "the first connection's key file now holds the second one's key");
+        assert_ne!(first, second, "both connections point at the same key file");
+        assert_eq!(left, (false, true), "forgetting the first takes its files only");
     }
 
     /// A check box and a segmented control show the app's state, also after a click on them:
