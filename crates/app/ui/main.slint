@@ -686,12 +686,13 @@ export component MainWindow inherits Window {
                                         border-radius: 12px;
                                         background: white;
                                         Image { source: root.hotspot-qr; width: 200px; height: 200px; image-rendering: pixelated; }
-                                        // Nothing answers it while the hotspot is off: dimmed, under
-                                        // a veil rather than an opacity layer.
-                                        Rectangle { border-radius: parent.border-radius; background: Theme.surface.with-alpha(0.82); visible: !root.hotspot-on; }
+                                        // Nothing answers it while the hotspot is off (and there's none
+                                        // without a password): dimmed, under a veil rather than an
+                                        // opacity layer.
+                                        Rectangle { border-radius: parent.border-radius; background: Theme.surface.with-alpha(0.82); visible: !root.hotspot-on || root.hotspot-password == ""; }
                                     }
                                     Text {
-                                        text: root.hotspot-on ? "Scan with a phone camera to join" : "Turn the hotspot on to share";
+                                        text: root.hotspot-password == "" ? "No code without the password" : root.hotspot-on ? "Scan with a phone camera to join" : "Turn the hotspot on to share";
                                         color: Theme.muted;
                                         font-size: Type.note;
                                         horizontal-alignment: center;

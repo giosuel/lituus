@@ -1008,7 +1008,7 @@ fn connect_callbacks(window: &MainWindow) {
                 return send(app, view::Command::StopHotspot { active });
             }
             let Some(device) = h.device else { return };
-            if hotspot::invalid(&ssid, &password) != (false, false) {
+            if hotspot::invalid(&ssid, &password, h.connection.is_some()) != (false, false) {
                 app.message_title.clear();
                 app.retry = None;
                 app.message = Some((
@@ -1234,15 +1234,23 @@ fn render_hotspot(window: &MainWindow, app: &mut App, view: Option<&view::Hotspo
         window.set_hotspot_band(band as i32);
     }
     // Marked as they're typed, not only when the switch refuses them.
-    let (ssid, password) = hotspot::invalid(&window.get_hotspot_ssid(), &window.get_hotspot_password());
+    let (ssid, password) =
+        hotspot::invalid(&window.get_hotspot_ssid(), &window.get_hotspot_password(), h.connection.is_some());
     window.set_hotspot_ssid_invalid(ssid);
     window.set_hotspot_password_invalid(password);
-    let text = qr::wifi_text(&window.get_hotspot_ssid(), Some(&window.get_hotspot_password()), false, false);
-    if text != app.hotspot_qr
-        && let Some(image) = qr::image(&text, 8)
-    {
-        window.set_hotspot_qr(image);
-        app.hotspot_qr = text;
+    // No code without the password (one that couldn't be read): nothing could join with it.
+    let password = window.get_hotspot_password();
+    let text = if password.is_empty() {
+        String::new()
+    } else {
+        qr::wifi_text(&window.get_hotspot_ssid(), Some(&password), false, false)
+    };
+    if text != app.hotspot_qr {
+        let image = if text.is_empty() { Some(slint::Image::default()) } else { qr::image(&text, 8) };
+        if let Some(image) = image {
+            window.set_hotspot_qr(image);
+            app.hotspot_qr = text;
+        }
     }
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let clients = if h.active.is_some() { hotspot::clients(&h.interface) } else { Vec::new() };
@@ -2308,6 +2316,14 @@ async fn run(
             let settings = client.settings(connection).await?;
             let password =
                 client.secrets(connection, secrets::WIFI_SECURITY).await.ok().and_then(|s| s.get("psk").cloned());
+            // It may need polkit, or a keyring that isn't there. A made-up one would show a wrong
+            // code, and starting the hotspot would replace the password its devices know.
+            if password.is_none() {
+                notice(
+                    weak,
+                    "Couldn't read the hotspot's password, so there's no code to scan. Starting it keeps the saved password; type or generate one to change it.",
+                );
+            }
             let ssid = settings
                 .get("802-11-wireless")
                 .and_then(|w| w.get("ssid"))
@@ -2319,7 +2335,7 @@ async fn run(
                 .and_then(|w| w.get("band"))
                 .and_then(|v| <&str>::try_from(&**v).ok())
                 .map_or(0, |b| hotspot::BANDS.iter().position(|x| *x == b).unwrap_or(0));
-            let fields = (ssid, password.or_else(hotspot::new_password).unwrap_or_default(), band);
+            let fields = (ssid, password.unwrap_or_default(), band);
             let _ = weak.upgrade_in_event_loop(move |window| {
                 APP.with(|app| app.borrow_mut().hotspot_fields = Some(fields));
                 render(&window);
@@ -4423,6 +4439,8 @@ mod tests {
         window.set_page("hotspot".into());
         window.set_hotspot_available(true);
         let shown = |text: &str| ElementHandle::find_by_accessible_label(&window, text).next().is_some();
+        assert!(shown("No code without the password"));
+        window.set_hotspot_password("k7mq-x2hd-9fwa".into());
         assert!(shown("Turn the hotspot on to share") && !shown("Scan with a phone camera to join"));
         window.set_hotspot_on(true);
         assert!(!shown("Turn the hotspot on to share") && shown("Scan with a phone camera to join"));

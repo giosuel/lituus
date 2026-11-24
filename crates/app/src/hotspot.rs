@@ -38,7 +38,8 @@ pub fn settings(ssid: &str, password: &str, band: usize, uuid: &str, owner: Opti
     s
 }
 
-/// Writes the name, password and band into a hotspot's settings.
+/// Writes the name, password and band into a hotspot's settings. An empty password leaves the
+/// saved one: the update then carries no secret, and NetworkManager keeps it.
 pub fn apply(s: &mut Settings, ssid: &str, password: &str, band: usize) {
     put(s, "802-11-wireless", "ssid", Value::from(ssid.as_bytes().to_vec()));
     match BANDS[band.min(2)] {
@@ -50,14 +51,17 @@ pub fn apply(s: &mut Settings, ssid: &str, password: &str, band: usize) {
         }
         band => put(s, "802-11-wireless", "band", Value::from(band)),
     }
-    put(s, "802-11-wireless-security", "psk", Value::from(password));
+    if !password.is_empty() {
+        put(s, "802-11-wireless-security", "psk", Value::from(password));
+    }
 }
 
 /// Whether the hotspot's (name, password) are wrong: a name of 1 to 32 bytes, and a WPA2
-/// password of 8 to 63 characters.
-pub fn invalid(ssid: &str, password: &str) -> (bool, bool) {
+/// password of 8 to 63 characters, or none to keep a saved hotspot's own.
+pub fn invalid(ssid: &str, password: &str, saved: bool) -> (bool, bool) {
     let ssid = ssid.trim();
-    (ssid.is_empty() || ssid.len() > 32, !(8..=63).contains(&password.chars().count()))
+    let password = if password.is_empty() { !saved } else { !(8..=63).contains(&password.chars().count()) };
+    (ssid.is_empty() || ssid.len() > 32, password)
 }
 
 /// What a suggested password is made of: lower case letters and digits, without the 0, 1, l and
@@ -134,9 +138,16 @@ mod tests {
 
     #[test]
     fn names_and_passwords_are_checked() {
-        assert_eq!(invalid("thinkpad-x1", "k7mq-x2hd-9fwa"), (false, false));
-        assert_eq!(invalid(" ", "abc"), (true, true));
-        assert_eq!(invalid(&"x".repeat(33), &"y".repeat(64)), (true, true));
+        assert_eq!(invalid("thinkpad-x1", "k7mq-x2hd-9fwa", false), (false, false));
+        assert_eq!(invalid(" ", "abc", true), (true, true));
+        assert_eq!(invalid(&"x".repeat(33), &"y".repeat(64), true), (true, true));
+        // A saved hotspot whose password couldn't be read starts with the one it has.
+        assert_eq!(invalid("thinkpad-x1", "", true), (false, false));
+        assert_eq!(invalid("thinkpad-x1", "", false), (false, true));
+        let mut s = settings("thinkpad-x1", "k7mq-x2hd-9fwa", 0, "u-1", None);
+        s.get_mut("802-11-wireless-security").unwrap().remove("psk");
+        apply(&mut s, "thinkpad-x1", "", 1);
+        assert!(!s["802-11-wireless-security"].contains_key("psk"), "no secret: NetworkManager keeps its own");
     }
 
     #[test]
