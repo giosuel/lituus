@@ -6,7 +6,7 @@ import { Theme, Type, Size } from "theme.slint";
 import { Icon, Spinner } from "icons.slint";
 import { Button, IconButton, Switch, CardTitle, Banner, Scroll, Focusable, Focus } from "controls.slint";
 import { ViewSwitcher, Select } from "dialogs.slint";
-import { Hero, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 
 /// An app playing. output: its output's place in `outputs`.
 export struct SoundApp { id: string, name: string, sub: string, volume: float, muted: bool, output: int }
@@ -165,51 +165,32 @@ export component SoundPage inherits VerticalLayout {
         hero-height: root.compact || root.page.state == "not-running" ? 136px : 206px;
         compact: root.compact;
         aside: sound-tools.width + 18px;
-        if root.page.state == "list": HorizontalLayout {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px;
-            height: root.compact ? 63px : 96px;
-            spacing: 20px;
-            Rectangle {
-                width: root.compact ? 56px : 88px;
-                height: self.width;
-                y: parent.height - self.height;
-                border-radius: self.width / 2;
-                background: Theme.accent-soft-bg;
-                Icon { name: root.page.hero.icon; tint: Theme.accent; size: parent.width * 0.48; stroke-width: 1.3px; }
-            }
-            VerticalLayout {
-                alignment: end;
-                spacing: root.compact ? 4px : 10px;
-                padding-bottom: 2px;
-                HorizontalLayout {
-                    spacing: 12px;
-                    Text { text: root.page.hero.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; vertical-alignment: bottom; }
-                    Text { text: root.page.hero.meta; color: Theme.muted; font-size: Type.body; overflow: elide; vertical-alignment: bottom; horizontal-stretch: 1; }
+        if root.page.state == "list": HeroSubject {
+            compact: root.compact;
+            // The name, the volume's line and the slider: a little taller than other subjects.
+            subject-height: root.compact ? 64px : 96px;
+            info: { icon: root.page.hero.icon, name: root.page.hero.name, meta: root.compact ? "" : root.page.hero.meta };
+            // The slider stops at 640 px; a longer one gives no finer control.
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                IconButton {
+                    icon: root.page.out-muted ? "volume-off" : "volume";
+                    label: root.page.out-muted ? "Unmute" : "Mute";
+                    clicked => { root.act("out-mute", "", 0); }
                 }
-                // The slider stops at 640 px; a longer one gives no finer control.
-                HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
-                    IconButton {
-                        icon: root.page.out-muted ? "volume-off" : "volume";
-                        label: root.page.out-muted ? "Unmute" : "Mute";
-                        clicked => { root.act("out-mute", "", 0); }
-                    }
-                    Slider {
-                        big: true;
-                        label: "Output volume";
-                        value: root.page.out-volume;
-                        maximum: root.page.max;
-                        mark: root.page.max > 1 ? 1 : -1;
-                        y: (parent.height - self.height) / 2;
-                        preferred-width: 640px;
-                        horizontal-stretch: 1;
-                        moved(v) => { root.act("out-volume", "", v); }
-                    }
-                    Percent { value: root.page.out-volume; muted: root.page.out-muted; font-size: Type.body; color: Theme.text; }
+                Slider {
+                    big: true;
+                    label: "Output volume";
+                    value: root.page.out-volume;
+                    maximum: root.page.max;
+                    mark: root.page.max > 1 ? 1 : -1;
+                    y: (parent.height - self.height) / 2;
+                    preferred-width: 640px;
+                    horizontal-stretch: 1;
+                    moved(v) => { root.act("out-volume", "", v); }
                 }
+                Percent { value: root.page.out-volume; muted: root.page.out-muted; font-size: Type.body; color: Theme.text; }
             }
         }
         // The page's views, top right as on every page.

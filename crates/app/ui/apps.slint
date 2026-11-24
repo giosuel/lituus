@@ -7,7 +7,7 @@ import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, Switch, SectionLabel, Scroll, Focusable } from "controls.slint";
 import { TextField, Modal, Segmented, CheckBox, Select } from "dialogs.slint";
-import { Hero, Card, ScrollCard, SettingRow } from "shell.slint";
+import { Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
 import { AppChoice, AppTile } from "defaultapps.slint";
 
 /// An app in the list. badge: "Changed", "Can't start"… (tone "accent" or "warn"); faint: hidden.
@@ -221,43 +221,28 @@ export component AppsPage inherits VerticalLayout {
         sub: "What your app launcher shows, and how each app starts";
         hero-height: root.compact ? 136px : 206px;
         compact: root.compact;
-        aside: add-button.width + 22px;
-        if root.view.state == "list": HorizontalLayout {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px;
-            height: root.compact ? 56px : 88px;
-            spacing: 20px;
-            alignment: start;
-            Rectangle {
-                width: root.compact ? 56px : 88px;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: Theme.accent-soft-bg;
-                Icon { name: "app"; tint: Theme.accent; size: parent.width * 0.44; stroke-width: 1.3px; }
-            }
-            VerticalLayout {
-                alignment: center;
+        aside: add-button.width + 18px;
+        HeroSubject {
+            compact: root.compact;
+            loading: root.view.state != "list";
+            info: { icon: "app", name: root.view.hero-title };
+            if !root.compact: HorizontalLayout {
                 spacing: 6px;
-                Text { text: root.view.hero-title; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
-                if !root.compact: HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
-                    Text { text: root.view.hero-line; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
-                    if root.view.hero-problems != "": Text {
-                        text: root.view.hero-problems;
-                        color: problems-area.has-hover ? Theme.text : Theme.warn-text;
-                        font-size: Type.body;
-                        vertical-alignment: center;
-                        problems-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", "problems"); } }
-                    }
+                alignment: start;
+                for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
+                Text { text: root.view.hero-line; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
+                if root.view.hero-problems != "": Text {
+                    text: root.view.hero-problems;
+                    color: problems-area.has-hover ? Theme.text : Theme.warn-text;
+                    font-size: Type.body;
+                    vertical-alignment: center;
+                    problems-area := TouchArea { mouse-cursor: pointer; clicked => { root.act("filter", "problems"); } }
                 }
             }
         }
         add-button := Button {
-            x: parent.width - self.width - 22px;
-            y: 22px;
+            x: parent.width - self.width - 18px;
+            y: 18px;
             width: root.view.state == "list" ? self.preferred-width : 0;
             visible: root.view.state == "list";
             label: "Add an app…";
@@ -501,7 +486,12 @@ export component AppsPage inherits VerticalLayout {
             }
         }
     }
-    if root.view.state != "list": Card { vertical-stretch: 1; }
+    if root.view.state != "list": HorizontalLayout {
+        spacing: 14px;
+        vertical-stretch: 1;
+        Card { width: root.narrow ? 420px : 560px; EmptyState { loading: true; title: "Reading your apps…"; } }
+        Card { horizontal-stretch: 1; EmptyState { loading: true; title: " "; } }
+    }
 }
 
 /// Add an app: a program (an AppImage, a script, a game) or a website in a window of its own.

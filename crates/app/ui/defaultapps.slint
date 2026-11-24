@@ -8,7 +8,7 @@ import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, Focusable, SectionLabel, CardTitle, Scroll } from "controls.slint";
 import { TextField, Modal } from "dialogs.slint";
-import { Hero, Card, ScrollCard } from "shell.slint";
+import { Hero, HeroSubject, Card, ScrollCard, EmptyState } from "shell.slint";
 
 /// An app: its desktop file id, name, a line about it ("Flatpak · app.zen_browser.zen"), and
 /// its icon (or its first letter on a tile when it has none).
@@ -171,36 +171,21 @@ export component DefaultAppsPage inherits VerticalLayout {
         sub: "Which app opens links, files and a terminal";
         hero-height: root.compact ? 136px : 206px;
         compact: root.compact;
-        aside: sources-button.width + 22px;
-        if root.view.state == "list": HorizontalLayout {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px;
-            height: root.compact ? 56px : 88px;
-            spacing: 20px;
-            alignment: start;
-            Rectangle {
-                width: root.compact ? 56px : 88px;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: Theme.accent-soft-bg;
-                Icon { name: "app"; tint: Theme.accent; size: parent.width * 0.44; stroke-width: 1.3px; }
-            }
-            VerticalLayout {
-                alignment: center;
+        aside: sources-button.width + 18px;
+        HeroSubject {
+            compact: root.compact;
+            loading: root.view.state != "list";
+            info: { icon: "app", name: root.view.hero-title };
+            if !root.compact: HorizontalLayout {
                 spacing: 6px;
-                Text { text: root.view.hero-title; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
-                if !root.compact: HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
-                    Text { text: root.view.hero-more; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
-                }
+                alignment: start;
+                for a in root.view.hero-apps: AppTile { app: a; size: 20px; }
+                Text { text: root.view.hero-more; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
             }
         }
         sources-button := Button {
-            x: parent.width - self.width - 22px;
-            y: 22px;
+            x: parent.width - self.width - 18px;
+            y: 18px;
             width: root.view.state == "list" ? self.preferred-width : 0;
             visible: root.view.state == "list";
             label: "Where these come from";
@@ -274,7 +259,12 @@ export component DefaultAppsPage inherits VerticalLayout {
             }
         }
     }
-    if root.view.state != "list": Card { vertical-stretch: 1; }
+    if root.view.state != "list": HorizontalLayout {
+        spacing: 14px;
+        vertical-stretch: 1;
+        Card { horizontal-stretch: 1; EmptyState { loading: true; title: "Reading your apps and their file types…"; } }
+        Card { width: root.narrow ? 400px : 560px; EmptyState { loading: true; title: " "; } }
+    }
 }
 
 component PickerRow inherits Focusable {

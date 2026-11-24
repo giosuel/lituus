@@ -7,7 +7,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Button, IconButton, CardTitle, SectionLabel } from "controls.slint";
-import { Hero, Card, ScrollCard, Tooltip } from "shell.slint";
+import { Hero, HeroSubject, Card, ScrollCard, Tooltip, EmptyState } from "shell.slint";
 
 /// A fact about the hardware: what it is (label), its name (title) and a line under it. link: an
 /// Open Displays button beside it.
@@ -152,43 +152,24 @@ export component SystemPage inherits VerticalLayout {
         hero-height: root.compact ? 136px : 206px;
         compact: root.compact;
         aside: bug.width + 18px;
-        if root.view.state == "list": HorizontalLayout {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            height: root.compact ? 56px : 96px;
-            width: parent.width - 48px;
-            spacing: 20px;
-            alignment: start;
-            // The OS's logo, or its first letter.
-            Rectangle {
-                width: root.compact ? 56px : 88px;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: Theme.accent-soft-bg;
-                Image { width: parent.width * 0.55; height: self.width; source: root.view.logo; image-fit: contain; }
-                if root.view.logo.width == 0: Text { text: root.view.monogram; color: Theme.accent; font-size: parent.width * 0.42; font-weight: 600; }
+        // The computer: its logo (or first letter), its name with the rename button (F2 too), its
+        // network name, and what it is.
+        HeroSubject {
+            compact: root.compact;
+            loading: root.view.state != "list";
+            info: { name: root.view.name };
+            logo: root.view.logo;
+            monogram: root.view.monogram;
+            editable: true;
+            edit-label: "Rename this computer";
+            edit => { root.rename(); }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Text { text: root.view.hostname; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; }
+                Text { text: "on the network"; color: Theme.muted; font-size: Type.body; }
             }
-            VerticalLayout {
-                alignment: center;
-                spacing: 4px;
-                // The name, and right after it the button that renames the computer (F2 too).
-                HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    Text { text: root.view.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; vertical-alignment: center; }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton { icon: "pencil"; label: "Rename this computer"; size: 28px; icon-size: 15px; flat: true; clicked => { root.rename(); } }
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    Text { text: root.view.hostname; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; }
-                    Text { text: "on the network"; color: Theme.muted; font-size: Type.body; }
-                }
-                if !root.compact: Text { text: root.view.line; color: Theme.muted; font-size: Type.body; overflow: elide; }
-            }
+            if !root.compact: Text { text: root.view.line; color: Theme.muted; font-size: Type.body; overflow: elide; }
         }
         // The page as plain text for a bug report; a check for two seconds after.
         bug := IconButton {
@@ -344,5 +325,10 @@ export component SystemPage inherits VerticalLayout {
             }
         }
     }
-    if root.view.state != "list": Card { vertical-stretch: 1; }
+    if root.view.state != "list": HorizontalLayout {
+        spacing: 14px;
+        vertical-stretch: 1;
+        Card { horizontal-stretch: 1; EmptyState { loading: true; title: "Reading this computer…"; } }
+        Card { width: root.narrow ? 380px : 560px; EmptyState { loading: true; title: " "; } }
+    }
 }

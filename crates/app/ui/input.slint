@@ -407,21 +407,18 @@ export component KeyboardPage inherits VerticalLayout {
     Hero {
         title: "Keyboard";
         sub: root.view.state == "list" ? ChangeLine.text(root.view.bar, "Every keyboard uses these layouts") : "";
-        aside: kb-revert.width;
+        aside: kb-revert.width + 18px;
         // Hyprland not running: only the title and its line; the card says the rest.
         hero-height: root.compact || root.view.state == "not-running" ? 136px : 206px;
         compact: root.compact;
         if root.view.state == "list": HeroSubject {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px - switch-now.width - 20px;
-            height: root.compact ? 56px : 96px;
+            aside: switch-now.width + 20px;
             compact: root.compact;
             info: root.view.hero;
         }
         switch-now := Button {
-            x: parent.width - self.width - 22px;
-            y: parent.height - self.height - 26px;
+            x: parent.width - self.width - 18px;
+            y: parent.height - self.height - (root.compact ? 16px : 22px);
             width: root.view.can-switch && root.view.state == "list" ? self.preferred-width : 0;
             visible: root.view.can-switch && root.view.state == "list";
             enabled: self.visible;
@@ -430,8 +427,8 @@ export component KeyboardPage inherits VerticalLayout {
             clicked => { root.act("switch-now", "", 0); }
         }
         kb-revert := Button {
-            x: parent.width - self.width - 22px;
-            y: 22px;
+            x: parent.width - self.width - 18px;
+            y: 18px;
             width: root.view.bar.can-revert && root.view.state == "list" ? self.preferred-width : 0;
             visible: root.view.bar.can-revert && root.view.state == "list";
             enabled: self.visible;
@@ -525,21 +522,17 @@ export component MousePage inherits VerticalLayout {
     Hero {
         title: "Mouse & touchpad";
         sub: ChangeLine.text(root.view.bar, root.view.sub);
-        aside: mouse-revert.width;
+        aside: mouse-revert.width + 18px;
         // Hyprland not running: only the title and its line; the card says the rest.
         hero-height: root.compact || root.view.state == "not-running" ? 136px : 206px;
         compact: root.compact;
         if root.view.state == "list": HeroSubject {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px;
-            height: root.compact ? 56px : 96px;
             compact: root.compact;
             info: root.view.hero;
         }
         mouse-revert := Button {
-            x: parent.width - self.width - 22px;
-            y: 22px;
+            x: parent.width - self.width - 18px;
+            y: 18px;
             width: root.view.bar.can-revert && root.view.state == "list" ? self.preferred-width : 0;
             visible: root.view.bar.can-revert && root.view.state == "list";
             enabled: self.visible;
