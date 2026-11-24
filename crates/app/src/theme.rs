@@ -13,7 +13,8 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 impl Rgb {
     pub fn parse(hex: &str) -> Option<Self> {
         let hex = hex.strip_prefix('#')?;
-        if hex.len() != 6 {
+        // Six bytes that aren't all ASCII ("a€12") would be cut inside a character below.
+        if hex.len() != 6 || !hex.is_ascii() {
             return None;
         }
         let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -319,6 +320,12 @@ mod tests {
             builtin_note(true, &[SourceStatus::Missing, used.clone()]).starts_with("Wallpaper colours are in use.")
         );
         assert_eq!(builtin_note(false, &[used]), "");
+    }
+
+    #[test]
+    fn a_colour_that_isnt_ascii_is_no_colour() {
+        assert_eq!(Rgb::parse("#a€12"), None);
+        assert_eq!(Rgb::parse("#1a2B3c"), Some(Rgb(0x1a, 0x2b, 0x3c)));
     }
 
     /// The owner's blue ML4W palette from the mockups.
