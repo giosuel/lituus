@@ -293,6 +293,8 @@ fn main() -> Result<(), slint::PlatformError> {
             app.tray.is_some() && app.settings.keep_running
         });
         if !background && !in_tray {
+            // The countdown after Apply ends with Lituus: the old display settings go back first.
+            APP.with(|app| displays::revert_on_quit(&mut app.borrow_mut().displays));
             let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow

@@ -125,9 +125,15 @@ fn hyprland_accepts_the_lua_file() {
     text = with_section(&text, "Input", &input().file(true));
     // The live forms too: they're what `hyprctl eval` runs.
     for r in &rules {
-        text += &r.lua_live();
+        text += &r.lua_live(Some(-1));
         text += "\n";
     }
+    for w in &workspaces {
+        text += &w.lua_live();
+        text += "\n";
+    }
+    text += &WorkspaceRule::lua_unbind("4");
+    text += "\n";
     for statement in input().lua_live() {
         text += &statement;
         text += "\n";

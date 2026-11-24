@@ -160,14 +160,35 @@ impl Store {
 
     /// The profile that is what the monitors show now, if any.
     pub fn active(&self, rules: &[MonitorRule]) -> Option<usize> {
-        self.profiles.iter().position(|p| {
-            let mut a: Vec<StoredMonitor> = p.monitors.clone();
-            let mut b: Vec<StoredMonitor> = rules.iter().map(StoredMonitor::from).collect();
-            a.sort_by(|x, y| x.output.cmp(&y.output));
-            b.sort_by(|x, y| x.output.cmp(&y.output));
-            a == b
-        })
+        let now: Vec<StoredMonitor> = rules.iter().map(StoredMonitor::from).collect();
+        self.profiles.iter().position(|p| same_monitors(&p.monitors, &now))
     }
+}
+
+/// The same layout: each monitor set up alike, by its selector. A monitor that's off is only
+/// off: Hyprland may report its mode and position otherwise than when it was saved.
+fn same_monitors(a: &[StoredMonitor], b: &[StoredMonitor]) -> bool {
+    let key = |list: &[StoredMonitor]| {
+        let mut list: Vec<StoredMonitor> = list
+            .iter()
+            .map(|m| {
+                if m.disabled {
+                    StoredMonitor { output: m.output.clone(), disabled: true, ..Default::default() }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+        list.sort_by(|x, y| x.output.cmp(&y.output));
+        list
+    };
+    key(a) == key(b)
+}
+
+/// The same layout of the monitors plugged in, as `Store::active` compares them.
+pub fn same_layout(a: &[MonitorRule], b: &[MonitorRule]) -> bool {
+    let stored = |r: &[MonitorRule]| r.iter().map(StoredMonitor::from).collect::<Vec<_>>();
+    same_monitors(&stored(a), &stored(b))
 }
 
 pub fn path() -> PathBuf {
@@ -251,6 +272,28 @@ mod tests {
         assert_eq!(store.matching(&connected(2)).map(|p| p.name.as_str()), Some("p2"));
         assert_eq!(store.matching(&connected(4)), None, "p4 only by hand");
         assert_eq!(store.matching(&connected(1)), None);
+    }
+
+    /// A monitor that's off is the same whatever Hyprland reports for its mode and position;
+    /// otherwise the profile never shows as in use, and each hotplug switches to it again.
+    #[test]
+    fn a_monitor_thats_off_is_only_off() {
+        let mut r = rules();
+        r[1].disabled = true;
+        let store = Store {
+            profiles: vec![Profile {
+                name: "Desk".into(),
+                monitors: r.iter().map(StoredMonitor::from).collect(),
+                ..Profile::default()
+            }],
+            ..Store::default()
+        };
+        let mut now = r.clone();
+        (now[1].x, now[1].mode.width) = (0, 0);
+        assert_eq!(store.active(&now), Some(0));
+        assert!(same_layout(&now, &r));
+        now[0].x += 10;
+        assert_eq!(store.active(&now), None);
     }
 
     #[test]
