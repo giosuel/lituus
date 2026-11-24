@@ -1,4 +1,5 @@
-# Continuous integration for every PR into main and every push to main.
+# Continuous integration for every PR into main and every push to main, and for each release's
+# tagged commit before it's published (release.yml calls it).
 #
 # Only the aggregate "CI result" job needs to be required, so jobs can be added
 # or renamed without touching the ruleset.
@@ -11,12 +12,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+# A PR's new push cancels its older run. Every other run has a group of its own commit: with one
+# group for main, each merge cancelled the run still waiting, and merges in a row went unchecked.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

@@ -167,9 +167,15 @@ jobs:
           path: Lituus-*.flatpak
           if-no-files-found: error
 
+  # CI's tests and checks on the tagged commit: a commit on main can be tagged before its own CI
+  # run finished, or without one (v0.3.0's was never checked).
+  ci:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    uses: ./.github/workflows/ci.yml
+
   release:
     if: github.ref_type == 'tag'
-    needs: [version, linux, flatpak]
+    needs: [version, linux, flatpak, ci]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
