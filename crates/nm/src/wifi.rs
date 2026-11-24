@@ -230,6 +230,11 @@ impl Snapshot {
                 let active = d.active_connection.as_deref().and_then(|a| self.active_connection(a));
                 // The device's active access point, or else the one its active connection is on.
                 let active_ap = wifi.active_access_point.as_deref().or_else(|| active?.specific_object.as_deref());
+                // While the device runs the hotspot, NetworkManager lists an access point for it
+                // as the one in use: that's not a network Wi-Fi is connected to.
+                let hotspot = active.is_some_and(|a| self.connections.iter().any(|c| c.hotspot && c.uuid == a.uuid));
+                let (active_ap, own) = if hotspot { (None, active_ap) } else { (active_ap, None) };
+                let access_points = wifi.access_points.iter().filter(|ap| own.is_none_or(|own| ap.path != own));
                 // A profile bound to another interface can't be used on this one.
                 let saved: Vec<&SavedConnection> = self
                     .connections
@@ -237,7 +242,7 @@ impl Snapshot {
                     .filter(|c| c.interface.as_deref().is_none_or(|i| i == d.interface))
                     .collect();
                 let active_uuid = active.map(|a| a.uuid.as_str());
-                Some((d.path.clone(), group(wifi.access_points.iter(), active_ap, active_uuid, &saved)))
+                Some((d.path.clone(), group(access_points, active_ap, active_uuid, &saved)))
             })
             .collect()
     }

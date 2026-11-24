@@ -53,6 +53,8 @@ pub enum TrayIcon {
     Airplane,
     WifiOff,
     Connecting,
+    /// The Wi-Fi card runs the hotspot.
+    Hotspot,
     /// Wi-Fi with 0 to 4 bars.
     Wifi(u8),
     Wired,
@@ -67,6 +69,7 @@ impl TrayIcon {
             Self::Airplane => "airplane-mode-symbolic",
             Self::WifiOff => "network-wireless-disabled-symbolic",
             Self::Connecting => "network-wireless-acquiring-symbolic",
+            Self::Hotspot => "network-wireless-hotspot-symbolic",
             Self::Wifi(0) => "network-wireless-signal-none-symbolic",
             Self::Wifi(1) => "network-wireless-signal-weak-symbolic",
             Self::Wifi(2) => "network-wireless-signal-ok-symbolic",
@@ -137,12 +140,18 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
         })
         .collect();
     let connected = networks.iter().find(|n| n.active);
+    // The card runs the hotspot: it isn't on a network.
+    let hotspot = device
+        .and_then(|d| snap.active_connection(d.active_connection.as_deref()?))
+        .is_some_and(|a| view::is_hotspot(snap, a));
     let status = if device.is_none() {
         "Wi-Fi: no device".to_owned()
     } else if !snap.wireless_hardware_enabled {
         "Wi-Fi: blocked".to_owned()
     } else if !snap.wireless_enabled {
         "Wi-Fi: off".to_owned()
+    } else if hotspot {
+        "Wi-Fi: hotspot".to_owned()
     } else {
         match connected {
             Some(n) if n.connecting => format!("Wi-Fi: connecting to {}…", n.name),
@@ -150,11 +159,11 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
             None => "Wi-Fi: not connected".to_owned(),
         }
     };
-    let icon = icon(snap, connected, vpns.iter().any(|v| v.connected), airplane);
+    let icon = icon(snap, connected, hotspot, vpns.iter().any(|v| v.connected), airplane);
     Quick { wifi_available, wifi_on, status, networks, vpns, airplane, icon }
 }
 
-fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, vpn: bool, airplane: bool) -> TrayIcon {
+fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, hotspot: bool, vpn: bool, airplane: bool) -> TrayIcon {
     let wired = snap.devices.iter().any(|d| {
         d.kind == DeviceKind::Ethernet
             && d.active_connection
@@ -167,6 +176,7 @@ fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, vpn: bool, airplane: bool)
         _ if wired => TrayIcon::Wired,
         Some(n) if n.connecting => TrayIcon::Connecting,
         Some(n) => TrayIcon::Wifi(n.bars),
+        None if hotspot => TrayIcon::Hotspot,
         None if airplane => TrayIcon::Airplane,
         None if view::wifi_device(snap).is_some() && !snap.wireless_enabled => TrayIcon::WifiOff,
         None => TrayIcon::Offline,

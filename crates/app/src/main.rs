@@ -1213,11 +1213,12 @@ fn go(app: &mut App, id: &str) {
     }
 }
 
-/// The hotspot page opens with its saved settings, or with the hostname and a new password.
+/// The hotspot page opens with its saved settings (the hotspot that's on, if one is), or with
+/// the hostname and a new password.
 fn open_hotspot(app: &mut App) {
     let Some(snap) = &app.snapshot else { return };
-    match snap.connections.iter().find(|c| c.hotspot) {
-        Some(c) => send(app, view::Command::LoadHotspot { connection: c.path.clone() }),
+    match view::hotspot_view(snap).connection {
+        Some(connection) => send(app, view::Command::LoadHotspot { connection }),
         None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password(), 0)),
     }
 }

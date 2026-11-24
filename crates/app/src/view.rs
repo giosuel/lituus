@@ -538,9 +538,14 @@ pub fn hotspot_view(snap: &Snapshot) -> HotspotView {
 }
 
 fn hotspot_page(snap: &Snapshot) -> HotspotView {
-    let device = wifi_device(snap);
-    let saved = snap.connections.iter().find(|c| c.hotspot);
-    let active = saved.and_then(|c| active_uuid_state(snap, &c.uuid)).filter(|a| a.state != ActiveState::Deactivated);
+    // There can be more than one hotspot profile (GNOME's "Hotspot", and one made later for
+    // 5 GHz, say): the one that's on, else the first.
+    let on = |c: &SavedConnection| active_uuid_state(snap, &c.uuid).filter(|a| a.state != ActiveState::Deactivated);
+    let hotspots = || snap.connections.iter().filter(|c| c.hotspot);
+    let saved = hotspots().find(|c| on(c).is_some()).or_else(|| hotspots().next());
+    let active = saved.and_then(on);
+    // While it's on, the card it runs on.
+    let device = active.and_then(|a| a.devices.first()).and_then(|d| snap.device(d)).or_else(|| wifi_device(snap));
     // What it shares: the connection with the default route.
     let sharing = snap
         .primary_connection
@@ -634,7 +639,7 @@ fn active_vpns(snap: &Snapshot) -> Vec<&lituus_nm::ActiveConnection> {
         .collect()
 }
 
-fn is_hotspot(snap: &Snapshot, active: &lituus_nm::ActiveConnection) -> bool {
+pub(crate) fn is_hotspot(snap: &Snapshot, active: &lituus_nm::ActiveConnection) -> bool {
     snap.connections.iter().any(|c| c.hotspot && c.uuid == active.uuid)
 }
 
@@ -2740,6 +2745,75 @@ pub(crate) mod tests {
         assert_eq!(bytes_label(19_293_798), "18.4 MiB");
         let snap = home();
         assert_eq!(traffic_item(&snap.devices[1]).unwrap().value, "18.4 MiB / 2.1 MiB");
+    }
+
+    /// While the hotspot runs, NetworkManager lists an access point for it as the one in use.
+    #[test]
+    fn the_hotspot_isnt_a_network_wifi_is_connected_to() {
+        let mut snap = home();
+        let mut hs = saved("u-hs", "Hotspot", ConnectionKind::Wifi { ssid: b"thinkpad-x1".to_vec() }, "", None);
+        (hs.hotspot, hs.interface) = (true, None);
+        snap.connections.push(hs);
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        wifi.access_points.push(AccessPoint {
+            path: "/ap/hs".into(),
+            ssid: b"thinkpad-x1".to_vec(),
+            bssid: "9C:B6:D0:4A:12:7E".into(), // the card's own address
+            frequency: 2412,
+            strength: 0,
+            security: Security::Wpa2,
+            max_bitrate: 0,
+        });
+        wifi.active_access_point = Some("/ap/hs".into());
+        snap.devices[0].active_connection = Some("/a/hs".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/hs".into(),
+            id: "Hotspot".into(),
+            uuid: "u-hs".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/wlan".into()],
+            connection: Some("/c/u-hs".into()),
+            specific_object: Some("/ap/hs".into()),
+            vpn: false,
+        }];
+        snap.primary_connection = None;
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_items.wifi, "hotspot");
+        assert!(rows(&view).iter().all(|(title, _)| title != "CONNECTED"), "{:?}", rows(&view));
+        assert!(!rows(&view).iter().any(|(_, names)| names.contains(&"thinkpad-x1".to_owned())));
+        let q = crate::quick::build(Some(&snap), false, &[]);
+        assert_eq!(q.status, "Wi-Fi: hotspot");
+        assert!(q.networks.iter().all(|n| !n.active && n.name != "thinkpad-x1"));
+        assert_eq!(q.icon, crate::quick::TrayIcon::Hotspot);
+    }
+
+    /// Of two hotspot profiles, the page is about the one that's on.
+    #[test]
+    fn the_hotspot_page_shows_the_hotspot_that_runs() {
+        let mut snap = home();
+        for (uuid, ssid) in [("u-hs1", "Hotspot"), ("u-hs2", "thinkpad-x1 5G")] {
+            let mut c = saved(uuid, ssid, ConnectionKind::Wifi { ssid: ssid.as_bytes().to_vec() }, "", None);
+            c.hotspot = true;
+            snap.connections.push(c);
+        }
+        snap.devices[0].active_connection = Some("/a/hs2".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/hs2".into(),
+            id: "thinkpad-x1 5G".into(),
+            uuid: "u-hs2".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/wlan".into()],
+            connection: Some("/c/u-hs2".into()),
+            specific_object: None,
+            vpn: false,
+        }];
+        let h = hotspot_view(&snap);
+        assert_eq!((h.connection.as_deref(), h.active.as_deref()), (Some("/c/u-hs2"), Some("/a/hs2")));
+        assert_eq!((h.ssid.as_str(), h.warning.as_str()), ("thinkpad-x1 5G", ""));
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_items.hotspot, "on");
+        // Off again: the first.
+        snap.active.clear();
+        assert_eq!(hotspot_view(&snap).connection.as_deref(), Some("/c/u-hs1"));
     }
 
     #[test]
