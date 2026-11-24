@@ -72,6 +72,8 @@ pub struct EditorState {
     routes_open: Option<bool>,
     /// A DNS server that couldn't be added, by family (v4, v6).
     dns_error: (String, String),
+    /// The DNS servers being typed, by family: not in the form until Enter, but Apply takes them.
+    typed_dns: (String, String),
     pub busy: bool,
     /// Shown instead of "No changes" until the next edit ("Saved.").
     pub note: Option<(String, &'static str)>,
@@ -195,6 +197,7 @@ impl EditorState {
             routes_backup: None,
             routes_open: None,
             dns_error: Default::default(),
+            typed_dns: Default::default(),
             busy: false,
             note: None,
             failure: None,
@@ -332,7 +335,7 @@ impl EditorState {
     }
 
     pub fn dirty(&self) -> bool {
-        self.initial.as_ref().is_none_or(|i| *i != self.form)
+        self.initial.as_ref().is_none_or(|i| *i != self.form) || self.typed_dns != Default::default()
     }
 
     fn name(&self) -> String {
@@ -947,6 +950,7 @@ fn read_form(window: &MainWindow, app: &mut App) {
     let ui = window.get_editor_form();
     if let Some(state) = app.editor.as_mut() {
         state.form = from_ui(state, &ui);
+        state.typed_dns = (ui.ip4.dns_input.trim().to_owned(), ui.ip6.dns_input.trim().to_owned());
         if let Some(tab) = state.kind.tabs().iter().find(|t| t.id() == window.get_editor_tab().as_str()) {
             state.tab = *tab;
         }
@@ -999,6 +1003,9 @@ pub fn connect(window: &MainWindow) {
             {
                 state.form = initial;
                 state.dns_error = Default::default();
+                // What's being typed goes too.
+                state.typed_dns = Default::default();
+                state.fresh = true;
                 state.reset = true;
             }
         })
@@ -1087,6 +1094,11 @@ pub fn connect(window: &MainWindow) {
                     list.push(input);
                 }
                 state.dns_error = Default::default();
+                if v6 {
+                    state.typed_dns.1.clear()
+                } else {
+                    state.typed_dns.0.clear()
+                }
                 let mut form = to_ui(state, ("".into(), "".into()));
                 // Keep the other family's half-typed server.
                 if v6 {
@@ -1189,7 +1201,11 @@ pub fn connect(window: &MainWindow) {
         update(&weak, |app| {
             read_form(&window, app);
             if let Some(state) = app.editor.as_mut() {
-                take_typed(&mut state.form, &ui);
+                let errors = take_typed(&mut state.form, &ui);
+                if errors != Default::default() {
+                    state.dns_error = errors;
+                    return;
+                }
             }
             apply(app);
         });
@@ -1208,11 +1224,19 @@ fn allowed_range(input: &str) -> String {
 }
 
 /// A DNS server or an allowed range still in its field when Apply is pressed counts, as Enter or
-/// leaving the field would have added it (a click on Apply leaves the focus where it is).
-fn take_typed(form: &mut Form, ui: &EditorForm) {
+/// leaving the field would have added it (a click on Apply leaves the focus where it is). A
+/// server that isn't an address gives its error (v4, v6), rather than being dropped unsaid.
+fn take_typed(form: &mut Form, ui: &EditorForm) -> (String, String) {
+    let mut errors = (String::new(), String::new());
     for (v6, input) in [(false, ui.ip4.dns_input.trim()), (true, ui.ip6.dns_input.trim())] {
         let list = if v6 { &mut form.ip6.dns } else { &mut form.ip4.dns };
-        if input.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_ipv6() == v6) && !list.iter().any(|d| d == input) {
+        if input.is_empty() {
+            continue;
+        }
+        if !input.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_ipv6() == v6) {
+            let error = format!("{input} isn't an {} address.", if v6 { "IPv6" } else { "IPv4" });
+            if v6 { errors.1 = error } else { errors.0 = error }
+        } else if !list.iter().any(|d| d == input) {
             list.push(input.to_owned());
         }
     }
@@ -1222,6 +1246,7 @@ fn take_typed(form: &mut Form, ui: &EditorForm) {
             peer.allowed_ips.push(allowed_range(input));
         }
     }
+    errors
 }
 
 /// Adds or removes a row (an address, a route, a DNS server) and shows the form again.
@@ -1449,6 +1474,21 @@ mod tests {
         assert_eq!(state.errors().total(state.kind), 0);
     }
 
+    /// A server left in its field that isn't an address stops Apply with its error, rather than
+    /// being dropped while the footer says "Saved."; one that is makes Apply possible.
+    #[test]
+    fn a_half_typed_server_counts() {
+        let settings = editor::new_settings(Kind::Ethernet, "u-1");
+        let mut state = EditorState::new(Some("/c/1".into()), settings, Vec::new(), None, None);
+        assert!(!state.dirty());
+        state.typed_dns = ("8.8.4.4".into(), String::new());
+        assert!(state.dirty(), "Apply takes a server still being typed");
+        let ui = to_ui(&state, ("1.2.39.9.9.9".into(), "".into()));
+        let mut form = state.form.clone();
+        assert_eq!(take_typed(&mut form, &ui).0, "1.2.39.9.9.9 isn't an IPv4 address.");
+        assert!(form.ip4.dns.is_empty());
+    }
+
     /// A server typed in one editor isn't in the next one's field, nor saved with it.
     #[test]
     fn a_new_editor_starts_with_empty_dns_fields() {
@@ -1467,7 +1507,7 @@ mod tests {
         let state = EditorState::new(None, Settings::new(), Vec::new(), Some(&snap), Some(Kind::Wifi));
         let ui = to_ui(&state, (" 9.9.9.9 ".into(), "9.9.9.9".into()));
         let mut form = state.form.clone();
-        take_typed(&mut form, &ui);
+        assert_eq!(take_typed(&mut form, &ui), (String::new(), "9.9.9.9 isn't an IPv6 address.".into()));
         assert_eq!(form.ip4.dns, ["9.9.9.9"]);
         assert!(form.ip6.dns.is_empty());
         take_typed(&mut form, &ui);
