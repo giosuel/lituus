@@ -133,12 +133,30 @@ pub fn own_path(dirs: &Dirs, id: &str) -> PathBuf {
     dirs.data_home.join("applications").join(id)
 }
 
+/// Where a change to an app goes: its own file where it is (Wine writes them in subfolders, as
+/// `wine/Programs/Foo.desktop` for the id `wine-Programs-Foo.desktop`), else a new copy at
+/// applications/<id>. A second file with the same id would be one Lituus doesn't read, and
+/// launchers would pick either.
+pub fn own_file(dirs: &Dirs, id: &str, current: &Path) -> PathBuf {
+    if current.starts_with(dirs.data_home.join("applications")) { current.to_owned() } else { own_path(dirs, id) }
+}
+
 /// Changes an app (by id; `current` is the file it's read from now), in the user's own copy.
+/// A copy that ends up the same as the package's file is removed instead, so the app follows
+/// its package again; the file the app is read from is returned.
 pub fn change(dirs: &Dirs, id: &str, current: &Path, edit: impl FnOnce(&mut DesktopFile)) -> std::io::Result<PathBuf> {
-    let own = own_path(dirs, id);
+    let own = own_file(dirs, id, current);
     let text = std::fs::read_to_string(if own.is_file() { &own } else { current })?;
     let mut file = DesktopFile::parse(&text);
     edit(&mut file);
+    if let Some(package) = crate::desktop::package_file(dirs, id)
+        && std::fs::read_to_string(&package).is_ok_and(|p| DesktopFile::parse(&p) == file)
+    {
+        if own.is_file() {
+            std::fs::remove_file(&own)?;
+        }
+        return Ok(package);
+    }
     if let Some(dir) = own.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -146,12 +164,14 @@ pub fn change(dirs: &Dirs, id: &str, current: &Path, edit: impl FnOnce(&mut Desk
     Ok(own)
 }
 
-/// Back to the package's file: the user's copy goes (only when there is a package's file).
+/// Back to the package's file: the user's copy goes (only when there is a package's file),
+/// also from a subfolder.
 pub fn restore(dirs: &Dirs, id: &str) -> std::io::Result<()> {
     if crate::desktop::package_file(dirs, id).is_none() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "there's no package's file to go back to"));
     }
-    std::fs::remove_file(own_path(dirs, id))
+    let own = crate::desktop::find(dirs, id).filter(|a| a.own).map_or_else(|| own_path(dirs, id), |a| a.path);
+    std::fs::remove_file(own)
 }
 
 /// What a copy changes from the package's file: (key, the package's value, the copy's), for the
@@ -314,6 +334,54 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    #[test]
+    fn a_copy_that_changes_nothing_goes() {
+        // Hidden, then shown again: the copy would be the package's file, and the app would stop
+        // following its package.
+        let root = test_dir::with("edit-back", &[("usr/share/applications/firefox.desktop", FIREFOX)]);
+        let dirs = test_dir::dirs(&root);
+        let system = root.join("usr/share/applications/firefox.desktop");
+        let own = change(&dirs, "firefox.desktop", &system, |f| f.set_bool("NoDisplay", true)).unwrap();
+        assert!(own.is_file());
+        let now = change(&dirs, "firefox.desktop", &own, |f| f.set_bool("NoDisplay", false)).unwrap();
+        assert_eq!(now, system);
+        assert!(!own.exists());
+        // The same name again changes nothing either.
+        change(&dirs, "firefox.desktop", &system, |f| f.set(ENTRY, "Name", Some("Firefox"))).unwrap();
+        assert!(!own.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_own_file_in_a_subfolder_is_changed_where_it_is() {
+        // As Wine writes them: the id is wine-Programs-Foo.desktop.
+        let root = test_dir::with(
+            "edit-sub",
+            &[(
+                "home/.local/share/applications/wine/Programs/Foo.desktop",
+                "[Desktop Entry]\nType=Application\nName=Foo\nExec=wine foo.exe\n",
+            )],
+        );
+        let dirs = test_dir::dirs(&root);
+        let apps = crate::desktop::all(&dirs);
+        assert_eq!((apps.len(), apps[0].id.as_str(), apps[0].own), (1, "wine-Programs-Foo.desktop", true));
+        let current = apps[0].path.clone();
+        let written = change(&dirs, &apps[0].id, &current, |f| f.set_bool("NoDisplay", true)).unwrap();
+        assert!(
+            !root.join("home/.local/share/applications/wine-Programs-Foo.desktop").exists(),
+            "a second file with the same id was written"
+        );
+        assert_eq!(written, current);
+        assert!(crate::desktop::all(&dirs)[0].no_display);
+        // A copy of a package's file in a subfolder (kde/) is changed and restored where it is.
+        test_dir::write(&root, "usr/share/applications/kde/dolphin.desktop", FIREFOX);
+        test_dir::write(&root, "home/.local/share/applications/kde/dolphin.desktop", FIREFOX);
+        let own = root.join("home/.local/share/applications/kde/dolphin.desktop");
+        assert_eq!(change(&dirs, "kde-dolphin.desktop", &own, |f| f.set_bool("NoDisplay", true)).unwrap(), own);
+        restore(&dirs, "kde-dolphin.desktop").unwrap();
+        assert!(!own.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn a_new_value_drops_the_keys_translations() {
@@ -346,6 +414,7 @@ mod tests {
         f.set(ENTRY, "Exec", Some("c"));
         assert_eq!(f.text(), "[Desktop Entry]\nName=A\n[Desktop Entry]\nExec=c\n");
     }
+
     #[test]
     fn electron_and_wayland() {
         assert_eq!(program("env GDK_BACKEND=x11 obsidian %U"), "obsidian");

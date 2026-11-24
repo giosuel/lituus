@@ -110,7 +110,9 @@ pub fn all(dirs: &Dirs) -> Vec<App> {
     for dir in dirs.applications() {
         let mut files = Vec::new();
         walk(&dir, &dir, &mut files);
-        files.sort();
+        // Two files of one id in one folder (applications/wine-Foo.desktop and wine/Foo.desktop):
+        // the one directly in it first, whatever the names sort as.
+        files.sort_by_key(|(id, path)| (id.clone(), path.parent() != Some(dir.as_path()), path.clone()));
         for (id, path) in files {
             if !seen.insert(id.clone()) {
                 continue;
@@ -125,6 +127,32 @@ pub fn all(dirs: &Dirs) -> Vec<App> {
         }
     }
     out
+}
+
+/// One app as `all` reads it, from the first folder that has its id: after a change to it, so
+/// the page needn't read every app again.
+pub fn find(dirs: &Dirs, id: &str) -> Option<App> {
+    let own_dir = dirs.data_home.join("applications");
+    for dir in dirs.applications() {
+        let direct = dir.join(id);
+        let path = if direct.is_file() {
+            direct
+        } else {
+            let mut files = Vec::new();
+            walk(&dir, &dir, &mut files);
+            match files.into_iter().filter(|(i, _)| i == id).map(|(_, p)| p).min() {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+        let mut app = parse(id, &path, &std::fs::read_to_string(&path).ok()?)?;
+        app.own = dir == own_dir;
+        if app.own {
+            app.package = package_file(dirs, id);
+        }
+        return Some(app);
+    }
+    None
 }
 
 /// The package's (the system's) file for an id, in the data folders after the user's.
@@ -222,6 +250,33 @@ mod tests {
             Some(root.join("usr/share/icons/hicolor/scalable/apps/firefox.svg"))
         );
         assert_eq!(icon_file(&dirs, "", "nothing"), None);
+        // One app read again on its own is the same as in the list.
+        for app in &apps {
+            assert_eq!(find(&dirs, &app.id).as_ref(), Some(app));
+        }
+        assert_eq!(find(&dirs, "gone.desktop"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn of_two_own_files_with_one_id_the_direct_one_counts() {
+        let root = test_dir::with(
+            "desktop-twice",
+            &[
+                (
+                    "home/.local/share/applications/wine/Programs/Foo.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Wine's\n",
+                ),
+                (
+                    "home/.local/share/applications/wine-Programs-Foo.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Direct\n",
+                ),
+            ],
+        );
+        let dirs = test_dir::dirs(&root);
+        let apps = all(&dirs);
+        assert_eq!((apps.len(), apps[0].name.as_str()), (1, "Direct"));
+        assert_eq!(find(&dirs, "wine-Programs-Foo.desktop").map(|a| a.name), Some("Direct".into()));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
