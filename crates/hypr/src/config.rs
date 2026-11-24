@@ -37,9 +37,19 @@ impl ConfigFile {
         self.dir.join(if self.lua { "hyprland.lua" } else { "hyprland.conf" })
     }
 
-    /// The line the user's config needs to load Lituus's file.
+    /// The line the user's config needs to load Lituus's file: for hyprlang the file where it is
+    /// (`XDG_CONFIG_HOME` may not be ~/.config), with `~` for the home folder.
     pub fn load_line(&self) -> String {
-        if self.lua { "require(\"lituus\")".to_owned() } else { "source = ~/.config/hypr/lituus.conf".to_owned() }
+        if self.lua {
+            "require(\"lituus\")".to_owned()
+        } else {
+            let path = self.path();
+            let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+            match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+                Some(rest) => format!("source = ~/{}", rest.display()),
+                None => format!("source = {}", path.display()),
+            }
+        }
     }
 
     /// The comment and the line Set up… adds at the end of the user's config (D-44).
@@ -65,6 +75,9 @@ impl ConfigFile {
         use std::io::Write;
         let main = self.main_path();
         let text = std::fs::read_to_string(&main)?;
+        // Opened first: a config that can't be written to (read-only, a link into the Nix store)
+        // gets no copy, so trying again doesn't leave one copy after another.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&main)?;
         let backup = self.backup_path();
         std::fs::copy(&main, &backup)?;
         let (comment, line) = self.load_lines();
@@ -74,10 +87,7 @@ impl ConfigFile {
             _ if text.ends_with('\n') => "\n",
             _ => "\n\n",
         };
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&main)?
-            .write_all(format!("{gap}{comment}\n{line}\n").as_bytes())?;
+        file.write_all(format!("{gap}{comment}\n{line}\n").as_bytes())?;
         Ok(backup)
     }
 
@@ -105,6 +115,8 @@ impl ConfigFile {
                     .iter()
                     .any(|r| compact.contains(r))
             } else {
+                // A comment after it ("source = …/lituus.conf # Lituus") isn't part of the path.
+                let line = line.split('#').next().unwrap_or_default().trim_end();
                 line.starts_with("source") && line.ends_with("lituus.conf")
             }
         })
@@ -228,9 +240,38 @@ mod tests {
         file.add_load_line().unwrap();
         assert_eq!(
             std::fs::read_to_string(file.main_path()).unwrap(),
-            "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = ~/.config/hypr/lituus.conf\n"
+            format!(
+                "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = {}\n",
+                d.join("lituus.conf").display()
+            )
         );
         assert!(file.loaded());
+    }
+
+    #[test]
+    fn the_source_line_names_the_folder_the_file_is_in() {
+        let f = ConfigFile::new("/x/cfg/hypr", false);
+        assert_eq!(f.load_line(), "source = /x/cfg/hypr/lituus.conf");
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
+            let f = ConfigFile::new(home.join(".config/hypr"), false);
+            assert_eq!(f.load_line(), "source = ~/.config/hypr/lituus.conf");
+        }
+    }
+
+    #[test]
+    fn a_config_that_cant_be_written_gets_no_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("setup-readonly");
+        let file = ConfigFile::new(&d, true);
+        std::fs::write(file.main_path(), "-- mine\n").unwrap();
+        std::fs::set_permissions(file.main_path(), std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root may write to it anyway.
+        if std::fs::OpenOptions::new().append(true).open(file.main_path()).is_ok() {
+            return;
+        }
+        assert!(file.add_load_line().is_err());
+        assert!(!d.join("hyprland.lua.bak").exists(), "a copy was left behind");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -353,6 +394,9 @@ mod tests {
         std::fs::write(d.join("hyprland.conf"), "monitor = , preferred, auto, 1\n").unwrap();
         assert!(!f.loaded());
         std::fs::write(d.join("hyprland.conf"), "source = ~/.config/hypr/lituus.conf\n").unwrap();
+        assert!(f.loaded());
+        // With a comment after it.
+        std::fs::write(d.join("hyprland.conf"), "source = ~/.config/hypr/lituus.conf # Lituus\n").unwrap();
         assert!(f.loaded());
         assert_eq!(f.path(), d.join("lituus.conf"));
         std::fs::remove_dir_all(&d).unwrap();
