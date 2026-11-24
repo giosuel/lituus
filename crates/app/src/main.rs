@@ -2221,7 +2221,8 @@ async fn run(
                 .unwrap_or("wireguard")
                 .to_owned();
             match portal::save_file("Export the WireGuard configuration", &format!("{name}.conf")).await {
-                Ok(Some(path)) => match write_private(&path, &conf) {
+                // 0600 even when saved over a file that was there with another mode.
+                Ok(Some(path)) => match lituus_fs::write_private(&path, &conf) {
                     Ok(()) => {
                         notice(weak, &format!("Saved {}. It holds the private key: keep it safe.", path.display()))
                     }
@@ -2564,17 +2565,6 @@ fn notice(weak: &slint::Weak<MainWindow>, text: &str) {
     });
 }
 
-/// Writes a file only the user can read (keys and certificates).
-fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    file.write_all(contents.as_bytes())
-}
-
 /// The user's home folder.
 fn home() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -2640,7 +2630,7 @@ async fn import_file(client: &lituus_nm::Client, weak: &slint::Weak<MainWindow>)
             Err(e) => return notice(weak, &format!("{file} isn't an OpenVPN file Lituus can read: {e}")),
         };
         for (path, contents) in &imported.files {
-            if let Err(e) = write_private(path, contents) {
+            if let Err(e) = lituus_fs::write_private(path, contents) {
                 openvpn::remove_files(&home(), &uuid);
                 return notice(weak, &format!("Couldn't save {}: {e}.", path.display()));
             }
@@ -2948,9 +2938,14 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
         let path = config::path();
         let mut last: Option<Signature> = None;
         loop {
-            let config = config::load(&path);
+            let (config, note) = config::load_noting(&path);
             let now = signature(&path, &config);
             if last.as_ref() != Some(&now) {
+                // Once a change, not on every look.
+                if let Some((title, text)) = &note {
+                    eprintln!("lituus: {}: {title}. {text}", path.display());
+                }
+                let (note_title, note) = note.unwrap_or_default();
                 let follow = config.theme.follow_wallpaper;
                 let (statuses, palette) = theme::resolve(&config.theme.sources, follow);
                 let wallpaper = theme::resolve(&config.theme.sources, true).1;
@@ -2976,6 +2971,8 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
                     apply_settings(&window, settings);
                     render(&window);
                     window.set_config_path(shorten_home(&config_path).into());
+                    window.set_config_note_title(note_title.into());
+                    window.set_config_note(note.into());
                     window.set_sources(model(rows.into_iter().map(SourceRow::from).collect()));
                 });
                 last = Some(now);
@@ -4802,7 +4799,7 @@ mod tests {
             let uuid = super::secrets::new_uuid();
             let imported = super::openvpn::import(text, path, &super::openvpn::cert_dir(&home, &uuid)).unwrap();
             for (path, contents) in &imported.files {
-                super::write_private(path, contents).unwrap();
+                lituus_fs::write_private(path, contents).unwrap();
             }
             (uuid, std::path::PathBuf::from(imported.form.key))
         };

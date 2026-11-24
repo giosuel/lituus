@@ -174,13 +174,15 @@ pub fn path() -> PathBuf {
     crate::config::dir().join("displays.toml")
 }
 
-pub fn load(path: &Path) -> Store {
+/// The store, or a new one when there's no file yet. A file that's there and can't be read or
+/// doesn't parse is an error, which says why ("line 16: unknown field `transfrom`"): saving a
+/// new store would replace every profile in it.
+pub fn load(path: &Path) -> Result<Store, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-            eprintln!("lituus: ignoring {}: {e}", path.display());
-            Store::default()
-        }),
-        Err(_) => Store { switch_on_hotplug: true, ..Store::default() },
+        Ok(text) => toml::from_str(&text).map_err(|e| crate::config::describe(&text, &e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store { switch_on_hotplug: true, ..Store::default() }),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Err("it isn't UTF-8 text".into()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -192,7 +194,7 @@ pub fn save(path: &Path, store: &Store) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
 #[cfg(test)]
@@ -227,7 +229,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lituus-profiles-{}", std::process::id()));
         let file = dir.join("displays.toml");
         save(&file, &store).unwrap();
-        let back = load(&file);
+        let back = load(&file).unwrap();
         assert_eq!(back, store);
         let rules_back: Vec<MonitorRule> = back.profiles[0].monitors.iter().map(StoredMonitor::rule).collect();
         assert_eq!(rules_back, r);
@@ -255,12 +257,25 @@ mod tests {
 
     #[test]
     fn no_file_means_switching_on() {
-        assert!(load(Path::new("/nonexistent/displays.toml")).switch_on_hotplug);
+        assert!(load(Path::new("/nonexistent/displays.toml")).unwrap().switch_on_hotplug);
+    }
+
+    /// Only "no file" is a new store: a file that doesn't parse or can't be read says why.
+    #[test]
+    fn a_file_lituus_cant_read_is_an_error_not_an_empty_store() {
+        let dir = std::env::temp_dir().join(format!("lituus-profiles-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("displays.toml");
+        std::fs::write(&file, "[[profile]]\nname = \"Desk\"\ntransfrom = 1\n").unwrap();
+        assert_eq!(load(&file), Err("line 3: unknown field `transfrom`".to_owned()));
+        std::fs::write(&file, b"# caf\xe9\n[[profile]]\nname = \"Desk\"\n").unwrap();
+        assert_eq!(load(&file), Err("it isn't UTF-8 text".to_owned()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn monitors_are_named_by_description_unless_the_file_says_not() {
-        assert!(load(Path::new("/nonexistent/displays.toml")).name_by_description);
+        assert!(load(Path::new("/nonexistent/displays.toml")).unwrap().name_by_description);
         let store: Store = toml::from_str("switch_on_hotplug = true\n").unwrap();
         assert!(store.name_by_description);
         let store: Store = toml::from_str("name_by_description = false\n").unwrap();

@@ -2678,6 +2678,7 @@ dependencies = [
  "image",
  "ksni",
  "lituus-bt",
+ "lituus-fs",
  "lituus-hypr",
  "lituus-keyring",
  "lituus-nm",
@@ -2723,9 +2724,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lituus-fs"
+version = "0.0.0-dev"
+
+[[package]]
 name = "lituus-hypr"
 version = "0.0.0-dev"
 dependencies = [
+ "lituus-fs",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2764,6 +2770,9 @@ dependencies = [
 [[package]]
 name = "lituus-system"
 version = "0.0.0-dev"
+dependencies = [
+ "lituus-fs",
+]
 
 [[package]]
 name = "lituus-wallpaper"
@@ -2778,6 +2787,9 @@ dependencies = [
 [[package]]
 name = "lituus-xdg"
 version = "0.0.0-dev"
+dependencies = [
+ "lituus-fs",
+]
 
 [[package]]
 name = "lock_api"

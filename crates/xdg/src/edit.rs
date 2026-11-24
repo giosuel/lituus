@@ -103,7 +103,7 @@ pub fn change(dirs: &Dirs, id: &str, current: &Path, edit: impl FnOnce(&mut Desk
     if let Some(dir) = own.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&own, file.text())?;
+    lituus_fs::write_atomic(&own, file.text())?;
     Ok(own)
 }
 

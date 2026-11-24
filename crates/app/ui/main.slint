@@ -130,6 +130,9 @@ export component MainWindow inherits Window {
     in property <[Hint]> hints;
     // Settings page.
     in property <string> config-path;
+    // What Settings says when Lituus couldn't use all of config.toml (empty: nothing to say).
+    in property <string> config-note-title;
+    in property <string> config-note;
     // Files over Bluetooth (see files.slint).
     in property <FilesView> files;
     in-out property <bool> files-always;
@@ -844,6 +847,10 @@ export component MainWindow inherits Window {
                                     max-width: 720px;
                                     horizontal-stretch: 1;
                                     alignment: start;
+                                    if root.config-note != "": VerticalLayout {
+                                        padding-top: 12px;
+                                        Notice { tone: "warn"; title: root.config-note-title; text: root.config-note; dismissible: false; }
+                                    }
                                     SectionLabel { text: "APPEARANCE"; height: 30px; vertical-alignment: bottom; }
                                     AppearanceSettings {
                                         follow: root.ap-follow;

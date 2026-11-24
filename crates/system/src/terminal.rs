@@ -115,13 +115,14 @@ pub fn list_to_save(dirs: &Dirs) -> PathBuf {
 
 /// Makes `id` the first terminal in the list at `path`, keeping the others after it.
 pub fn set_terminal(path: &Path, id: &str) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    // A list that can't be read isn't written over.
+    let text = lituus_fs::read_or_empty(path)?;
     let rest = text.lines().filter(|l| l.trim().trim_start_matches('-').split(':').next() != Some(id));
     let out: Vec<&str> = std::iter::once(id).chain(rest).collect();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, out.join("\n") + "\n")
+    lituus_fs::write_atomic(path, out.join("\n") + "\n")
 }
 
 /// A desktop file's Name, found by its id in the application folders.
