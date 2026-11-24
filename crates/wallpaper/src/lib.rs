@@ -316,12 +316,18 @@ pub fn set(env: &Env, program: Program, set: &Set, monitors: &[String]) -> Resul
     }
 }
 
-/// Starts the program, in the background, detached from Lituus.
+/// Starts the program, in the background, detached from Lituus: in a process group of its own,
+/// so Ctrl+C in the terminal Lituus was started from doesn't stop it too, and waited for on a
+/// thread, so it doesn't stay behind as a zombie when it ends (stopped to start it again, or to
+/// switch) while Lituus runs.
 pub fn start(env: &Env, program: Program) -> Result<(), Error> {
     if env.find(program.daemon()).is_none() {
         return Err(Error::NotInstalled(program.name()));
     }
-    busy_retry(|| env.command(program.daemon()).stdout(Stdio::null()).stderr(Stdio::null()).spawn())?;
+    let mut daemon = busy_retry(|| {
+        env.command(program.daemon()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn()
+    })?;
+    std::thread::spawn(move || daemon.wait());
     Ok(())
 }
 
@@ -550,6 +556,46 @@ mod tests {
             "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"awww-daemon\") end)"
         );
         assert_eq!(autostart_line(Program::Hyprpaper, false), "exec-once = hyprpaper");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The process group of a process (`/proc/<pid>/stat`'s fifth field, after the name).
+    fn group(stat: &str) -> String {
+        stat.rsplit_once(')').unwrap().1.split_whitespace().nth(2).unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_started_program_is_detached_and_reaped() {
+        let (env, d) = stand_ins(
+            "start",
+            &[(
+                "hyprpaper",
+                // Only the stand-ins are on the PATH.
+                r#"echo $$ > "${0%/bin/*}/pid"; /bin/sleep 0.5"#,
+            )],
+        );
+        start(&env, Program::Hyprpaper).unwrap();
+        let mut pid = String::new();
+        for _ in 0..100 {
+            pid = std::fs::read_to_string(d.join("pid")).unwrap_or_default().trim().to_owned();
+            if !pid.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!pid.is_empty(), "{:?}", calls(&d));
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        // A process group of its own, not Lituus's.
+        let stat = std::fs::read_to_string(proc.join("stat")).unwrap();
+        assert_ne!(group(&stat), group(&std::fs::read_to_string("/proc/self/stat").unwrap()), "{stat}");
+        // Gone once it ended: waited for, not a zombie.
+        for _ in 0..100 {
+            if !proc.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!proc.exists(), "{:?}", std::fs::read_to_string(proc.join("stat")));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
