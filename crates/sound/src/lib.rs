@@ -4,5 +4,5 @@
 mod client;
 mod model;
 
-pub use client::{Error, Session};
+pub use client::{Closer, Error, Session};
 pub use model::{Card, Device, NORM, Port, Profile, Snapshot, Stream, Volume};

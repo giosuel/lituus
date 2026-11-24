@@ -41,6 +41,8 @@ impl Command {
 enum Message {
     Changed,
     Run(Command),
+    /// The watcher of the connection with this number stopped: the server went away.
+    Lost(u64),
 }
 
 #[derive(Default)]
@@ -66,7 +68,10 @@ fn post(weak: &slint::Weak<MainWindow>, change: impl FnOnce(&mut State) + Send +
 }
 
 fn run(weak: slint::Weak<MainWindow>, tx: Sender<Message>, rx: Receiver<Message>) {
+    // Each connection's number: a watcher that ends tells which one it watched.
+    let mut connection = 0;
     loop {
+        connection += 1;
         let (mut session, watcher) = match (Session::connect(), Session::connect()) {
             (Ok(s), Ok(w)) => (s, w),
             (Err(lituus_sound::Error::NotRunning), _) | (_, Err(lituus_sound::Error::NotRunning)) => {
@@ -86,20 +91,50 @@ fn run(weak: slint::Weak<MainWindow>, tx: Sender<Message>, rx: Receiver<Message>
                 continue;
             }
         };
-        let changes = tx.clone();
-        std::thread::spawn(move || watcher.watch(move || changes.send(Message::Changed).is_ok()));
-        if serve(&weak, &mut session, &rx).is_err() {
+        if connected(&weak, &mut session, watcher, &tx, &rx, connection).is_err() {
             post(&weak, |s| s.snapshot = None);
             std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
 
-/// Answers commands and changes until the connection breaks.
+/// One connection's life: a watcher on a thread of its own, and the commands until the
+/// connection breaks or the watcher finds the server gone.
+fn connected(
+    weak: &slint::Weak<MainWindow>,
+    session: &mut Session,
+    watcher: Session,
+    tx: &Sender<Message>,
+    rx: &Receiver<Message>,
+    connection: u64,
+) -> Result<(), lituus_sound::Error> {
+    let closer = watcher.closer().ok();
+    watch(watcher, tx.clone(), connection);
+    let result = serve(weak, session, rx, connection);
+    // With the server still there (a reply that didn't come in time, say), the watcher would go
+    // on: one more thread and connection on every pass, each change told once more.
+    if let Some(closer) = closer {
+        closer.close();
+    }
+    result
+}
+
+/// Watches for changes on a thread of its own, and tells when the server is gone.
+fn watch(watcher: Session, tx: Sender<Message>, connection: u64) {
+    std::thread::spawn(move || {
+        let changes = tx.clone();
+        let _ = watcher.watch(move || changes.send(Message::Changed).is_ok());
+        let _ = tx.send(Message::Lost(connection));
+    });
+}
+
+/// Answers commands and changes until the connection breaks, or connection number
+/// `connection`'s watcher finds the server gone.
 fn serve(
     weak: &slint::Weak<MainWindow>,
     session: &mut Session,
     rx: &Receiver<Message>,
+    connection: u64,
 ) -> Result<(), lituus_sound::Error> {
     let mut first = true;
     loop {
@@ -111,9 +146,17 @@ fn serve(
             std::thread::sleep(Duration::from_millis(15));
             queue.extend(rx.try_iter());
             for m in queue {
-                if let Message::Run(c) = m {
-                    commands.retain(|old| !c.replaces(old));
-                    commands.push(c);
+                match m {
+                    Message::Run(c) => {
+                        commands.retain(|old| !c.replaces(old));
+                        commands.push(c);
+                    }
+                    // The changes asked for meanwhile name the old server's outputs and apps by
+                    // its numbers, so they're dropped rather than sent to the new one.
+                    Message::Lost(n) if n == connection => {
+                        return Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset).into());
+                    }
+                    Message::Changed | Message::Lost(_) => {}
                 }
             }
         }
@@ -575,5 +618,95 @@ mod tests {
         assert_eq!(v.empty_command, NOT_RUNNING_COMMAND);
         let v = view(&State { error: Some("Connection refused".into()), ..State::default() });
         assert_eq!((v.state.as_str(), v.empty_title.as_str()), ("loading", "Couldn't reach PipeWire"));
+    }
+
+    /// pipewire-pulse on the other end: the handshake, empty lists, and an ack for the rest,
+    /// until the connection closes.
+    fn fake_server(server: std::os::unix::net::UnixStream) {
+        use pulseaudio::protocol::{self, Command};
+        let mut socket = std::io::BufReader::new(server);
+        let v = protocol::MAX_VERSION;
+        while let Ok((seq, command)) = protocol::read_command_message(&mut socket, v) {
+            let w = socket.get_mut();
+            let _ = match command {
+                Command::Auth(_) => {
+                    protocol::write_reply_message(w, seq, &protocol::AuthReply { version: v, ..Default::default() }, v)
+                }
+                Command::SetClientName(_) => {
+                    protocol::write_reply_message(w, seq, &protocol::SetClientNameReply { client_id: 1 }, v)
+                }
+                Command::GetServerInfo => protocol::write_reply_message(w, seq, &protocol::ServerInfo::default(), v),
+                Command::GetSinkInfoList => protocol::write_reply_message(w, seq, &protocol::SinkInfoList::new(), v),
+                Command::GetSourceInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::SourceInfoList::new(), v)
+                }
+                Command::GetSinkInputInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::SinkInputInfoList::new(), v)
+                }
+                Command::GetCardInfoList => protocol::write_reply_message(w, seq, &protocol::CardInfoList::new(), v),
+                _ => protocol::write_ack_message(w, seq),
+            };
+        }
+    }
+
+    /// A session and a watcher on a fake server; gives the server's ends, and a receiver that
+    /// hears when the watcher's server side sees its connection closed.
+    fn fake_connection()
+    -> (Session, Session, (std::os::unix::net::UnixStream, std::os::unix::net::UnixStream), Receiver<()>) {
+        use std::os::unix::net::UnixStream;
+        let (session_end, session_server) = UnixStream::pair().unwrap();
+        let (watch_end, watch_server) = UnixStream::pair().unwrap();
+        let ends = (session_server.try_clone().unwrap(), watch_server.try_clone().unwrap());
+        let (closed, watch_closed) = channel();
+        std::thread::spawn(move || fake_server(session_server));
+        std::thread::spawn(move || {
+            fake_server(watch_server);
+            let _ = closed.send(());
+        });
+        let session = Session::over(session_end, Vec::new()).unwrap();
+        let watcher = Session::over(watch_end, Vec::new()).unwrap();
+        (session, watcher, ends, watch_closed)
+    }
+
+    /// pipewire-pulse restarts: the watcher's connection closes, and the thread connects again,
+    /// rather than wait for a change that never comes and lose the next one (03-3).
+    #[test]
+    fn the_sound_thread_notices_a_server_that_went_away() {
+        let (mut session, watcher, ends, _) = fake_connection();
+        let (done, returned) = channel();
+        std::thread::spawn(move || {
+            // As run() sets them up: it keeps `tx` for as long as it lives.
+            let (tx, rx) = channel();
+            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1);
+            let _ = done.send(result.is_err());
+        });
+        // The first snapshot is read, the watcher has subscribed.
+        std::thread::sleep(Duration::from_millis(300));
+        ends.0.shutdown(std::net::Shutdown::Both).unwrap();
+        ends.1.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(
+            returned.recv_timeout(Duration::from_secs(3)),
+            Ok(true),
+            "serve() still waits for a command on a connection the server closed"
+        );
+    }
+
+    /// The session's connection breaks while the server is still there: the thread connects
+    /// again, and the old watcher and its connection go with it (03-8).
+    #[test]
+    fn a_reconnect_leaves_no_watcher_behind() {
+        let (mut session, watcher, ends, watch_closed) = fake_connection();
+        let (tx, rx) = channel();
+        let commands = tx.clone();
+        let (done, returned) = channel();
+        std::thread::spawn(move || {
+            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1);
+            let _ = done.send(result.is_err());
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        ends.0.shutdown(std::net::Shutdown::Both).unwrap();
+        commands.send(Message::Run(Command::SinkMute(0, true))).unwrap();
+        assert_eq!(returned.recv_timeout(Duration::from_secs(3)), Ok(true), "the broken session went unnoticed");
+        assert!(watch_closed.recv_timeout(Duration::from_secs(3)).is_ok(), "the old watcher is still connected");
     }
 }
