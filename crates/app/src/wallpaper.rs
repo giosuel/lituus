@@ -695,15 +695,17 @@ fn hyprpaper_splash(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, o
     let wait = weak.is_some();
     let running = state.status.running == Some(Program::Hyprpaper);
     let work = move || -> Result<(), String> {
-        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let saved = |e: std::io::Error| format!("hyprpaper.conf couldn't be saved: {e}.");
+        // One that can't be read isn't taken for an empty one and written over.
+        let old = lituus_fs::read_or_empty(&path).map_err(saved)?;
         let mut text = lituus_wallpaper::hyprpaper_with_splash(&old, on);
         if !text.contains(MARK) {
             text = format!("{MARK}\n{text}");
         }
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+            std::fs::create_dir_all(dir).map_err(saved)?;
         }
-        std::fs::write(&path, text).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))?;
+        lituus_fs::write_atomic(&path, text).map_err(saved)?;
         if !running {
             return Ok(());
         }
@@ -724,9 +726,11 @@ fn slideshow_changed(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) 
     }
 }
 
-/// hyprpaper.conf with the blocks set, and Lituus's mark at the top.
+/// hyprpaper.conf with the blocks set, and Lituus's mark at the top, written whole or not at all
+/// (so hyprpaper never reads half of it, and a full disk doesn't leave it empty).
 fn write_conf(path: &Path, entries: &[HyprpaperEntry]) -> std::io::Result<()> {
-    let old = std::fs::read_to_string(path).unwrap_or_default();
+    // One that can't be read isn't taken for an empty one and written over.
+    let old = lituus_fs::read_or_empty(path)?;
     let mut text = lituus_wallpaper::hyprpaper_conf_text(&old, entries);
     if !text.contains(MARK) {
         text = format!("{MARK}\n{text}");
@@ -734,7 +738,7 @@ fn write_conf(path: &Path, entries: &[HyprpaperEntry]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
 /// Where the user's hyprpaper.conf is kept before Lituus first writes it: hyprpaper.conf.bak, or
@@ -756,7 +760,8 @@ fn take_over(state: &State) -> Result<(), String> {
     };
     std::fs::copy(&path, &backup).map_err(kept)?;
     let text = std::fs::read_to_string(&path).map_err(kept)?;
-    std::fs::write(&path, format!("{MARK}\n{text}")).map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))
+    lituus_fs::write_atomic(&path, format!("{MARK}\n{text}"))
+        .map_err(|e| format!("hyprpaper.conf couldn't be saved: {e}."))
 }
 
 fn save(state: &mut State, key: &str, value: impl Into<toml_edit::Value>) {
@@ -1863,6 +1868,34 @@ mod tests {
             assert_eq!(std::fs::read_to_string(d.join("hypr").join(backup)).unwrap(), mine);
         }
         assert_eq!(std::fs::read_to_string(d.join("hypr/hyprpaper.conf.bak")).unwrap(), "# the first one\n");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// hyprpaper.conf is written through a file beside it: a link into the user's dotfiles stays
+    /// a link, the file keeps its mode, and nothing is left behind.
+    #[test]
+    fn hyprpaper_conf_is_written_whole() {
+        let (mut state, d) = state_in("whole", Some(Program::Hyprpaper));
+        let dotfiles = d.join("dotfiles/hyprpaper.conf");
+        std::fs::create_dir_all(d.join("dotfiles")).unwrap();
+        std::fs::create_dir_all(d.join("hypr")).unwrap();
+        std::fs::write(&dotfiles, format!("{MARK}\nsplash = false\n")).unwrap();
+        std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let conf = d.join("hypr/hyprpaper.conf");
+        std::os::unix::fs::symlink(&dotfiles, &conf).unwrap();
+        let alps = state.folder_path().join("alps.png");
+        act_with(None, &mut state, "set", &alps.display().to_string(), 0.0);
+        assert!(std::fs::symlink_metadata(&conf).unwrap().file_type().is_symlink());
+        let text = std::fs::read_to_string(&dotfiles).unwrap();
+        assert!(text.contains("splash = false") && text.contains(&format!("path = {}", alps.display())), "{text}");
+        assert_eq!(std::fs::metadata(&dotfiles).unwrap().permissions().mode() & 0o777, 0o600);
+        for dir in ["dotfiles", "hypr"] {
+            let names: Vec<String> = std::fs::read_dir(d.join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["hyprpaper.conf"], "{dir}");
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 
