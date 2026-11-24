@@ -1257,6 +1257,8 @@ export component Editor inherits Rectangle {
                             HorizontalLayout { alignment: start; TextField { text <=> root.form.virt.ageing-time; mono: true; width: 120px; label: "MAC ageing time"; placeholder: "300"; } }
                             Hint { text: "seconds"; vertical-alignment: center; }
                         }
+                        // With STP off, the timers' row (and its error) is hidden.
+                        if root.errors.virt-settings != "" && !root.form.virt.stp: Error { text: root.errors.virt-settings; }
                     }
                     FormRow {
                         label: "VLAN filtering";

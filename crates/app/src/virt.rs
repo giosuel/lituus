@@ -383,13 +383,17 @@ pub fn check(kind: crate::editor::Kind, f: &VirtForm) -> (String, String, String
             }
         }
         Kind::Bridge => {
-            let ok = range(&f.stp_priority, 0, 65535)
-                && range(&f.forward_delay, 2, 30)
-                && range(&f.hello_time, 1, 10)
-                && range(&f.max_age, 6, 40)
-                && range(&f.ageing_time, 0, 1_000_000);
-            if !ok {
+            // The STP timers count only with STP on, as in NetworkManager (nm-setting-bridge.c),
+            // and only then are they shown: libvirt's bridges have forward delay 0 and STP off.
+            let timers = !f.stp
+                || (range(&f.stp_priority, 0, 65535)
+                    && range(&f.forward_delay, 2, 30)
+                    && range(&f.hello_time, 1, 10)
+                    && range(&f.max_age, 6, 40));
+            if !timers {
                 e.1 = "Priority 0 to 65535; forward delay 2 to 30 s; hello time 1 to 10 s; max age 6 to 40 s.".into();
+            } else if !range(&f.ageing_time, 0, 1_000_000) {
+                e.1 = "The MAC ageing time is from 0 to 1000000 seconds.".into();
             }
         }
         Kind::Bond => {
@@ -554,6 +558,14 @@ mod tests {
             .map(|c| (c.interface, !c.blocked.is_empty()))
             .collect();
         assert_eq!(blocked, [(wired.interface.clone(), false), ("bond0".into(), true), ("enp3s0.20".into(), true)]);
+    }
+
+    #[test]
+    fn stp_timers_are_not_checked_with_stp_off() {
+        let f = VirtForm { interface: "br0".into(), stp: false, forward_delay: "0".into(), ..VirtForm::default() };
+        assert_eq!(check(Kind::Bridge, &f).1, "", "hidden timers must not block saving");
+        assert!(!check(Kind::Bridge, &VirtForm { stp: true, ..f.clone() }).1.is_empty());
+        assert!(!check(Kind::Bridge, &VirtForm { ageing_time: "x".into(), ..f }).1.is_empty());
     }
 
     #[test]
