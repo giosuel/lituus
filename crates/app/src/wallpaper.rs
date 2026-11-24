@@ -1095,8 +1095,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             if state.program() == Some(Program::Hyprpaper)
                 && Path::new(arg).extension().is_some_and(|e| e.eq_ignore_ascii_case("gif")) =>
         {
-            state.message =
-                Some("hyprpaper doesn't show GIFs: choose awww under Program for pictures that move.".into());
+            state.message = Some(no_gifs(state));
         }
         "set" => {
             let path = PathBuf::from(arg);
@@ -1109,13 +1108,16 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
                 .folder
                 .iter()
                 .flat_map(|f| f.pictures.iter())
-                // Not one that a click would be refused.
+                // Not one that a click would be refused: a GIF, or a path hyprpaper.conf can't hold.
                 .filter(|p| {
-                    !hyprpaper || lituus_wallpaper::hyprpaper_unwritable(&p.path.display().to_string()).is_none()
+                    !hyprpaper
+                        || (!p.gif() && lituus_wallpaper::hyprpaper_unwritable(&p.path.display().to_string()).is_none())
                 })
                 .map(|p| p.path.clone())
                 .collect();
-            if !pictures.is_empty() {
+            if pictures.is_empty() && hyprpaper && state.folder.iter().any(|f| f.pictures.iter().any(|p| p.gif())) {
+                state.message = Some(no_gifs(state));
+            } else if !pictures.is_empty() {
                 // Not the one shown now, if there's another.
                 let now: Vec<&PathBuf> = state.current.iter().map(|(_, p)| p).collect();
                 let others: Vec<&PathBuf> = pictures.iter().filter(|p| !now.contains(p)).collect();
@@ -1294,6 +1296,16 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
     }
 }
 
+/// Why a GIF isn't set with hyprpaper, and what shows one: awww, chosen under Program if it's
+/// installed (the menu lists only those).
+fn no_gifs(state: &State) -> String {
+    if state.status.installed.contains(&Program::Awww) {
+        "hyprpaper doesn't show GIFs: choose awww under Program for pictures that move.".into()
+    } else {
+        "hyprpaper doesn't show GIFs: install awww for pictures that move.".into()
+    }
+}
+
 /// The pictures shown, set again (a new fill or bar colour), each on its monitor.
 fn reapply(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
     if state.settings.slideshow && state.program() == Some(Program::Hyprpaper) {
@@ -1346,12 +1358,25 @@ fn switch(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, to: Program
         }
         let w = weak.clone();
         let _ = weak.upgrade_in_event_loop(move |_| {
+            let started = started.map_err(|e| format!("Couldn't start {}: {e}.", to.name()));
+            let weak = w.clone();
             update(&w, move |app| {
-                app.wallpapers.message = started.err().map(|e| format!("Couldn't start {}: {e}.", to.name()))
+                app.wallpapers.message = started.as_ref().err().cloned();
+                if started.is_ok() {
+                    switched(Some(&weak), &mut app.wallpapers, to);
+                }
             })
         });
         refresh(&weak);
     });
+}
+
+/// Switched to `to`, with the slideshow on: Lituus's own (awww's) stops with awww, so hyprpaper's
+/// takes over, written to hyprpaper.conf (hyprpaper is started again to read it).
+fn switched(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, to: Program) {
+    if to == Program::Hyprpaper && state.settings.slideshow {
+        hyprpaper_slideshow(weak, state);
+    }
 }
 
 /// Reads the programs again in a moment (one just started).
@@ -1763,6 +1788,46 @@ mod tests {
         assert!(state.message.as_deref().is_some_and(|m| m.contains("two # in a row")), "{:?}", state.message);
         assert!(!state.settings.slideshow && !config::load(&state.config_path()).wallpaper.slideshow);
         assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Switching from awww to hyprpaper with the slideshow on: hyprpaper's own goes on with it.
+    #[test]
+    fn the_slideshow_goes_on_with_hyprpaper() {
+        let (mut state, d) = state_in("switch", Some(Program::Hyprpaper));
+        stand_in(&d, "pkill", "");
+        state.settings.slideshow = true;
+        switched(None, &mut state, Program::Hyprpaper);
+        let text = std::fs::read_to_string(d.join("hypr/hyprpaper.conf")).unwrap();
+        let entries = lituus_wallpaper::hyprpaper_entries(&text);
+        assert_eq!(entries.len(), 2, "{text}");
+        assert!(entries.iter().all(|e| e.timeout == 1800 && e.path == state.folder_path().display().to_string()));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// hyprpaper doesn't show GIFs: Random doesn't pick one, as a click on it is refused.
+    #[test]
+    fn random_with_hyprpaper_leaves_gifs_out() {
+        let (mut state, d) = state_in("random-gif", Some(Program::Hyprpaper));
+        let dir = state.folder_path();
+        std::fs::write(dir.join("rain.gif"), "").unwrap();
+        state.folder = lituus_wallpaper::read_folder(&dir, false).ok();
+        for _ in 0..12 {
+            act_with(None, &mut state, "random", "", 0.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let c = calls(&d);
+        assert!(c.iter().any(|c| c.starts_with("hyprctl hyprpaper wallpaper")), "{c:?}");
+        assert!(c.iter().all(|c| !c.contains("rain.gif")), "{c:?}");
+        // GIFs only: nothing is set, and the message doesn't send the user to awww, which isn't
+        // installed here.
+        std::fs::create_dir_all(dir.join("gifs")).unwrap();
+        std::fs::write(dir.join("gifs/rain.gif"), "").unwrap();
+        act_with(None, &mut state, "folder", &dir.join("gifs").display().to_string(), 0.0);
+        let before = calls(&d).len();
+        act_with(None, &mut state, "random", "", 0.0);
+        assert_eq!(calls(&d).len(), before);
+        assert_eq!(state.message.as_deref(), Some("hyprpaper doesn't show GIFs: install awww for pictures that move."));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
