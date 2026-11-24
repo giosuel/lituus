@@ -35,6 +35,7 @@ export component TextField inherits Rectangle {
     property <bool> typed;
     property <bool> focused: input.has-focus;
     changed focused => {
+        if self.focused { Focus.held = true; }
         if !self.focused && self.typed {
             self.typed = false;
             root.committed();
@@ -381,6 +382,7 @@ export component Select inherits Focusable {
         width: min(max(root.width, options-list.preferred-width), 480px);
         forward-focus: list-keys;
         list-keys := FocusScope {
+            focus-gained => { Focus.held = true; }
             key-pressed(event) => {
                 if event.text == Key.DownArrow { root.highlighted = min(root.highlighted + 1, root.options.length - 1); return accept; }
                 if event.text == Key.UpArrow { root.highlighted = max(root.highlighted - 1, 0); return accept; }
@@ -453,6 +455,58 @@ export component SelectButton inherits Focusable {
     }
 }
 
+/// What holds a menu's keys while it's open (D-46), in its PopupWindow (`forward-focus` here), as
+/// Select's list does: ↑↓ move the highlight over its `count` items, Space or Enter picks one, Esc
+/// closes the menu, and nothing behind the menu gets a key. The items are MenuItems (or other
+/// lines that show `highlighted` the same way).
+export component MenuKeys inherits FocusScope {
+    in property <int> count;
+    in-out property <int> highlighted;
+    callback chosen(int);
+    callback closed();
+    focus-gained => { Focus.held = true; }
+    key-pressed(event) => {
+        if event.text == Key.DownArrow || event.text == Key.UpArrow {
+            Focus.keyboard = true;
+            root.highlighted = event.text == Key.DownArrow ? min(root.highlighted + 1, root.count - 1) : max(root.highlighted - 1, 0);
+            return accept;
+        }
+        if event.text == " " || event.text == Key.Return { root.chosen(root.highlighted); return accept; }
+        if event.text == Key.Escape { root.closed(); return accept; }
+        accept
+    }
+}
+
+/// A line of a menu (D-46): `highlighted` is the one the arrow keys are on, drawn like the focus
+/// ring; `danger` in red (Delete…), `mono` for a path.
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> highlighted;
+    in property <bool> danger;
+    in property <bool> mono;
+    callback clicked();
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    border-width: root.highlighted && Focus.keyboard ? 2px : 0;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.text;
+        color: root.danger ? Theme.danger : Theme.text;
+        font-size: Type.body;
+        font-family: root.mono ? "JetBrains Mono" : "Inter";
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
 /// A dialog's title (D-46): 17/600, wrapping.
 export component DialogTitle inherits Text {
     color: Theme.text;
@@ -477,6 +531,16 @@ export component Modal inherits Rectangle {
     in property <length> card-padding: 24px;
     in property <string> label;
     callback dismissed();
+    // Its place among the dialogs opened: the window asks the one on top (the last opened) to take
+    // the keyboard back when the focus fell out of it (Focus.to-dialog).
+    property <int> order;
+    property <int> requests: Focus.dialog-requests;
+    changed requests => {
+        if root.order >= Focus.dialog-top {
+            Focus.dialog-top = root.order;
+            dialog-keys.focus();
+        }
+    }
     background: Theme.scrim;
     // The page underneath doesn't scroll with the wheel either.
     TouchArea {
@@ -501,10 +565,15 @@ export component Modal inherits Rectangle {
         // The dialog takes the keyboard (a field in it that asks for focus gets it after this),
         // so the page underneath gets no keys, and Esc from a field ends here: the window's own
         // keys never see it.
-        FocusScope {
-            init => { self.focus(); }
+        dialog-keys := FocusScope {
+            init => {
+                Focus.dialogs += 1;
+                root.order = Focus.dialogs;
+                self.focus();
+            }
             // Not a stop for Tab of its own: Shift+Tab from the first control goes round.
             focus-on-tab-navigation: false;
+            focus-gained => { Focus.held = true; }
             key-pressed(event) => {
                 if event.text == Key.Escape { root.dismissed(); return accept; }
                 reject

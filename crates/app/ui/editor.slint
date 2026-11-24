@@ -649,6 +649,7 @@ export component Editor inherits Rectangle {
         border-color: Theme.border;
         background: Theme.surface;
     keys := FocusScope {
+        focus-gained => { Focus.held = true; }
         key-pressed(event) => {
             if event.text == Key.Escape { root.back(); return accept; }
             reject
@@ -953,6 +954,7 @@ export component Editor inherits Rectangle {
                                     font-size: Type.body;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    changed has-focus => { if self.has-focus { Focus.held = true; } }
                                 }
                             }
                         }
@@ -1396,17 +1398,21 @@ export component Editor inherits Rectangle {
         DialogTitle { text: "Add a port to " + (root.form.virt.interface == "" ? root.form.name : root.form.virt.interface); }
         Text { text: "The device becomes part of it, with a small connection of its own."; color: Theme.muted; font-size: Type.body; wrap: word-wrap; }
         if root.options.candidates.length == 0: Text { text: "No other wired devices to add."; color: Theme.faint; font-size: Type.body; }
-        for c in root.options.candidates: Rectangle {
+        // Tab reaches each device that can be a port; Space or Enter adds it.
+        for c in root.options.candidates: Focusable {
             height: c.warning != "" ? 68px : 52px;
             border-radius: 8px;
             border-width: 1px;
             border-color: Theme.border2;
-            background: pick.has-hover && c.blocked == "" ? Theme.hover : transparent;
+            enabled: c.blocked == "";
+            focus-key: "port:" + c.interface;
+            background: self.has-hover && c.blocked == "" ? Theme.hover : transparent;
             opacity: c.blocked == "" ? 1 : 0.55;
             accessible-role: button;
             accessible-label: c.interface + ", " + c.meta;
             accessible-enabled: c.blocked == "";
             accessible-action-default => { if c.blocked == "" { root.port-chosen(c.interface); } }
+            activated => { root.port-chosen(c.interface); }
             HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 12px;
@@ -1419,11 +1425,6 @@ export component Editor inherits Rectangle {
                     Text { text: c.blocked != "" ? c.blocked : c.meta; color: Theme.muted; font-size: Type.note; overflow: elide; }
                     if c.warning != "": Text { text: c.warning; color: Theme.warn-text; font-size: Type.note; overflow: elide; }
                 }
-            }
-            pick := TouchArea {
-                enabled: c.blocked == "";
-                mouse-cursor: c.blocked == "" ? pointer : default;
-                clicked => { root.port-chosen(c.interface); }
             }
         }
         DialogButtons {
