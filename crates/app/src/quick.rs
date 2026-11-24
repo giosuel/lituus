@@ -163,6 +163,13 @@ pub fn build(snap: Option<&Snapshot>, airplane: bool, signing_in: &[String]) -> 
     Quick { wifi_available, wifi_on, status, networks, vpns, airplane, icon }
 }
 
+/// Puts `networks` in the order `before` had them, new ones after. While the popup is open, a
+/// scan landing as the pointer goes to a row would otherwise move another network under it,
+/// and a click joins that one (an open network at once).
+pub fn keep_order(networks: &mut [QuickNetwork], before: &[QuickNetwork]) {
+    networks.sort_by_key(|n| before.iter().position(|b| b.id == n.id).unwrap_or(usize::MAX));
+}
+
 fn icon(snap: &Snapshot, wifi: Option<&QuickNetwork>, hotspot: bool, vpn: bool, airplane: bool) -> TrayIcon {
     let wired = snap.devices.iter().any(|d| {
         d.kind == DeviceKind::Ethernet
@@ -201,6 +208,27 @@ mod tests {
         assert_eq!(q.networks[0].bars, 4);
         assert_eq!(q.icon, TrayIcon::Wifi(4));
         assert_eq!(q.icon.name(), "network-wireless-signal-excellent-symbolic");
+    }
+
+    #[test]
+    fn the_open_popup_keeps_its_order() {
+        let before = build(Some(&home()), false, &[]).networks;
+        let mut snap = home();
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        // The library comes into reach, a new network appears, and the café fades.
+        wifi.access_points[2].strength = 90;
+        wifi.access_points[1].strength = 20;
+        wifi.access_points.push(crate::view::tests::ap("/ap/7", "Nachbar", 2437, 80, lituus_nm::Security::Wpa2));
+        let mut q = build(Some(&snap), false, &[]);
+        assert_eq!(names(&q), ["Lumen Home", "Bibliothek-Free", "Nachbar", "Aster Café"]);
+        keep_order(&mut q.networks, &before);
+        assert_eq!(names(&q), ["Lumen Home", "Aster Café", "Bibliothek-Free", "Nachbar"]);
+        // Only the order is kept: the bars are the new ones.
+        assert_eq!(q.networks[1].bars, 1);
+    }
+
+    fn names(q: &Quick) -> Vec<&str> {
+        q.networks.iter().map(|n| n.name.as_str()).collect()
     }
 
     #[test]

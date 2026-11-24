@@ -56,6 +56,26 @@ impl Security {
         }
     }
 
+    /// What access points of one name are grouped by. WPA, WPA2 and WPA3 Personal are one
+    /// network with one password whose access points offer different versions: a tri-band
+    /// router's 6 GHz band must be WPA3 only, while its 2.4 and 5 GHz bands are WPA2/WPA3.
+    pub fn family(self) -> Self {
+        match self {
+            Self::Wpa | Self::Wpa2 | Self::Wpa2Wpa3 | Self::Wpa3 => Self::Wpa2,
+            other => other,
+        }
+    }
+
+    /// A network whose access points offer `self` and `other` (of one family).
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            _ if self == other => self,
+            // Some take WPA2, some WPA3: one profile joins them all.
+            (Self::Wpa2Wpa3 | Self::Wpa3, _) | (_, Self::Wpa2Wpa3 | Self::Wpa3) => Self::Wpa2Wpa3,
+            _ => self.max(other),
+        }
+    }
+
     /// Whether connecting asks for something (a password, or 802.1X credentials).
     pub fn needs_secrets(self) -> bool {
         !matches!(self, Self::Open | Self::Owe)
@@ -130,10 +150,12 @@ pub fn bars(strength: u8) -> u8 {
     }
 }
 
-/// One network as the user sees it: every access point with the same SSID and security.
+/// One network as the user sees it: every access point with the same SSID and security (WPA,
+/// WPA2 and WPA3 Personal counting as one; see [`Security::family`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Network {
     pub ssid: Vec<u8>,
+    /// What its access points offer together.
     pub security: Security,
     /// The access points, strongest first.
     pub access_points: Vec<AccessPoint>,
@@ -170,8 +192,8 @@ impl Network {
 }
 
 /// Groups a Wi-Fi device's access points into networks, as the network list shows them: the
-/// connected one first, then saved ones, then by signal strength. Hidden networks (empty SSID)
-/// are left out; they're joined by name instead.
+/// connected one first, then saved ones, then by signal bars and name. Hidden networks (empty
+/// SSID) are left out; they're joined by name instead.
 pub fn networks(access_points: &[AccessPoint], active_ap: Option<&str>, saved: &[SavedConnection]) -> Vec<Network> {
     group(access_points.iter(), active_ap, None, &saved.iter().collect::<Vec<_>>())
 }
@@ -186,12 +208,13 @@ fn group<'a>(
 ) -> Vec<Network> {
     let mut groups: BTreeMap<(Vec<u8>, Security), Vec<AccessPoint>> = BTreeMap::new();
     for ap in access_points.filter(|ap| !ap.ssid.is_empty()) {
-        groups.entry((ap.ssid.clone(), ap.security)).or_default().push(ap.clone());
+        groups.entry((ap.ssid.clone(), ap.security.family())).or_default().push(ap.clone());
     }
     let mut networks: Vec<Network> = groups
         .into_iter()
-        .map(|((ssid, security), mut aps)| {
+        .map(|((ssid, _), mut aps)| {
             aps.sort_by(|a, b| b.strength.cmp(&a.strength).then_with(|| a.bssid.cmp(&b.bssid)));
+            let security = aps.iter().map(|ap| ap.security).reduce(Security::and).unwrap_or(Security::Open);
             let mut bands: Vec<Band> = aps.iter().filter_map(|ap| Band::from_mhz(ap.frequency)).collect();
             bands.sort();
             bands.dedup();
@@ -214,8 +237,12 @@ fn group<'a>(
         b.active
             .cmp(&a.active)
             .then_with(|| b.saved.is_some().cmp(&a.saved.is_some()))
-            .then_with(|| b.strength().cmp(&a.strength()))
+            // By bars, not by percent: every scan moves the percentages a point or two, and two
+            // networks swapping places for that moves another one under the pointer.
+            .then_with(|| bars(b.strength()).cmp(&bars(a.strength())))
+            .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
             .then_with(|| a.ssid.cmp(&b.ssid))
+            .then_with(|| a.security.cmp(&b.security))
     });
     networks
 }
@@ -374,6 +401,38 @@ mod tests {
         old.autoconnect_priority = 1;
         assert_eq!(picked(&[hotspot.clone(), old, new]).as_deref(), Some("u-old"));
         assert_eq!(picked(&[hotspot]), None);
+    }
+
+    /// A scan moves the percentages a point or two; that doesn't reorder the list.
+    #[test]
+    fn a_one_point_change_in_signal_keeps_the_order() {
+        let names = |a: u8, b: u8| -> Vec<String> {
+            let aps =
+                [ap("/1", "Biblio", "AA", 2412, a, Security::Open), ap("/2", "aster", "BB", 2437, b, Security::Wpa2)];
+            networks(&aps, None, &[]).iter().map(Network::name).collect()
+        };
+        assert_eq!(names(61, 60), ["aster", "Biblio"]);
+        assert_eq!(names(60, 61), ["aster", "Biblio"]);
+        // A bar more still comes first.
+        assert_eq!(names(80, 60), ["Biblio", "aster"]);
+    }
+
+    /// A tri-band router with one name: WPA2/WPA3 on 2.4 and 5 GHz, WPA3 only on 6 GHz.
+    #[test]
+    fn a_6ghz_wpa3_only_band_is_the_same_network() {
+        let aps = [
+            ap("/1", "Home", "AA", 5180, 70, Security::Wpa2Wpa3),
+            ap("/2", "Home", "BB", 5975, 50, Security::Wpa3),
+            ap("/3", "Lab", "CC", 2412, 50, Security::Wpa2),
+            ap("/4", "Lab", "DD", 5975, 50, Security::Wpa3),
+        ];
+        let nets = networks(&aps, Some("/2"), &[saved_wifi("u", "Home")]);
+        assert_eq!(nets.len(), 2);
+        assert_eq!((nets[0].security, nets[0].bands.as_slice()), (Security::Wpa2Wpa3, &[Band::Ghz5, Band::Ghz6][..]));
+        assert!(nets[0].active);
+        // WPA2 on one band and WPA3 on the other: one password joins both.
+        assert_eq!(nets[1].security, Security::Wpa2Wpa3);
+        assert_eq!(Security::Wpa.and(Security::Wpa2), Security::Wpa2);
     }
 
     #[test]

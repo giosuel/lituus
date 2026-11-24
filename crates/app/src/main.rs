@@ -601,7 +601,11 @@ fn toggle_quick(window: &MainWindow) {
 
 /// The tray and the popup show what changed.
 fn render_quick(app: &mut App, airplane: bool) {
-    let q = quick::build(app.snapshot.as_ref(), airplane, &app.signing_in);
+    let mut q = quick::build(app.snapshot.as_ref(), airplane, &app.signing_in);
+    // While the popup is open, its networks stay in their places: opening it starts a scan.
+    if QUICK.with(|popup| popup.borrow().as_ref().is_some_and(|p| p.window().is_visible())) {
+        quick::keep_order(&mut q.networks, &app.quick.networks);
+    }
     let bt = bluetooth::quick(&app.bt);
     let sound = sound::quick(&app.sound);
     if q == app.quick && bt == app.quick_bt && sound == app.quick_sound && !std::mem::take(&mut app.quick_new) {

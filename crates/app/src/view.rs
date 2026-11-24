@@ -874,8 +874,10 @@ fn hotspot_hero(h: &HotspotView) -> NetHero {
     }
 }
 
+/// A network's row id. By its security's family, not its label: a band coming or going can
+/// change "WPA2" to "WPA2/WPA3", and the row stays the same.
 pub(crate) fn network_id(n: &Network) -> String {
-    format!("wifi:{}:{}", hex(&n.ssid), n.security.label())
+    format!("wifi:{}:{}", hex(&n.ssid), n.security.family().label())
 }
 
 fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, Vec<RowData>)> {
@@ -1893,7 +1895,7 @@ pub(crate) mod tests {
     use lituus_nm::{AccessPoint, ActiveConnection, DeviceState, IpConfig, WifiDevice, WiredDevice};
     use slint::Model;
 
-    fn ap(path: &str, ssid: &str, mhz: u32, strength: u8, security: Security) -> AccessPoint {
+    pub(crate) fn ap(path: &str, ssid: &str, mhz: u32, strength: u8, security: Security) -> AccessPoint {
         AccessPoint {
             path: path.into(),
             ssid: ssid.as_bytes().to_vec(),
