@@ -783,8 +783,11 @@ fn connect_callbacks(window: &MainWindow) {
             if ids.is_empty() {
                 return;
             }
-            let current = app.ui.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)).unwrap_or(0);
-            let next = (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize;
+            let next = match app.ui.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)) {
+                Some(current) => (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize,
+                // Nothing in the list is picked (the network picked is out of range): the top.
+                None => 0,
+            };
             app.ui.selected = Some(ids[next].clone());
         });
     });
@@ -1798,7 +1801,8 @@ fn render(window: &MainWindow) {
         window.set_hostname_open(app.hostname_open);
         window.set_hostname_error(app.hostname_error.as_str().into());
         app.row_ids = v.row_ids;
-        // Keep a selection that went away (a network out of range) from sticking.
+        // A selection that went away (a profile forgotten) doesn't stick; a network the last scan
+        // didn't find stays picked (see view::build).
         app.ui.selected = v.selected;
         let tray_sub = match (app.settings.tray, app.tray.is_some()) {
             (true, false) => "Show Lituus in the system tray · no tray found: start a bar with one, such as Waybar",

@@ -408,8 +408,18 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
     };
     // Rows grouped by section title, the selection resolved, and the selected row's details.
     view.row_ids = rows.iter().flat_map(|(_, r)| r.iter().map(|r| r.id.clone())).collect();
-    let selected =
-        state.selected.clone().filter(|id| view.row_ids.contains(id)).or_else(|| view.row_ids.first().cloned());
+    let picked = state.selected.clone().filter(|id| view.row_ids.contains(id));
+    // A network picked on the Wi-Fi page that a scan didn't find stays picked, out of range,
+    // until it's back or another row is picked. Falling back to the first row put the connected
+    // network's details there, with Disconnect where Connect had been, under the pointer.
+    let out_of_range = state.selected.clone().filter(|id| {
+        picked.is_none()
+            && state.page == Page::Wifi
+            && view.empty.is_none()
+            && id.starts_with("wifi:")
+            && row_name(snapshot, id).is_none()
+    });
+    let selected = picked.or_else(|| view.row_ids.first().cloned().filter(|_| out_of_range.is_none()));
     view.sections = rows
         .into_iter()
         .filter(|(_, rows)| !rows.is_empty())
@@ -434,12 +444,32 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         .collect();
     if let Some(id) = &selected {
         view.details = details(snapshot, state, id).map(Details::from);
+    } else if let Some(id) = &out_of_range {
+        view.details = Some(out_of_range_details(id).into());
     }
     if view.empty.is_none() && view.row_ids.is_empty() && state.page.is_network() {
         view.empty = Some(nothing_here(state.page, !state.search.is_empty()));
     }
-    view.selected = selected;
+    view.selected = selected.or(out_of_range);
     view
+}
+
+/// The details of a picked network that the last scan didn't find: its name, from its row id.
+fn out_of_range_details(id: &str) -> DetailsData {
+    let hex = id.strip_prefix("wifi:").and_then(|rest| rest.split_once(':')).map_or("", |(hex, _)| hex);
+    let ssid: Vec<u8> =
+        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+    DetailsData {
+        title: String::from_utf8_lossy(&ssid).into_owned(),
+        status: "Out of range".into(),
+        status_tone: "faint",
+        status_extra: String::new(),
+        actions: vec![Action { enabled: false, ..action("connect", "Connect", "primary") }],
+        toggles: Vec::new(),
+        metered: None,
+        items: Vec::new(),
+        note: "The last scan didn't find it.".into(),
+    }
 }
 
 /// The keys that work on a Network page now, for the bar at the bottom: the search, the list,
@@ -2171,6 +2201,30 @@ pub(crate) mod tests {
         let row = view.sections.last().unwrap().rows.row_data(0).unwrap();
         assert_eq!((row.id.as_str(), row.meta.as_str()), ("conn:u-old", "Another profile for Lumen Home"));
         assert_eq!(saved_connection(&snap, "conn:u-old").map(|c| c.path.as_str()), Some("/c/0"));
+    }
+
+    /// A picked network that drops out of a scan stays picked, rather than the connected one
+    /// taking its place with Disconnect where Connect was.
+    #[test]
+    fn a_picked_network_that_drops_out_of_a_scan_stays_picked() {
+        let mut snap = home();
+        let cafe = build(Some(&snap), None, &UiState::default()).row_ids[1].clone();
+        let state = UiState { selected: Some(cafe.clone()), ..UiState::default() };
+        snap.devices[0].wifi.as_mut().unwrap().access_points.remove(1);
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(view.selected.as_deref(), Some(cafe.as_str()));
+        assert!(view.sections.iter().flat_map(|s| s.rows.iter()).all(|r| !r.selected));
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        let d = view.details.unwrap();
+        assert_eq!((d.title.as_str(), d.status.as_str()), ("Aster Café", "Out of range"));
+        let actions: Vec<(String, bool)> = d.actions.iter().map(|a| (a.label.to_string(), a.enabled)).collect();
+        assert_eq!(actions, [("Connect".to_owned(), false)]);
+        // Back in range: it's picked again.
+        let view = build(Some(&home()), None, &state);
+        assert_eq!(view.details.unwrap().title, "Aster Café");
+        // A search that hides it isn't a scan that lost it: the first match is picked, as before.
+        let state = UiState { search: "bib".into(), ..state };
+        assert_eq!(build(Some(&home()), None, &state).details.unwrap().title, "Bibliothek-Free");
     }
 
     #[test]
