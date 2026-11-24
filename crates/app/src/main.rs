@@ -991,7 +991,7 @@ fn connect_callbacks(window: &MainWindow) {
     let weak = window.as_weak();
     window.on_hotspot_new_password(move || {
         let Some(window) = weak.upgrade() else { return };
-        window.set_hotspot_password(hotspot::new_password().into());
+        window.set_hotspot_password(hotspot::new_password().unwrap_or_default().into());
         update(&weak, |_| {});
     });
     let weak = window.as_weak();
@@ -1218,7 +1218,7 @@ fn open_hotspot(app: &mut App) {
     let Some(snap) = &app.snapshot else { return };
     match snap.connections.iter().find(|c| c.hotspot) {
         Some(c) => send(app, view::Command::LoadHotspot { connection: c.path.clone() }),
-        None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password(), 0)),
+        None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password().unwrap_or_default(), 0)),
     }
 }
 
@@ -2314,7 +2314,7 @@ async fn run(
                 .and_then(|w| w.get("band"))
                 .and_then(|v| <&str>::try_from(&**v).ok())
                 .map_or(0, |b| hotspot::BANDS.iter().position(|x| *x == b).unwrap_or(0));
-            let fields = (ssid, password.unwrap_or_else(hotspot::new_password), band);
+            let fields = (ssid, password.or_else(hotspot::new_password).unwrap_or_default(), band);
             let _ = weak.upgrade_in_event_loop(move |window| {
                 APP.with(|app| app.borrow_mut().hotspot_fields = Some(fields));
                 render(&window);
