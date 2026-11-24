@@ -5354,4 +5354,46 @@ mod tests {
         press(&window, Key::Return);
         assert_eq!(*chosen.borrow(), ["enp3s0"]);
     }
+
+    /// The app's icon is a button the keyboard reaches: it opens the icon chooser.
+    #[test]
+    fn an_apps_icon_is_a_button() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, _| a.borrow_mut().push(verb.to_string()));
+        window.set_apps(an_app("firefox", "Firefox"));
+        control(&window, "Change icon", AccessibleRole::Button).invoke_accessible_default_action();
+        tab_to(&window, "Change icon");
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["icon-open", "icon-open"]);
+    }
+
+    /// In the icon chooser the search has the keyboard when it opens, and Tab reaches the icons
+    /// it found: Enter picks one.
+    #[test]
+    fn an_icon_is_chosen_from_the_keyboard() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        let icon =
+            |id: &str| super::AppChoice { id: id.into(), name: id.into(), letter: "F".into(), ..Default::default() };
+        window.set_apps(super::AppsView {
+            icon_open: true,
+            icon_title: "Firefox's icon".into(),
+            icon_results: super::model(vec![icon("firefox"), icon("firefox-esr")]),
+            ..an_app("firefox", "Firefox")
+        });
+        mock_elapsed_time(Duration::ZERO);
+        press(&window, "f");
+        assert_eq!(*acted.borrow(), ["icon-query f"]);
+        tab_to(&window, "firefox-esr");
+        press(&window, Key::Return);
+        assert_eq!(acted.borrow().last().unwrap(), "icon-pick firefox-esr");
+    }
 }
