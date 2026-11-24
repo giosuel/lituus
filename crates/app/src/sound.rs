@@ -2,11 +2,12 @@
 //! state; the page sends its changes back as commands. Volumes from a dragged slider come fast,
 //! so the thread only keeps the last one for each slider.
 
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use lituus_sound::{Session, Snapshot, Volume};
-use slint::{Model, SharedString};
+use slint::{Model, SharedString, VecModel};
 
 use crate::{APP, HeroInfo, MainWindow, SoundApp, SoundCard, SoundView, model, update};
 
@@ -404,8 +405,15 @@ fn bus(bus: &str) -> &'static str {
     }
 }
 
+thread_local! {
+    /// The apps' rows, kept as one model from one render to the next: a new one would build the
+    /// row being dragged again, and its volume slider would stop after the first step.
+    static APPS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
+}
+
 pub fn render(window: &MainWindow, state: &State) {
-    let view = view(state);
+    let mut view = view(state);
+    view.apps = APPS.with(|kept| crate::input::kept(kept, &view.apps));
     // The Cards tab goes when the last card with profiles does.
     if view.cards.row_count() == 0 && window.get_sound_tab() > 1 {
         window.set_sound_tab(0);

@@ -238,6 +238,11 @@ thread_local! {
     static APP: RefCell<App> = RefCell::new(App::default());
     /// The quick popup, made the first time it's opened.
     static QUICK: RefCell<Option<QuickWindow>> = const { RefCell::new(None) };
+    /// Settings' update commands and the palette's rows, each kept as one model: a new one at
+    /// each render would build the rows again, throwing away a command being typed and stopping a
+    /// slider being dragged.
+    static UPDATE_COMMANDS: std::rc::Rc<VecModel<UpdateCommand>> = std::rc::Rc::new(VecModel::default());
+    static PALETTE_ROWS: std::rc::Rc<VecModel<PaletteRow>> = std::rc::Rc::new(VecModel::default());
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -1844,7 +1849,8 @@ fn render(window: &MainWindow) {
         defaultapps::render(window, &mut app.default_apps);
         apps::render(window, &mut app.apps);
         if window.get_page() == "settings" {
-            window.set_update_commands(model(system::command_rows(&app.system)));
+            let rows = model(system::command_rows(&app.system));
+            window.set_update_commands(UPDATE_COMMANDS.with(|kept| input::kept(kept, &rows)));
             window.set_update_terminal(system::terminal_text(&app.system).into());
         }
         files::render(window, &app.files);
@@ -1862,7 +1868,9 @@ fn render(window: &MainWindow) {
         });
         window.set_hints(model(hints));
         render_quick(&mut app, airplane);
-        window.set_palette_view(palette::view(&app));
+        let mut palette = palette::view(&app);
+        palette.rows = PALETTE_ROWS.with(|kept| input::kept(kept, &palette.rows));
+        window.set_palette_view(palette);
     });
 }
 
@@ -4812,5 +4820,314 @@ mod tests {
         assert_eq!(first_key, "KEY-A\n", "the first connection's key file now holds the second one's key");
         assert_ne!(first, second, "both connections point at the same key file");
         assert_eq!(left, (false, true), "forgetting the first takes its files only");
+    }
+
+    /// A check box and a segmented control show the app's state, also after a click on them:
+    /// the page's Revert (or the Keep timeout) puts the old value back.
+    #[test]
+    fn a_clicked_check_box_and_segmented_still_follow_the_app() {
+        let window = window();
+        window.set_page("displays".into());
+        let shown =
+            || super::DisplaysView { state: "list".into(), sel_enabled: true, rotation: 0, ..Default::default() };
+        window.set_displays(shown());
+        let enabled = || control(&window, "Enabled", AccessibleRole::Checkbox);
+        let rotations = || {
+            control(&window, "Rotation", AccessibleRole::RadioGroup)
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::RadioButton)
+                .find_all()
+        };
+        let rotation = || rotations().iter().position(|e| e.accessible_checked() == Some(true));
+        assert_eq!((enabled().accessible_checked(), rotation()), (Some(true), Some(0)));
+        enabled().invoke_accessible_default_action();
+        rotations()[1].invoke_accessible_default_action();
+        // Revert: the app's state is as before, and it says so.
+        window.set_displays(super::DisplaysView { status: "No changes".into(), ..shown() });
+        assert_eq!(enabled().accessible_checked(), Some(true), "Enabled");
+        assert_eq!(rotation(), Some(0), "Rotation");
+    }
+
+    /// The same for a drop-down list, clicked with the mouse.
+    #[test]
+    fn a_clicked_select_still_follows_the_app() {
+        let window = window();
+        window.set_page("displays".into());
+        let strings = |v: &[&str]| super::model(v.iter().map(|&t| SharedString::from(t)).collect());
+        let shown = |scale| super::DisplaysView {
+            state: "list".into(),
+            scales: strings(&["100 %", "125 %", "150 %"]),
+            scale,
+            ..Default::default()
+        };
+        window.set_displays(shown(0));
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let seen = chosen.clone();
+        window.on_displays_act(move |verb, arg, _| seen.borrow_mut().push(format!("{verb} {arg}")));
+        let select = || control(&window, "Scale", AccessibleRole::Combobox);
+        assert_eq!(select().accessible_value().as_deref(), Some("100 %"));
+        let (at, size) = (select().absolute_position(), select().size());
+        click(&window, at.x + 20.0, at.y + size.height / 2.0);
+        mock_elapsed_time(Duration::from_millis(50));
+        // The list opens 4 px under the field, with 4 px of padding and 32 px per option: the second.
+        click(&window, at.x + 20.0, at.y + size.height + 4.0 + 4.0 + 32.0 + 16.0);
+        mock_elapsed_time(Duration::from_millis(50));
+        assert_eq!(*chosen.borrow(), ["scale 1"]);
+        // The 15 s ran out: Hyprland is back at 100 %, and the app says so.
+        window.set_displays(super::DisplaysView { status: "No changes".into(), ..shown(0) });
+        assert_eq!(select().accessible_value().as_deref(), Some("100 %"));
+    }
+
+    fn text_field(window: &MainWindow, label: &str) -> ElementHandle {
+        control(window, label, AccessibleRole::TextInput)
+    }
+
+    /// The labels of an app's text fields in its details.
+    const APP_FIELDS: [&str; 5] = ["Name", "Description", "Command", "Search words", "Window class"];
+
+    fn an_app(id: &str, name: &str) -> super::AppsView {
+        super::AppsView {
+            state: "list".into(),
+            has_app: true,
+            id: id.into(),
+            title: name.into(),
+            name: name.into(),
+            comment: format!("{name}'s description").into(),
+            exec: format!("{id} %u").into(),
+            keywords: format!("{id}; words").into(),
+            wm_class: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn field_values(v: &super::AppsView) -> [SharedString; 5] {
+        [v.name.clone(), v.comment.clone(), v.exec.clone(), v.keywords.clone(), v.wm_class.clone()]
+    }
+
+    /// Each text field of an app's details shows the selected app's value, also after it was
+    /// typed in and saved.
+    #[test]
+    fn an_apps_field_follows_the_selected_app() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let mut stale = Vec::new();
+        for (i, label) in APP_FIELDS.into_iter().enumerate() {
+            window.set_apps(an_app("firefox", "Firefox"));
+            text_field(&window, label).mock_single_click(PointerEventButton::Left);
+            press(&window, "X");
+            press(&window, Key::Return);
+            let next = an_app("thunderbird", "Thunderbird");
+            window.set_apps(next.clone());
+            // The window's next turn.
+            mock_elapsed_time(Duration::ZERO);
+            let shown = text_field(&window, label).accessible_value().unwrap();
+            if shown != field_values(&next)[i] {
+                stale.push(format!("{label}: {shown:?}"));
+            }
+        }
+        assert!(stale.is_empty(), "fields still showing what was typed for Firefox: {stale:?}");
+    }
+
+    /// Text typed for one app and not yet saved isn't saved to the app selected next, even when
+    /// that app has the same text in the field (two apps without a window class, say).
+    #[test]
+    fn text_typed_for_one_app_isnt_saved_to_the_next() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        // As apps::act does: the change goes to the app selected at that moment.
+        window.on_apps_act(move |verb, arg| {
+            a.borrow_mut().push(format!("{verb} {arg:?} -> {}", w.unwrap().get_apps().id))
+        });
+        let twin = super::AppsView { id: "librewolf".into(), ..an_app("firefox", "Firefox") };
+        for next in [an_app("thunderbird", "Thunderbird"), twin] {
+            for label in APP_FIELDS {
+                window.set_apps(an_app("firefox", "Firefox"));
+                text_field(&window, label).mock_single_click(PointerEventButton::Left);
+                press(&window, "X");
+                // A click on the next app's row: the field keeps the focus. Then the focus leaves it.
+                window.set_apps(next.clone());
+                press(&window, Key::Tab);
+            }
+        }
+        let wrong: Vec<String> = acted.borrow().iter().filter(|a| !a.ends_with("-> firefox")).cloned().collect();
+        assert!(wrong.is_empty(), "saved to another app: {wrong:?}");
+    }
+
+    /// A render with nothing changed leaves the text being typed in an update command, and the
+    /// focus in it.
+    #[test]
+    fn typing_an_update_command_survives_a_render() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.ui.page = view::Page::Settings;
+            app.system.updates.found = Some(vec![lituus_system::updates::Found {
+                manager: lituus_system::updates::Manager::Pacman,
+                program: "pacman".into(),
+                source: "core, extra".into(),
+                default_command: "sudo pacman -Syu".into(),
+            }]);
+        });
+        super::render(&window);
+        let field = || text_field(&window, "pacman update command");
+        assert_eq!(field().accessible_value().unwrap(), "sudo pacman -Syu");
+        field().mock_single_click(PointerEventButton::Left);
+        press(&window, "x");
+        assert_ne!(field().accessible_value().unwrap(), "sudo pacman -Syu", "the x was typed");
+        // The next render, as anything that changes renders.
+        super::render(&window);
+        mock_elapsed_time(Duration::ZERO);
+        assert_ne!(field().accessible_value().unwrap(), "sudo pacman -Syu", "the typed x is gone");
+        press(&window, "y");
+        assert!(field().accessible_value().unwrap().contains('y'), "the field lost the focus");
+    }
+
+    /// Add takes the name as it stands in the field, not as it was last handed over.
+    #[test]
+    fn add_an_app_takes_the_name_being_typed() {
+        let window = window();
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acted.clone();
+        window.on_apps_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        window.set_apps(super::AppsView {
+            state: "list".into(),
+            add_open: true,
+            add_program: "~/Applications/Game.AppImage".into(),
+            add_name: "Game".into(),
+            add_can_save: true,
+            ..Default::default()
+        });
+        text_field(&window, "Name").mock_single_click(PointerEventButton::Left);
+        press(&window, "X");
+        control(&window, "Add", AccessibleRole::Button).mock_single_click(PointerEventButton::Left);
+        assert_eq!(*acted.borrow(), ["add-name GameX", "add-save "]);
+    }
+
+    /// A website's Add waits for its address: one being typed counts, and Add hands it over
+    /// first. The name it fills in isn't overwritten by the empty field's.
+    #[test]
+    fn add_a_website_takes_the_address_being_typed() {
+        let window = window();
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        window.on_apps_act(move |verb, arg| {
+            a.borrow_mut().push(format!("{verb} {arg}"));
+            // As apps::act does: the address names the app, and then there's something to add.
+            if verb == "add-address" {
+                let w = w.unwrap();
+                w.set_apps(super::AppsView {
+                    add_address: arg,
+                    add_name: "Todoist".into(),
+                    add_can_save: true,
+                    ..w.get_apps()
+                });
+            }
+        });
+        window.set_apps(super::AppsView {
+            state: "list".into(),
+            add_open: true,
+            add_website: true,
+            ..Default::default()
+        });
+        let add = || control(&window, "Add", AccessibleRole::Button);
+        assert_eq!(add().accessible_enabled(), Some(false));
+        text_field(&window, "Address").mock_single_click(PointerEventButton::Left);
+        press(&window, "t");
+        assert_eq!(add().accessible_enabled(), Some(true));
+        add().mock_single_click(PointerEventButton::Left);
+        assert_eq!(*acted.borrow(), ["add-address t", "add-save "]);
+    }
+
+    /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
+    fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
+        let (p, s) = (slider.absolute_position(), slider.size());
+        let at = |f: f32| LogicalPosition::new(p.x + s.width * f, p.y + s.height / 2.0);
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position: at(from), button: PointerEventButton::Left });
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at((from + to) / 2.0) });
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: at(to) });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position: at(to), button: PointerEventButton::Left });
+    }
+
+    fn volume(percent: f32) -> lituus_sound::Volume {
+        lituus_sound::Volume { channels: vec![(lituus_sound::NORM as f32 * percent) as u32; 2], sides: vec![-1, 1] }
+    }
+
+    /// An app's volume slider (Sound › Apps) follows a drag past its first step: the render each
+    /// step causes keeps the row, and with it the pointer's hold on the slider.
+    #[test]
+    fn an_app_volume_slider_can_be_dragged() {
+        let window = window();
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.ui.page = view::Page::Sound;
+            app.sound.snapshot = Some(lituus_sound::Snapshot {
+                streams: vec![lituus_sound::Stream {
+                    index: 7,
+                    app: "Firefox".into(),
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        });
+        window.set_sound_tab(1);
+        super::render(&window);
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // As the app does: the change renders at once, and PulseAudio's answer does again.
+        window.on_sound_act(move |_, _, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |_| {});
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().streams[0].volume = volume(v));
+        });
+        drag(&window, &control(&window, "Firefox volume", AccessibleRole::Slider), 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The same for a slider in a row of the command palette.
+    #[test]
+    fn a_palette_slider_can_be_dragged() {
+        let window = window();
+        super::connect_palette(&window);
+        super::APP.with(|app| {
+            let mut app = app.borrow_mut();
+            app.sound.snapshot = Some(lituus_sound::Snapshot {
+                default_sink: Some("speakers".into()),
+                sinks: vec![lituus_sound::Device {
+                    index: 40,
+                    name: "speakers".into(),
+                    description: "Speakers".into(),
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            super::palette::open(&mut app.command);
+            super::palette::edited(&mut app.command, "output volume");
+        });
+        super::render(&window);
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // The Sound page's part: PulseAudio takes the volume, and its answer renders.
+        window.on_sound_act(move |_, _, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().sinks[0].volume = volume(v));
+        });
+        drag(&window, &control(&window, "Output volume", AccessibleRole::Slider), 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
     }
 }

@@ -98,7 +98,7 @@ export component IncomingFileDialog inherits Modal {
         Text { text: "Saved to"; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
         Text { text: root.view.in-folder; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
     }
-    CheckBox { text: root.view.in-always-label; checked <=> root.always; }
+    CheckBox { text: root.view.in-always-label; checked: root.always; toggled(on) => { root.always = on; } }
     DialogButtons {
         Button { label: "Decline"; button-height: Size.button-dialog; clicked => { root.decline(); } }
         Button { label: "Accept"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.accept(); } }
