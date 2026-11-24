@@ -13,7 +13,8 @@ import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Notice
 import { JoinDialog, TextField, Segmented, FormRow, Modal, DialogTitle, DialogButtons } from "dialogs.slint";
 import { QuickWindow, QuickRow } from "quick.slint";
 import { Action, Toggle, DetailItem, Chip, ChipRow, Details, DetailsPane } from "details.slint";
-import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo, Setup } from "shell.slint";
+import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo, Setup, Highlight } from "shell.slint";
+import { CommandPalette, PaletteRow, PaletteView } from "palette.slint";
 import { SettingsHero, AppearanceSettings, ColourFiles, ThemeSwatch, ColourChip, SourceRow } from "appearance.slint";
 import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.slint";
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
@@ -27,7 +28,7 @@ import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEdit
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
 import { Editor, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi } from "editor.slint";
 
-export { Theme, Focus, Setup, ChipLine, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
+export { Theme, Focus, Setup, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
 
 /// icon: "bars" (signal bars), or an icon name. tone: "accent", "danger", "muted", "faint".
 /// indent: a port under its bridge or bond, or a VLAN under its device.
@@ -93,7 +94,6 @@ export struct UpdateCommand { key: string, name: string, source: string, command
 export component MainWindow inherits Window {
     in property <string> version;
     in property <[NavGroup]> nav-groups;
-    property <int> nav-focus-requests;
     property <int> nav-list-focus-requests;
     in property <string> hostname;
     in property <string> page: "wifi";
@@ -281,8 +281,21 @@ export component MainWindow inherits Window {
     callback navigate(string);
     /// The chevron of a sidebar item with sub-items (Network).
     callback nav-fold(string);
-    callback nav-search(string);
-    callback nav-search-accepted();
+    // The command palette (src/palette.rs, ui/palette.slint).
+    in property <PaletteView> palette-view;
+    in-out property <string> palette-query;
+    callback palette-open();
+    callback palette-edited(string);
+    callback palette-key(string);
+    callback palette-clicked(int);
+    callback palette-set(string, float);
+    callback palette-closed();
+    /// Puts text on the clipboard (the palette's "Copy the system report").
+    public function copy-text(text: string) {
+        copy-field.text = text;
+        copy-field.select-all();
+        copy-field.copy();
+    }
     callback select(string);
     callback action(string);
     callback toggle(string);
@@ -366,7 +379,7 @@ export component MainWindow inherits Window {
             // The confirmation dialog is over everything: Esc cancels it, and the page gets no keys.
             if root.confirm-open && event.text == Key.Escape { root.confirm-cancelled(); return accept; }
             if root.confirm-open { return reject; }
-            if event.modifiers.control && (event.text == "k" || event.text == "K") { root.nav-focus-requests += 1; return accept; }
+            if event.modifiers.control && (event.text == "k" || event.text == "K") { root.palette-open(); return accept; }
             // From the page (or no control) to the sidebar's pages; the sidebar sends it back.
             if event.text == Key.F6 && !root.modal-open && !root.editor-open { root.nav-list-focus-requests += 1; return accept; }
             // The Keyboard page: Alt+↑↓ moves the selected layout, Del removes it.
@@ -401,7 +414,6 @@ export component MainWindow inherits Window {
                 groups: root.nav-groups;
                 settings-current: root.page == "settings";
                 airplane: root.airplane;
-                focus-requests: root.nav-focus-requests;
                 list-focus-requests: root.nav-list-focus-requests;
                 // Enter or a click opens the page; the window's keys work there. (A keyboard user
                 // keeps the focus on the page's item: Focusable takes it back.)
@@ -409,9 +421,7 @@ export component MainWindow inherits Window {
                 // F6: to the page's first control, as Tab from just before the page would.
                 leave => { page-start.focus(); Focus.keyboard = true; Focus.step(true); }
                 fold(id) => { root.nav-fold(id); }
-                search(text) => { root.nav-search(text); }
-                search-accepted => { root.nav-search-accepted(); }
-                search-left => { keys.focus(); }
+                open-search => { root.palette-open(); }
                 airplane-toggled => { root.airplane-toggled(); }
             }
 
@@ -948,7 +958,8 @@ export component MainWindow inherits Window {
         || (root.page == "shortcuts" && (root.shortcuts.dialog.open || root.shortcuts.deleting != ""))
         || (root.page == "wallpaper" && root.wallpaper.takeover)
         || (root.page == "default-apps" && (root.default-apps.picker-open || root.default-apps.sources-open))
-        || (root.page == "apps" && (root.apps.add-open || root.apps.icon-open));
+        || (root.page == "apps" && (root.apps.add-open || root.apps.icon-open))
+        || root.palette-view.open;
     changed modal-open => { if !self.modal-open { keys.focus(); Focus.give-back(); } }
 
     // The control with the focus can go away (a dialog closes, a button isn't offered any more),
@@ -1357,5 +1368,18 @@ export component MainWindow inherits Window {
         name <=> root.bt-rename-name;
         saved => { root.bt-act("rename-save", ""); keys.focus(); }
         cancelled => { root.bt-act("rename-cancel", ""); keys.focus(); }
+    }
+
+    copy-field := TextInput { visible: false; width: 0; height: 0; }
+    // Over everything, the dialogs included: an action it runs closes it first.
+    if root.palette-view.open: CommandPalette {
+        view: root.palette-view;
+        query <=> root.palette-query;
+        init => { self.focus-search(); }
+        edited(text) => { root.palette-edited(text); }
+        key(k) => { root.palette-key(k); }
+        clicked(i) => { root.palette-clicked(i); }
+        set(id, v) => { root.palette-set(id, v); }
+        closed => { root.palette-closed(); }
     }
 }

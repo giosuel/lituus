@@ -875,7 +875,7 @@ fn empty(state: &State, page: &str) -> (SharedString, SharedString, SharedString
 }
 
 /// Whether the pages show their settings: Hyprland is running and its settings were read.
-fn has_settings(state: &State) -> bool {
+pub fn has_settings(state: &State) -> bool {
     !state.not_running && state.read && state.file.is_some()
 }
 

@@ -110,16 +110,6 @@ pub fn spoken(status: &str) -> String {
     }
 }
 
-/// The page Enter in the search field goes to: the first item whose name matches ("wire" is
-/// Wired, not Wi-Fi for "wireless"), else the first found by a keyword.
-pub fn first_match<'a>(entries: &'a [Entry], query: &str) -> Option<&'a str> {
-    let shown = shown(entries, query, &[]);
-    let query = query.trim().to_lowercase();
-    let shown: Vec<&Entry> = shown.into_iter().filter(|e| e.off.is_empty()).collect();
-    let by_name = shown.iter().find(|e| e.label.to_lowercase().contains(&query));
-    by_name.or_else(|| shown.iter().find(|e| matches(e, &query))).map(|e| e.id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,7 +201,7 @@ mod tests {
     }
 
     /// A page that needs Hyprland, while it isn't running: still listed (and found by the search),
-    /// but turned off, with no status, and Enter in the search doesn't go to it.
+    /// but turned off, with no status.
     #[test]
     fn a_page_turned_off() {
         let mut e = entries();
@@ -220,7 +210,6 @@ mod tests {
         let item = g[1].items.row_data(0).unwrap();
         assert_eq!((item.id.as_str(), item.off.as_str(), item.sub.as_str()), ("mouse", "Needs Hyprland", ""));
         assert_eq!(groups(&e, "touchpad", "wifi", &[]).len(), 1);
-        assert_eq!(first_match(&e, "touchpad"), None);
     }
 
     #[test]
@@ -239,18 +228,6 @@ mod tests {
         assert_eq!(ids("dark"), ["settings"]);
         assert_eq!(ids("Appearance"), ["settings"]);
         assert!(ids("zzz").is_empty());
-        assert_eq!(first_match(&entries(), "head"), Some("bluetooth"));
-        assert_eq!(first_match(&entries(), "wireg"), Some("vpn"));
-        assert_eq!(first_match(&entries(), "wire"), Some("wired"));
-        assert_eq!(first_match(&entries(), "net"), Some("network"));
-        assert_eq!(first_match(&entries(), "theme"), Some("settings"));
-        assert_eq!(first_match(&entries(), "zzz"), None);
-        // Words in a row, the last one begun.
-        assert_eq!(first_match(&entries(), "tap to cl"), Some("mouse"));
-        assert_eq!(first_match(&entries(), "Natural Scrolling"), Some("mouse"));
-        assert_eq!(first_match(&entries(), "to click"), Some("mouse"));
-        assert_eq!(first_match(&entries(), "scrolling tap"), Some("mouse"));
-        assert_eq!(first_match(&entries(), "o click"), None);
     }
 
     #[test]
