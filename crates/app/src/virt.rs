@@ -231,6 +231,10 @@ pub fn candidates(snap: &Snapshot, kind: crate::editor::Kind, own: &str, form: &
             });
             let blocked = if d.kind == DeviceKind::Wifi {
                 "Wi-Fi can't be a port: most access points drop frames from other devices.".into()
+            } else if d.kind != DeviceKind::Ethernet {
+                // A port is added as an Ethernet profile, which NetworkManager can't bring up on a
+                // bond or VLAN: they join a bridge from their own connection's settings.
+                "Only Ethernet devices can be added here.".into()
             } else if let Some(other) = other_controller {
                 format!("Already a port of {other}")
             } else {
@@ -527,6 +531,29 @@ mod tests {
         assert_eq!(number(&s, "bridge", "forward-delay"), Some(15));
         assert_eq!(number(&s, "bridge", "priority"), None);
         assert!(!check(Kind::Bridge, &VirtForm { hello_time: "11".into(), ..b }).1.is_empty());
+    }
+
+    /// A bridge lists a bond and a VLAN, but they can't be added: a port is an Ethernet profile.
+    #[test]
+    fn a_bridge_adds_only_ethernet_ports() {
+        let mut snap = crate::view::tests::home();
+        let wired = snap.devices.iter().find(|d| d.kind == DeviceKind::Ethernet).unwrap().clone();
+        for (interface, kind) in [("bond0", DeviceKind::Bond), ("enp3s0.20", DeviceKind::Vlan)] {
+            snap.devices.push(lituus_nm::Device {
+                path: format!("/d/{interface}"),
+                interface: interface.into(),
+                kind,
+                active_connection: None,
+                ..wired.clone()
+            });
+        }
+        let bridge = VirtForm { interface: "br0".into(), ..VirtForm::default() };
+        let blocked: Vec<(String, bool)> = candidates(&snap, Kind::Bridge, "u-br0", &bridge)
+            .into_iter()
+            .filter(|c| c.icon != "wifi")
+            .map(|c| (c.interface, !c.blocked.is_empty()))
+            .collect();
+        assert_eq!(blocked, [(wired.interface.clone(), false), ("bond0".into(), true), ("enp3s0.20".into(), true)]);
     }
 
     #[test]
