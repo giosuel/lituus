@@ -3,13 +3,24 @@ name: Release
 # Pushing a tag like v0.1.0 builds the Linux packages (tarball, .deb, .rpm, AppImage) for x86-64 and ARM64,
 # and a Flatpak bundle for x86-64, and publishes them as a GitHub release, then pushes the AUR packages (stable tags only). The version is the tag; nothing in the repository is bumped by hand.
 # Running it by hand (Actions › Release › Run workflow) is a dry run: everything is built and
-# uploaded as workflow artifacts, and nothing is published. PRs that change the packaging run the
-# same dry run.
+# uploaded as workflow artifacts, and nothing is published. PRs that change the packaging, or what
+# it's built from (the toolchain, the crates' versions, the app's package metadata and the files it
+# installs), run the same dry run: otherwise they'd break only at the next tag.
 on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: ["packaging/**", "scripts/**", ".github/workflows/release.yml"]
+    paths:
+      - "packaging/**"
+      - "scripts/**"
+      - ".github/workflows/release.yml"
+      - "rust-toolchain.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/app/Cargo.toml"
+      - "crates/**/build.rs"
+      - "crates/version.rs"
+      - "crates/app/ui/fonts/*-LICENSE.txt"
   workflow_dispatch:
 
 permissions:
