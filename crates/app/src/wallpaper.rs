@@ -12,8 +12,8 @@
 //! Lituus restarts it); with awww, Lituus's own process changes the picture, while it runs (in the
 //! background, or the tray).
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -203,8 +203,16 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
     let weak = weak.clone();
     std::thread::spawn(move || {
         let read = read(&Env::from_env());
-        let _ = weak.clone().upgrade_in_event_loop(move |_| {
-            update(&weak, move |app| loaded(&mut app.wallpapers, read));
+        let _ = weak.clone().upgrade_in_event_loop(move |window| {
+            update(&weak, move |app| {
+                loaded(&mut app.wallpapers, read);
+                forget_unshown(&mut app.wallpapers);
+            });
+            // Only for the page in a window that's shown: the slideshow, in the background or
+            // on another page, makes none.
+            if window.get_page() != "wallpaper" || !slint::ComponentHandle::window(&window).is_visible() {
+                return;
+            }
             // The pictures shown are known only now: the first time the page opens, their
             // thumbnails weren't asked for with the folder's.
             let shown: Vec<PathBuf> =
@@ -229,15 +237,18 @@ pub fn loaded(state: &mut State, read: Read) {
 /// Opens the page: the settings from config.toml, the folder's pictures, and their thumbnails.
 pub fn open(weak: &slint::Weak<MainWindow>, state: &mut State) {
     state.settings = config::load(&state.config_path()).wallpaper;
-    load_folder(weak, state);
+    load_folder(Some(weak), state);
     refresh(weak);
 }
 
-/// Reads the folder and makes the thumbnails of its pictures (and of the pictures shown), on a
-/// thread; each batch of them shows as it's done.
-fn load_folder(weak: &slint::Weak<MainWindow>, state: &mut State) {
+/// Reads the folder, drops the thumbnails of the one before, and makes those of its pictures
+/// (and of the pictures shown), on a thread; each batch of them shows as it's done. In tests (no
+/// window), only reads it.
+fn load_folder(weak: Option<&slint::Weak<MainWindow>>, state: &mut State) {
     let dir = state.folder_path();
     state.folder = lituus_wallpaper::read_folder(&dir, state.settings.subfolders).ok();
+    forget_unshown(state);
+    let Some(weak) = weak else { return };
     let mut wanted: Vec<PathBuf> = Vec::new();
     if let Some(f) = &state.folder {
         wanted.extend(f.pictures.iter().map(|p| p.path.clone()));
@@ -248,9 +259,36 @@ fn load_folder(weak: &slint::Weak<MainWindow>, state: &mut State) {
 }
 
 thread_local! {
-    /// Thumbnails made so far, by picture: the grid's, and the hero's larger ones.
+    /// Thumbnails made so far, by picture: the grid's, and the hero's larger ones. Only those
+    /// the page shows are kept (`shown_thumbnails`), and none once it's left: 0.6 MB each in the
+    /// grid and 3.7 MB in the hero, for every picture of every folder opened and every one the
+    /// slideshow showed, would otherwise stay until Lituus quits.
     static THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
     static HERO_THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
+    /// The page was rendered last time: leaving it drops its thumbnails.
+    static PAGE_OPEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The pictures whose thumbnails the page shows: in the grid, the folder's pictures, its
+/// subfolders' first ones, and the pictures shown (the hero shows the grid's until its own is
+/// made); in the hero, the pictures shown.
+fn shown_thumbnails(folder: Option<&Folder>, current: &[(String, PathBuf)]) -> (HashSet<PathBuf>, HashSet<PathBuf>) {
+    let hero: HashSet<PathBuf> = current.iter().map(|(_, p)| p.clone()).collect();
+    let mut grid = hero.clone();
+    if let Some(f) = folder {
+        grid.extend(f.pictures.iter().map(|p| p.path.clone()));
+        grid.extend(f.subfolders.iter().flat_map(|s| s.first.iter().cloned()));
+    }
+    (grid, hero)
+}
+
+/// Drops the thumbnails the page doesn't show any more: another folder's, and those of pictures
+/// no longer shown.
+fn forget_unshown(state: &mut State) {
+    let (grid, hero) = shown_thumbnails(state.folder.as_ref(), &state.current);
+    THUMBS.with(|t| t.borrow_mut().retain(|p, _| grid.contains(p)));
+    HERO_THUMBS.with(|t| t.borrow_mut().retain(|p, _| hero.contains(p)));
+    state.sizes.retain(|p, _| grid.contains(p));
 }
 
 /// The cache of thumbnails: ~/.cache/lituus/thumbnails.
@@ -285,12 +323,16 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
                 })
                 .collect();
             let w = weak.clone();
-            let _ = weak.upgrade_in_event_loop(move |_| {
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                // The page was left, or shows another folder, since they were asked for.
+                let open = window.get_page() == "wallpaper";
                 update(&w, move |app| {
+                    let (grid, shown) = shown_thumbnails(app.wallpapers.folder.as_ref(), &app.wallpapers.current);
+                    let wanted = if hero { shown } else { grid };
                     let store = if hero { &HERO_THUMBS } else { &THUMBS };
                     store.with(|t| {
                         let mut t = t.borrow_mut();
-                        for (path, pixels, size) in done {
+                        for (path, pixels, size) in done.into_iter().filter(|(p, _, _)| open && wanted.contains(p)) {
                             if let Some(size) = size {
                                 app.wallpapers.sizes.insert(path.clone(), size);
                             }
@@ -966,9 +1008,16 @@ pub fn view(state: &State) -> WallpaperView {
 
 pub fn render(window: &MainWindow, state: &State) {
     if window.get_page() == "wallpaper" {
+        PAGE_OPEN.set(true);
         // A new model each time: kept as one (as the Input pages do), its rows' thumbnails and
         // lines didn't show their changes in the running app.
         window.set_wallpaper(view(state));
+    } else if PAGE_OPEN.replace(false) {
+        // The page was left: its thumbnails go, with the model that holds them too. Opening it
+        // again takes them from the cache on disk.
+        THUMBS.with(|t| t.borrow_mut().clear());
+        HERO_THUMBS.with(|t| t.borrow_mut().clear());
+        window.set_wallpaper(WallpaperView::default());
     }
 }
 
@@ -1033,11 +1082,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             state.query.clear();
             save(state, "folder", shown);
             let _ = config::set_list(&state.config_path(), "wallpaper", "recent", &recent);
-            if let Some(weak) = weak {
-                load_folder(weak, state);
-            } else {
-                state.folder = lituus_wallpaper::read_folder(&state.folder_path(), state.settings.subfolders).ok();
-            }
+            load_folder(weak, state);
             slideshow_changed(weak, state);
         }
         "choose-folder" => {
@@ -1048,12 +1093,7 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
         "subfolders" => {
             state.settings.subfolders = !state.settings.subfolders;
             save(state, "subfolders", state.settings.subfolders);
-            match weak {
-                Some(weak) => load_folder(weak, state),
-                None => {
-                    state.folder = lituus_wallpaper::read_folder(&state.folder_path(), state.settings.subfolders).ok()
-                }
-            }
+            load_folder(weak, state);
             slideshow_changed(weak, state);
         }
         "query" => state.query = arg.to_owned(),
@@ -1480,6 +1520,49 @@ mod tests {
         let p = d.join("bin").join(command);
         std::fs::write(&p, format!("#!/bin/sh\necho \"{command} $*\" >> {}/calls\n{body}\n", d.display())).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Thumbnails are kept only for what the page shows: the folder's, and the pictures shown;
+    /// another folder's go, and all of them once the page is left.
+    #[test]
+    fn thumbnails_only_for_what_the_page_shows() {
+        use slint::{ComponentHandle, Model};
+        i_slint_backend_testing::init_no_event_loop();
+        let (mut state, d) = state_in("thumbs", Some(Program::Awww));
+        let dir = state.folder_path();
+        let made = |paths: &[PathBuf]| {
+            let pixels = SharedPixelBuffer::<Rgba8Pixel>::new(2, 2);
+            for store in [&THUMBS, &HERO_THUMBS] {
+                store.with(|t| {
+                    t.borrow_mut().extend(paths.iter().map(|p| (p.clone(), Image::from_rgba8(pixels.clone()))))
+                });
+            }
+        };
+        let kept = |store: &'static std::thread::LocalKey<RefCell<HashMap<PathBuf, Image>>>| {
+            store.with(|t| t.borrow().keys().cloned().collect::<HashSet<PathBuf>>())
+        };
+        // alps.png is on DP-3; the slideshow showed fjord.png before.
+        let (alps, fjord, forest) = (dir.join("alps.png"), dir.join("fjord.png"), dir.join("Nature/forest.png"));
+        made(&[alps.clone(), fjord.clone(), forest.clone()]);
+        state.sizes.insert(fjord.clone(), (48, 27));
+        forget_unshown(&mut state);
+        assert_eq!(kept(&HERO_THUMBS), HashSet::from([alps.clone()]));
+        assert_eq!(kept(&THUMBS), HashSet::from([alps.clone(), fjord, forest.clone()]));
+        // Another folder: the first one's go, but for the picture shown.
+        act_with(None, &mut state, "folder", &dir.join("Nature").display().to_string(), 0.0);
+        assert_eq!(kept(&THUMBS), HashSet::from([alps, forest]));
+        assert!(state.sizes.is_empty());
+        // Leaving the page drops them all, and the page's model that holds them.
+        let window = MainWindow::new().unwrap();
+        window.set_page("wallpaper".into());
+        window.show().unwrap();
+        render(&window, &state);
+        assert_eq!(window.get_wallpaper().tiles.row_count(), 1);
+        window.set_page("wifi".into());
+        render(&window, &state);
+        assert!(kept(&THUMBS).is_empty() && kept(&HERO_THUMBS).is_empty());
+        assert_eq!(window.get_wallpaper().tiles.row_count(), 0);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
