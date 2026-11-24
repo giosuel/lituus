@@ -23,8 +23,11 @@ use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecMode
 use crate::config::{self, WallpaperConfig};
 use crate::{Hint, MainWindow, WallpaperMonitor, WallpaperTile, WallpaperView, update};
 
-/// The thumbnails' size: 16:9, twice what a tile shows at 2000 px.
-const THUMB: (u32, u32) = (384, 216);
+/// The thumbnails' size: 16:9, for the grid's tiles (up to ~260 px wide) at twice the pixels, as
+/// on a screen at scale 2; the monitors in the hero get a larger one (`HERO_THUMB`), since one
+/// can be 600 px wide there.
+const THUMB: (u32, u32) = (512, 288);
+const HERO_THUMB: (u32, u32) = (1280, 720);
 
 /// Lituus's mark in hyprpaper.conf: the file is Lituus's to write (asked once).
 const MARK: &str = "# Lituus writes the wallpaper blocks in this file; the rest of it is yours.";
@@ -70,6 +73,9 @@ pub struct State {
     pub query: String,
     /// What a click sets: 0 all monitors, else that monitor (1-based).
     target: usize,
+    /// Several monitors picked with Shift+click or Ctrl+click in the hero (their names); when
+    /// there are any, a click sets these.
+    picked: Vec<String>,
     /// Waiting for the answer to taking over hyprpaper.conf.
     pub takeover: Option<Pending>,
     message: Option<String>,
@@ -128,6 +134,9 @@ impl State {
 
     /// The monitors a click sets: their names, none for all.
     fn targets(&self) -> Vec<String> {
+        if !self.picked.is_empty() {
+            return self.picked.clone();
+        }
         match self.target.checked_sub(1).and_then(|i| self.monitors.get(i)) {
             Some(m) => vec![m.name.clone()],
             None => Vec::new(),
@@ -194,8 +203,15 @@ pub fn refresh(weak: &slint::Weak<MainWindow>) {
     let weak = weak.clone();
     std::thread::spawn(move || {
         let read = read(&Env::from_env());
-        let _ =
-            weak.clone().upgrade_in_event_loop(move |_| update(&weak, move |app| loaded(&mut app.wallpapers, read)));
+        let _ = weak.clone().upgrade_in_event_loop(move |_| {
+            update(&weak, move |app| loaded(&mut app.wallpapers, read));
+            // The pictures shown are known only now: the first time the page opens, their
+            // thumbnails weren't asked for with the folder's.
+            let shown: Vec<PathBuf> =
+                crate::APP.with(|app| app.borrow().wallpapers.current.iter().map(|(_, p)| p.clone()).collect());
+            thumbnails(&weak, shown.clone(), true);
+            thumbnails(&weak, shown, false);
+        });
     });
 }
 
@@ -206,6 +222,8 @@ pub fn loaded(state: &mut State, read: Read) {
     state.monitors = read.monitors;
     state.lua = read.lua;
     state.target = state.target.min(state.monitors.len());
+    let names: Vec<String> = state.monitors.iter().map(|m| m.name.clone()).collect();
+    state.picked.retain(|p| names.contains(p));
 }
 
 /// Opens the page: the settings from config.toml, the folder's pictures, and their thumbnails.
@@ -225,13 +243,14 @@ fn load_folder(weak: &slint::Weak<MainWindow>, state: &mut State) {
         wanted.extend(f.pictures.iter().map(|p| p.path.clone()));
         wanted.extend(f.subfolders.iter().flat_map(|s| s.first.clone()));
     }
-    wanted.extend(state.current.iter().map(|(_, p)| p.clone()));
-    thumbnails(weak, wanted);
+    thumbnails(weak, wanted, false);
+    thumbnails(weak, state.current.iter().map(|(_, p)| p.clone()).collect(), true);
 }
 
 thread_local! {
-    /// Thumbnails made so far, by picture.
+    /// Thumbnails made so far, by picture: the grid's, and the hero's larger ones.
     static THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
+    static HERO_THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
 }
 
 /// The cache of thumbnails: ~/.cache/lituus/thumbnails.
@@ -246,8 +265,10 @@ fn cache_dir() -> PathBuf {
 /// A picture's thumbnail (its pixels, made on a thread) and its size, if they could be read.
 type Made = (PathBuf, Option<SharedPixelBuffer<Rgba8Pixel>>, Option<(u32, u32)>);
 
-fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>) {
-    let wanted: Vec<PathBuf> = THUMBS.with(|t| wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect());
+fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) {
+    let store = if hero { &HERO_THUMBS } else { &THUMBS };
+    let wanted: Vec<PathBuf> = store.with(|t| wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect());
+    let (w, h) = if hero { HERO_THUMB } else { THUMB };
     if wanted.is_empty() {
         return;
     }
@@ -259,14 +280,15 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>) {
                 .iter()
                 .map(|p| {
                     let size = lituus_wallpaper::dimensions(p);
-                    let pixels = lituus_wallpaper::thumbnail(p, &cache, THUMB.0, THUMB.1).ok().and_then(|t| decode(&t));
+                    let pixels = lituus_wallpaper::thumbnail(p, &cache, w, h).ok().and_then(|t| decode(&t));
                     (p.clone(), pixels, size)
                 })
                 .collect();
             let w = weak.clone();
             let _ = weak.upgrade_in_event_loop(move |_| {
                 update(&w, move |app| {
-                    THUMBS.with(|t| {
+                    let store = if hero { &HERO_THUMBS } else { &THUMBS };
+                    store.with(|t| {
                         let mut t = t.borrow_mut();
                         for (path, pixels, size) in done {
                             if let Some(size) = size {
@@ -289,6 +311,11 @@ fn decode(path: &Path) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
 
 fn thumb(path: &Path) -> Image {
     THUMBS.with(|t| t.borrow().get(path).cloned().unwrap_or_default())
+}
+
+/// A monitor's picture in the hero: the larger thumbnail, else the grid's until it's made.
+fn hero_thumb(path: &Path) -> Image {
+    HERO_THUMBS.with(|t| t.borrow().get(path).filter(|i| i.size().width > 0).cloned()).unwrap_or_else(|| thumb(path))
 }
 
 // ---- setting a picture -------------------------------------------------------------------------
@@ -739,7 +766,7 @@ pub fn view(state: &State) -> WallpaperView {
                 y: (m.y - min_y) as f32 / span_y,
                 w: m.width as f32 / span_x,
                 h: m.height as f32 / span_y,
-                picture: file.as_deref().map(thumb).unwrap_or_default(),
+                picture: file.as_deref().map(hero_thumb).unwrap_or_default(),
                 target: targets.is_empty() || targets.contains(&m.name),
             }
         })
@@ -757,7 +784,7 @@ pub fn view(state: &State) -> WallpaperView {
                 x: i as f32 / n,
                 w: 1.0 / n,
                 h: 1.0,
-                picture: thumb(path),
+                picture: hero_thumb(path),
                 target: true,
                 ..Default::default()
             })
@@ -846,6 +873,17 @@ pub fn view(state: &State) -> WallpaperView {
         ),
     );
     v.target = state.target as i32;
+    // Several picked: they're one more option, and selected.
+    if !state.picked.is_empty() {
+        use slint::Model;
+        let mut list: Vec<SharedString> = v.targets.iter().collect();
+        list.push(s(names(&state.picked)));
+        v.target = (list.len() - 1) as i32;
+        v.targets = ModelRc::new(VecModel::from(list));
+    }
+    let picked = state.targets();
+    v.set_label =
+        s(if picked.is_empty() { "Set on all monitors".to_owned() } else { format!("Set on {}", names(&picked)) });
     let fills = program.fills();
     v.fills = strings(fills.iter().map(|f| fill_label(*f).to_owned()));
     let fill = state.fill();
@@ -996,7 +1034,39 @@ fn act_with(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, verb: &st
             state.settings.sort = if index == 1 { "name".into() } else { "newest".into() };
             save(state, "sort", state.settings.sort.clone());
         }
-        "target" => state.target = index.min(state.monitors.len()),
+        "target" => {
+            state.target = index.min(state.monitors.len());
+            state.picked.clear();
+        }
+        // Shift+click or Ctrl+click on a monitor in the hero: it joins the ones a click sets, or
+        // leaves them. All of them is "All monitors" again, one is that monitor.
+        "target-add" => {
+            let Some(name) = index.checked_sub(1).and_then(|i| state.monitors.get(i)).map(|m| m.name.clone()) else {
+                return;
+            };
+            if state.picked.is_empty() {
+                state.picked = state.targets();
+            }
+            if let Some(at) = state.picked.iter().position(|p| *p == name) {
+                state.picked.remove(at);
+            } else {
+                state.picked.push(name);
+            }
+            let names: Vec<&String> = state.monitors.iter().map(|m| &m.name).collect();
+            state.picked.sort_by_key(|p| names.iter().position(|n| *n == p));
+            match state.picked.as_slice() {
+                [] => state.target = 0,
+                [one] => {
+                    state.target = names.iter().position(|n| *n == one).map_or(0, |i| i + 1);
+                    state.picked.clear();
+                }
+                many if many.len() == names.len() => {
+                    state.target = 0;
+                    state.picked.clear();
+                }
+                _ => {}
+            }
+        }
         "fill" => {
             if let Some(fill) = state.program().and_then(|p| p.fills().get(index).copied()) {
                 state.settings.fill = fill.id().into();
@@ -1292,6 +1362,27 @@ mod tests {
             "{:?}",
             calls(&d)
         );
+        // Shift+click picks several monitors: they're one option, and the tiles say so.
+        state.monitors.push(Monitor {
+            name: "HDMI-A-2".into(),
+            x: 6400,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        });
+        act_with(None, &mut state, "target-add", "", 3.0);
+        let v = view(&state);
+        assert_eq!(v.set_label, "Set on DP-5 and HDMI-A-2");
+        assert_eq!(v.targets.row_data(v.target as usize).unwrap(), "DP-5 and HDMI-A-2");
+        assert_eq!(state.targets(), ["DP-5", "HDMI-A-2"]);
+        // All three picked is All monitors again; one taken away leaves two, a plain click one.
+        act_with(None, &mut state, "target-add", "", 1.0);
+        assert_eq!((state.target, view(&state).set_label.as_str()), (0, "Set on all monitors"));
+        act_with(None, &mut state, "target", "", 2.0);
+        assert!(state.picked.is_empty() && state.targets() == ["DP-5"]);
+        act_with(None, &mut state, "target-add", "", 2.0);
+        assert_eq!(view(&state).set_label, "Set on all monitors");
+        state.monitors.pop();
         // Settings go to config.toml.
         act_with(None, &mut state, "transition", "", 7.0);
         act_with(None, &mut state, "subfolders", "", 0.0);
