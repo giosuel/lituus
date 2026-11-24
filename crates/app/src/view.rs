@@ -676,10 +676,11 @@ pub(crate) fn is_hotspot(snap: &Snapshot, active: &lituus_nm::ActiveConnection) 
 /// The Network item's sidebar status, and its sub-items'.
 fn network_status(snap: &Snapshot, view: &mut View) {
     view.wifi_available = wifi_device(snap).is_some();
-    view.net_status = if snap.wireless_off() {
-        "Off".to_owned()
-    } else {
-        online_through(snap).map_or_else(|| "Offline".to_owned(), |a| a.id.clone())
+    // A cable still connects with the radios off (airplane mode on a desktop).
+    view.net_status = match online_through(snap) {
+        Some(a) => a.id.clone(),
+        None if snap.wireless_off() => "Off".to_owned(),
+        None => "Offline".to_owned(),
     };
     let wifi = match active_on(snap, DeviceKind::Wifi) {
         _ if !view.wifi_available => "none".to_owned(),
@@ -1117,16 +1118,7 @@ fn wired_page(snap: &Snapshot, view: &mut View) -> Vec<(String, Vec<RowData>)> {
     for device in snap.devices.iter().filter(|d| d.kind == DeviceKind::Ethernet) {
         let carrier = device.wired.as_ref().is_some_and(|w| w.carrier);
         let active = device.active_connection.as_deref().and_then(|a| snap.active_connection(a));
-        // A port of a bridge or bond is shown there.
-        if snap
-            .connections
-            .iter()
-            .any(|c| c.port.is_some() && c.interface.as_deref() == Some(device.interface.as_str()))
-        {
-            continue;
-        }
-        let active_uuid = active.map(|a| a.uuid.as_str());
-        let mut rows: Vec<RowData> = snap
+        let own: Vec<&SavedConnection> = snap
             .connections
             .iter()
             .filter(|c| {
@@ -1134,6 +1126,22 @@ fn wired_page(snap: &Snapshot, view: &mut View) -> Vec<(String, Vec<RowData>)> {
                     && c.port.is_none()
                     && c.interface.as_deref().is_none_or(|i| i == device.interface)
             })
+            .collect();
+        // A port of a bridge or bond is shown there: while it's one now, or when a port
+        // profile is all the card has. A port profile alone (for a bridge that's off) doesn't
+        // hide the card's own profiles.
+        let port_now =
+            active.and_then(|a| snap.connections.iter().find(|c| c.uuid == a.uuid)).is_some_and(|c| c.port.is_some());
+        let port_profile = snap
+            .connections
+            .iter()
+            .any(|c| c.port.is_some() && c.interface.as_deref() == Some(device.interface.as_str()));
+        if port_now || (port_profile && own.is_empty()) {
+            continue;
+        }
+        let active_uuid = active.map(|a| a.uuid.as_str());
+        let mut rows: Vec<RowData> = own
+            .into_iter()
             .map(|c| {
                 let active = active_uuid == Some(c.uuid.as_str());
                 let (meta, tone) = if active {
@@ -2379,6 +2387,67 @@ pub(crate) mod tests {
         let view = build(Some(&snap), None, &state);
         assert_eq!(detail(&view, "Ports").as_deref(), Some("enp4s0"));
         assert_eq!(detail(&view, "Spanning tree").as_deref(), Some("On"));
+    }
+
+    /// The card's own profile is in use; a bridge (off) has a port profile for the same card.
+    #[test]
+    fn a_bridge_port_profile_doesnt_hide_the_cards_own_profile() {
+        let mut snap = home();
+        let eth = &mut snap.devices[1];
+        eth.wired = Some(WiredDevice { carrier: true, speed: 1000 });
+        eth.active_connection = Some("/a/eth".into());
+        let mut plain = saved("u-eth", "Wired connection 1", ConnectionKind::Ethernet, "", None);
+        plain.interface = None;
+        snap.connections.push(plain);
+        snap.active.push(ActiveConnection {
+            path: "/a/eth".into(),
+            id: "Wired connection 1".into(),
+            uuid: "u-eth".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/eth".into()],
+            connection: Some("/c/u-eth".into()),
+            specific_object: None,
+            vpn: false,
+        });
+        snap.connections.push(saved("u-br", "br0", ConnectionKind::Bridge { stp: true }, "br0", None));
+        snap.connections.push(saved("u-p", "bridge-slave-enp3s0", ConnectionKind::Ethernet, "enp3s0", Some("u-br")));
+        let state = UiState { page: Page::Wired, ..UiState::default() };
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(rows(&view)[0], ("ENP3S0 · E1000E".to_owned(), vec!["Wired connection 1".to_owned()]));
+        assert_eq!(view.sections[0].rows.row_data(0).unwrap().meta, "Connected · 1000 Mb/s");
+        assert_eq!(rows(&view)[1], ("BRIDGES AND BONDS".to_owned(), vec!["br0".to_owned(), "enp3s0".to_owned()]));
+        // The bridge on, the card one of its ports: it's shown there only.
+        snap.active[1].uuid = "u-p".into();
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(rows(&view)[0].0, "BRIDGES AND BONDS");
+    }
+
+    /// Airplane mode on a computer that's online by cable.
+    #[test]
+    fn network_status_follows_the_cable_with_the_radios_off() {
+        let mut snap = home();
+        snap.wireless_enabled = false;
+        snap.wwan_enabled = false;
+        snap.devices[0].active_connection = None;
+        let eth = &mut snap.devices[1];
+        eth.wired = Some(WiredDevice { carrier: true, speed: 1000 });
+        eth.active_connection = Some("/a/eth".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/eth".into(),
+            id: "Wired connection 1".into(),
+            uuid: "u-eth".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/eth".into()],
+            connection: None,
+            specific_object: None,
+            vpn: false,
+        }];
+        snap.primary_connection = Some("/a/eth".into());
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_status, "Wired connection 1");
+        // Nothing connected: off.
+        snap.devices[1].active_connection = None;
+        (snap.active, snap.primary_connection) = (Vec::new(), None);
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_status, "Off");
     }
 
     #[test]
