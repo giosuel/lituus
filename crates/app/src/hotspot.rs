@@ -53,6 +53,13 @@ pub fn apply(s: &mut Settings, ssid: &str, password: &str, band: usize) {
     put(s, "802-11-wireless-security", "psk", Value::from(password));
 }
 
+/// Whether the hotspot's (name, password) are wrong: a name of 1 to 32 bytes, and a WPA2
+/// password of 8 to 63 characters.
+pub fn invalid(ssid: &str, password: &str) -> (bool, bool) {
+    let ssid = ssid.trim();
+    (ssid.is_empty() || ssid.len() > 32, !(8..=63).contains(&password.chars().count()))
+}
+
 /// What a suggested password is made of: lower case letters and digits, without the 0, 1, l and
 /// o that are easy to mix up. 32 of them, so each random byte picks one evenly.
 const ALPHABET: &[u8; 32] = b"23456789abcdefghijkmnpqrstuvwxyz";
@@ -123,6 +130,13 @@ mod tests {
         let p = new_password().unwrap();
         assert!(p.split('-').all(|g| g.len() == 4 && g.bytes().all(|b| ALPHABET.contains(&b))), "{p}");
         assert_ne!(p, new_password().unwrap());
+    }
+
+    #[test]
+    fn names_and_passwords_are_checked() {
+        assert_eq!(invalid("thinkpad-x1", "k7mq-x2hd-9fwa"), (false, false));
+        assert_eq!(invalid(" ", "abc"), (true, true));
+        assert_eq!(invalid(&"x".repeat(33), &"y".repeat(64)), (true, true));
     }
 
     #[test]

@@ -1008,8 +1008,9 @@ fn connect_callbacks(window: &MainWindow) {
                 return send(app, view::Command::StopHotspot { active });
             }
             let Some(device) = h.device else { return };
-            if ssid.is_empty() || ssid.len() > 32 || !(8..=63).contains(&password.chars().count()) {
+            if hotspot::invalid(&ssid, &password) != (false, false) {
                 app.message_title.clear();
+                app.retry = None;
                 app.message = Some((
                     "The hotspot needs a name (1 to 32 bytes) and a password of 8 to 63 characters.".into(),
                     "danger",
@@ -1232,6 +1233,10 @@ fn render_hotspot(window: &MainWindow, app: &mut App, view: Option<&view::Hotspo
         window.set_hotspot_password(password.into());
         window.set_hotspot_band(band as i32);
     }
+    // Marked as they're typed, not only when the switch refuses them.
+    let (ssid, password) = hotspot::invalid(&window.get_hotspot_ssid(), &window.get_hotspot_password());
+    window.set_hotspot_ssid_invalid(ssid);
+    window.set_hotspot_password_invalid(password);
     let text = qr::wifi_text(&window.get_hotspot_ssid(), Some(&window.get_hotspot_password()), false, false);
     if text != app.hotspot_qr
         && let Some(image) = qr::image(&text, 8)
@@ -4583,6 +4588,19 @@ mod tests {
         found("Try again").invoke_accessible_default_action();
         found("Dismiss").invoke_accessible_default_action();
         assert_eq!(*log.borrow(), ["action", "dismiss"]);
+    }
+
+    /// The hotspot page shows its own messages (why the switch did nothing, why the hotspot
+    /// didn't start), not the next Wi-Fi page.
+    #[test]
+    fn the_hotspot_page_shows_its_own_messages() {
+        let window = window();
+        window.set_page("hotspot".into());
+        window.set_hotspot_available(true);
+        let text = "The hotspot needs a name (1 to 32 bytes) and a password of 8 to 63 characters.";
+        window.set_message_tone("danger".into());
+        window.set_message(text.into());
+        assert!(ElementHandle::find_by_accessible_label(&window, text).next().is_some());
     }
 
     #[test]
