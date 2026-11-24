@@ -2,7 +2,7 @@
 //! Hyprland config, after asking, with a copy of the file first. Hyprland then reads its config
 //! again, and the pages that write Lituus's file read whether it's loaded again.
 
-use lituus_hypr::{ConfigFile, Hyprland, config_dir};
+use lituus_hypr::{ConfigFile, Hyprland, config_dir, reads_lua};
 use slint::ComponentHandle;
 
 use crate::{MainWindow, Setup};
@@ -14,10 +14,10 @@ pub fn connect(window: &MainWindow) {
     window.global::<Setup>().on_confirm(move || confirm(&weak));
 }
 
-/// Lua or hyprlang as Hyprland says, as the pages decide (Lua when it can't be asked).
+/// Lua or hyprlang as the Hyprland running reads its config, as every page decides.
 fn file() -> ConfigFile {
-    let lua = Hyprland::from_env().and_then(|h| h.version()).map(|v| v.lua()).unwrap_or(true);
-    ConfigFile::new(config_dir(), lua)
+    let version = Hyprland::from_env().and_then(|h| h.version()).ok();
+    ConfigFile::new(config_dir(), reads_lua(version.as_ref(), &config_dir()))
 }
 
 fn open(weak: &slint::Weak<MainWindow>) {

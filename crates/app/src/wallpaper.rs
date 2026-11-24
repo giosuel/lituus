@@ -191,7 +191,7 @@ fn read(env: &Env) -> Read {
                     }
                 })
                 .collect(),
-            h.version().map(|v| v.lua()).unwrap_or(true),
+            lituus_hypr::reads_lua(h.version().ok().as_ref(), &lituus_hypr::config_dir()),
         ),
         Err(_) => (Vec::new(), true),
     };

@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use lituus_hypr::{
-    ConfigFile, Hyprland, Mode, Monitor, MonitorRule, WorkspaceRule, config_dir, scale_is_valid, valid_scales,
+    ConfigFile, Hyprland, Mode, Monitor, MonitorRule, Version, WorkspaceRule, config_dir, scale_is_valid, valid_scales,
 };
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -38,6 +38,19 @@ pub struct State {
     selected: usize,
     /// After Apply: until when to wait for Keep, and what to go back to.
     keep: Option<(Instant, Vec<MonitorRule>)>,
+    /// The rules Apply sent, until Hyprland's monitors are read again: Keep in between saves
+    /// these, not the monitors from before.
+    applied: Option<Vec<MonitorRule>>,
+    /// The workspace bindings Hyprland has after the last Apply; changes it can't take live
+    /// (`WsLive`) aren't in them.
+    ws_applied: Vec<StoredWorkspace>,
+    /// What the page has to say about a change that isn't live (workspaces waiting for Hyprland
+    /// to read its config).
+    note: Option<String>,
+    /// The error came from reading the monitors: the next good read clears it.
+    read_failed: bool,
+    /// Hyprland's version, for what it takes live.
+    version: Option<Version>,
     pub config_open: bool,
     /// The page's part of the file, as last written or read.
     saved: Option<String>,
@@ -87,9 +100,30 @@ impl Options {
     }
 }
 
+/// How Hyprland takes workspace rules live. Each version merges a rule into the one it has for
+/// the workspace, and only reading its config again takes rules away. Before 0.55 (hyprlang) the
+/// first monitor stays and default and persistent can only be turned on; 0.55 takes a new monitor,
+/// and either of them turned off when that's said; 0.56 can also turn a rule off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WsLive {
+    Hyprlang,
+    Lua,
+    Unbind,
+}
+
 impl State {
     fn lua(&self) -> bool {
         self.file.as_ref().is_none_or(|f| f.lua)
+    }
+
+    fn ws_live(&self) -> WsLive {
+        if !self.lua() {
+            WsLive::Hyprlang
+        } else if self.version.as_ref().is_none_or(|v| v.at_least(0, 56)) {
+            WsLive::Unbind
+        } else {
+            WsLive::Lua
+        }
     }
 
     /// The file's text for these rules.
@@ -103,7 +137,7 @@ impl State {
     /// as that (`desc:…` when it has a serial), or by its port when "Name monitors by
     /// description" is off. Profiles and workspaces keep the selector, so they match either way.
     fn named(&self, selector: &str) -> String {
-        match self.monitors.iter().find(|m| m.selector() == selector) {
+        match self.monitors.iter().find(|m| m.selector(&self.monitors) == selector) {
             Some(m) if !self.store.name_by_description => m.name.clone(),
             _ => selector.to_owned(),
         }
@@ -197,9 +231,11 @@ pub fn hotplugged(weak: &slint::Weak<MainWindow>) {
 fn refresh_then(weak: &slint::Weak<MainWindow>, switch: bool) {
     let weak = weak.clone();
     std::thread::spawn(move || {
+        let mut version = None;
         let read = (|| {
             let h = Hyprland::from_env()?;
-            let lua = h.version().map(|v| v.lua()).unwrap_or(true);
+            version = h.version().ok();
+            let lua = lituus_hypr::reads_lua(version.as_ref(), &config_dir());
             let monitors = h.monitors()?;
             Ok::<_, lituus_hypr::Error>((h, lua, monitors))
         })();
@@ -207,6 +243,9 @@ fn refresh_then(weak: &slint::Weak<MainWindow>, switch: bool) {
         let _ = weak.upgrade_in_event_loop(move |_| {
             let w2 = w.clone();
             update(&w, move |app| {
+                if version.is_some() {
+                    app.displays.version = version;
+                }
                 loaded(&mut app.displays, read);
                 if switch {
                     auto_switch(&w2, &mut app.displays);
@@ -221,25 +260,30 @@ fn auto_switch(weak: &slint::Weak<MainWindow>, state: &mut State) {
     if !state.store.switch_on_hotplug || state.keep.is_some() {
         return;
     }
-    let connected: Vec<String> = state.monitors.iter().map(Monitor::selector).collect();
+    let connected: Vec<String> = state.monitors.iter().map(|m| m.selector(&state.monitors)).collect();
     let Some(profile) = state.store.matching(&connected).cloned() else { return };
     let rules = profile_rules(state, &profile);
     let ws = profile.workspaces.clone();
-    if rules == state.live && ws == state.store.workspaces {
+    if profiles::same_layout(&rules, &state.live) && ws == state.store.workspaces {
         return;
     }
     let changed = changes(&state.live, &rules);
+    let (send_ws, unbind, after) = workspace_changes(&state.ws_applied, &ws, state.ws_live());
     state.edit = rules.clone();
     state.ws_edit = ws.clone();
+    state.ws_applied = after.clone();
     state.store.workspaces = ws;
     save_store(state);
-    let ws = state.ws_edit.clone();
-    send(weak, state, changed, ws);
+    send(weak, state, changed, send_ws, unbind);
     if let Some(file) = &state.file {
         let text = state.text(&rules);
         if file.write_section(SECTION, &text).is_ok() {
             state.saved = Some(text);
         }
+    }
+    if workspaces_changed(&after, &state.store.workspaces) > 0 {
+        let loaded = state.loaded;
+        reload_for_workspaces(weak, state, loaded);
     }
     if let Some(h) = &state.hypr {
         let _ = h.notify(1, 4000, &format!("Lituus: switched to {}", profile.name));
@@ -280,6 +324,7 @@ fn loaded(state: &mut State, read: Result<(Hyprland, bool, Vec<Monitor>), lituus
             Ok(store) => {
                 state.store = store;
                 state.ws_edit = state.store.workspaces.clone();
+                state.ws_applied = state.store.workspaces.clone();
                 state.store_error = None;
             }
             Err(e) => {
@@ -293,6 +338,15 @@ fn loaded(state: &mut State, read: Result<(Hyprland, bool, Vec<Monitor>), lituus
     }
     match read {
         Ok((h, lua, mut monitors)) => {
+            if state.read_failed {
+                state.error = None;
+                state.read_failed = false;
+            }
+            // Hyprland has the monitors as applied now: Keep saves them.
+            state.applied = None;
+            // The selected monitor stays selected when the order changes (by position: an
+            // Apply that moved it left).
+            let selected = state.monitors.get(state.selected).map(|m| m.name.clone());
             monitors.sort_by_key(|m| (m.disabled, m.x, m.y));
             let file = ConfigFile::new(state.hypr_dir.clone().unwrap_or_else(config_dir), lua);
             state.loaded = file.loaded();
@@ -321,54 +375,184 @@ fn loaded(state: &mut State, read: Result<(Hyprland, bool, Vec<Monitor>), lituus
                 state.edit = state.live.clone();
             }
             state.monitors = monitors;
-            state.selected = state.selected.min(state.monitors.len().saturating_sub(1));
+            state.selected = selected
+                .and_then(|name| state.monitors.iter().position(|m| m.name == name))
+                .unwrap_or(state.selected)
+                .min(state.monitors.len().saturating_sub(1));
         }
         Err(lituus_hypr::Error::NotRunning) => {
             state.not_running = true;
             state.monitors.clear();
         }
-        Err(e) => state.error = Some(e.to_string()),
+        Err(e) => {
+            state.error = Some(e.to_string());
+            state.read_failed = true;
+        }
     }
 }
 
-/// Sets rules live, on a thread, then reads the monitors again.
-fn send(weak: &slint::Weak<MainWindow>, state: &mut State, rules: Vec<MonitorRule>, workspaces: Vec<StoredWorkspace>) {
+/// Sets rules live, on a thread, then reads the monitors again; `unbind` are workspaces whose
+/// rule goes (`WsLive::Unbind`).
+fn send(
+    weak: &slint::Weak<MainWindow>,
+    state: &mut State,
+    rules: Vec<MonitorRule>,
+    workspaces: Vec<StoredWorkspace>,
+    unbind: Vec<String>,
+) {
     // Hyprland doesn't report these back; the next read keeps them from here.
     for r in &rules {
         if let Some(l) = state.live.iter_mut().find(|l| l.output == r.output) {
             (l.vrr, l.reserved) = (r.vrr, r.reserved);
         }
     }
-    let Some(h) = state.hypr.clone() else { return };
-    let lua = state.lua();
-    // Named as in the file, so a rule applied now replaces the one Hyprland read from it.
-    let rules = state.named_rules(&rules);
-    let workspaces = state.named_workspaces(&workspaces);
+    let Some(sending) = sending(state, rules, workspaces, unbind) else { return };
     let weak = weak.clone();
     std::thread::spawn(move || {
+        let error = sending.run();
+        // Hyprland applies on its next frame.
+        std::thread::sleep(Duration::from_millis(300));
+        let h = sending.h;
+        let read = h.monitors().map(|m| (h.clone(), sending.lua, m));
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, move |app| {
+                loaded(&mut app.displays, read);
+                if error.is_some() {
+                    app.displays.error = error;
+                    app.displays.read_failed = false;
+                }
+            })
+        });
+    });
+}
+
+/// Rules on their way to Hyprland, named as in the file, so a rule applied now replaces the one
+/// Hyprland read from it.
+struct Sending {
+    h: Hyprland,
+    lua: bool,
+    version: Option<Version>,
+    rules: Vec<MonitorRule>,
+    workspaces: Vec<WorkspaceRule>,
+    unbind: Vec<String>,
+}
+
+fn sending(state: &State, rules: Vec<MonitorRule>, ws: Vec<StoredWorkspace>, unbind: Vec<String>) -> Option<Sending> {
+    Some(Sending {
+        h: state.hypr.clone()?,
+        lua: state.lua(),
+        version: state.version.clone(),
+        rules: state.named_rules(&rules),
+        workspaces: state.named_workspaces(&ws),
+        unbind,
+    })
+}
+
+impl Sending {
+    /// Sends the rules; what Hyprland said no to, if anything.
+    fn run(&self) -> Option<String> {
+        let h = &self.h;
         let mut error = None;
-        for r in &rules {
-            let result = if lua { h.eval(&r.lua_live()) } else { h.keyword("monitor", &r.hyprlang()) };
+        let vrr_global = if self.lua { vrr_global(h, self.version.as_ref()) } else { None };
+        for r in &self.rules {
+            let result = if self.lua {
+                h.eval(&r.lua_live(vrr_global))
+            } else {
+                h.keyword("monitor", &r.hyprlang()).and_then(|()| match r.hyprlang_reserved() {
+                    Some(reserved) => h.keyword("monitor", &reserved),
+                    None => Ok(()),
+                })
+            };
             if let Err(e) = result {
                 error = Some(format!("Hyprland didn't take the settings for {}: {e}", r.output));
             }
         }
-        for w in &workspaces {
-            let result = if lua { h.eval(&w.lua()) } else { h.keyword("workspace", &w.hyprlang()) };
+        for name in &self.unbind {
+            if let Err(e) = h.eval(&WorkspaceRule::lua_unbind(name)) {
+                error = Some(format!("Hyprland didn't unbind workspace {name}: {e}"));
+            }
+        }
+        for w in &self.workspaces {
+            let result = if self.lua { h.eval(&w.lua_live()) } else { h.keyword("workspace", &w.hyprlang()) };
             if let Err(e) = result {
                 error = Some(format!("Hyprland didn't take the rule for workspace {}: {e}", w.workspace));
             }
         }
-        // Hyprland applies on its next frame.
-        std::thread::sleep(Duration::from_millis(300));
-        let read = h.monitors().map(|m| (h.clone(), lua, m));
-        let w = weak.clone();
-        let _ = weak.upgrade_in_event_loop(move |_| {
-            update(&w, move |app| {
-                app.displays.error = error;
-                loaded(&mut app.displays, read);
-            })
-        });
+        error
+    }
+}
+
+/// What stands for VRR's "Global setting" in a live rule: -1 from Hyprland 0.56 on; 0.55 takes
+/// only 0–3, so there it's misc:vrr's value now.
+fn vrr_global(h: &Hyprland, version: Option<&Version>) -> Option<i8> {
+    if version.is_none_or(|v| v.at_least(0, 56)) {
+        return Some(-1);
+    }
+    match h.option("misc:vrr") {
+        Ok(Some(lituus_hypr::Value::Number(n))) => Some(n as i8),
+        _ => None,
+    }
+}
+
+/// Going from workspace bindings `from` to `to` live: the rules to send, the workspaces to
+/// unbind, and the bindings Hyprland has afterwards. What it can't take live (`WsLive`) stays as
+/// in `from` there, until it reads its config again.
+#[allow(clippy::type_complexity)]
+fn workspace_changes(
+    from: &[StoredWorkspace],
+    to: &[StoredWorkspace],
+    live: WsLive,
+) -> (Vec<StoredWorkspace>, Vec<String>, Vec<StoredWorkspace>) {
+    let mut names: Vec<&str> = from.iter().chain(to).map(|w| w.workspace.as_str()).collect();
+    names.sort_by_key(|n| (n.parse::<u32>().unwrap_or(u32::MAX), n.to_string()));
+    names.dedup();
+    let (mut send, mut unbind, mut after) = (Vec::new(), Vec::new(), Vec::new());
+    for n in names {
+        let a = from.iter().find(|w| w.workspace == n);
+        let b = to.iter().find(|w| w.workspace == n);
+        match (a, b) {
+            (Some(_), None) if live == WsLive::Unbind => unbind.push(n.to_owned()),
+            (Some(a), None) => after.push(a.clone()),
+            (Some(a), Some(b)) if a == b => after.push(a.clone()),
+            (Some(a), Some(b))
+                if live == WsLive::Hyprlang
+                    && (a.monitor != b.monitor || a.default && !b.default || a.persistent && !b.persistent) =>
+            {
+                after.push(a.clone());
+            }
+            (_, Some(b)) => {
+                send.push(b.clone());
+                after.push(b.clone());
+            }
+            (None, None) => {}
+        }
+    }
+    (send, unbind, after)
+}
+
+/// Workspace changes Hyprland didn't take live take effect when it reads its config. Lituus asks
+/// it to when that's `safe` (its config loads Lituus's file, and the file has what's live: a
+/// reload also puts the monitors back as the config has them); otherwise the page says so.
+fn reload_for_workspaces(weak: &slint::Weak<MainWindow>, state: &mut State, safe: bool) {
+    if !safe {
+        state.note = Some("Saved; the workspaces change when Hyprland reads Lituus's file again".into());
+        return;
+    }
+    state.note = None;
+    // The file has the bindings: Hyprland has them once it has read it.
+    state.ws_applied = state.store.workspaces.clone();
+    let Some(h) = state.hypr.clone() else { return };
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = h.request("reload") {
+            let w = weak.clone();
+            let _ = weak.upgrade_in_event_loop(move |_| {
+                update(&w, move |app| {
+                    app.displays.error = Some(format!("Hyprland didn't read its config again: {e}"));
+                })
+            });
+        }
     });
 }
 
@@ -395,7 +579,13 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
             state.ws_before = None;
             state.store.workspaces = state.ws_edit.clone();
             save_store(state);
-            save(state);
+            // What was applied, also when Hyprland's monitors haven't been read again yet.
+            let rules = state.applied.clone().unwrap_or_else(|| state.live.clone());
+            save_rules(state, &rules);
+            if workspaces_changed(&state.ws_applied, &state.ws_edit) > 0 {
+                let safe = state.loaded && state.saved.is_some();
+                reload_for_workspaces(weak, state, safe);
+            }
         }
         "revert-now" => revert(weak, state),
         "revert" => {
@@ -409,6 +599,10 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
         "name-by-description" => state.edit_options(|o| o.by_description = !o.by_description),
         "profile-save" => {
             let name = arg.trim();
+            // A profile of that name is updated only when that's confirmed, as with its Update.
+            if let Some(index) = state.store.profiles.iter().position(|p| p.name == name) {
+                return ask(state, "profile-update", index);
+            }
             // It couldn't be kept: displays.toml isn't written while it can't be read.
             if !name.is_empty() && state.store_error.is_none() {
                 let profile = Profile {
@@ -418,10 +612,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
                     monitors: state.live.iter().map(StoredMonitor::from).collect(),
                     workspaces: state.store.workspaces.clone(),
                 };
-                match state.store.profiles.iter_mut().find(|p| p.name == name) {
-                    Some(old) => *old = Profile { auto: old.auto, exec: old.exec.clone(), ..profile },
-                    None => state.store.profiles.push(profile),
-                }
+                state.store.profiles.push(profile);
                 save_store(state);
                 save(state);
             }
@@ -529,6 +720,7 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State) {
     if !state.dirty() || problem(state).is_some() || state.keep.is_some() {
         return;
     }
+    state.note = None;
     // The page's own settings can't leave a screen black: they go to displays.toml now, and
     // without monitor changes there's nothing for Hyprland to try, so nothing to keep.
     let renamed = state.options().by_description != state.store.name_by_description;
@@ -541,11 +733,21 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State) {
         return;
     }
     let rules = changes(&state.live, &state.edit);
-    let ws: Vec<StoredWorkspace> =
-        state.ws_edit.iter().filter(|w| !state.store.workspaces.contains(w)).cloned().collect();
+    let (ws, unbind, after) = workspace_changes(&state.ws_applied, &state.ws_edit, state.ws_live());
+    if rules.is_empty() && ws.is_empty() && unbind.is_empty() {
+        // Only workspace changes Hyprland can't take live: nothing to try, so nothing to keep.
+        state.store.workspaces = state.ws_edit.clone();
+        save_store(state);
+        save(state);
+        let safe = state.loaded && state.saved.as_deref() == Some(state.text(&state.live).as_str());
+        reload_for_workspaces(weak, state, safe);
+        return;
+    }
     state.keep = Some((Instant::now() + KEEP_FOR, state.live.clone()));
+    state.applied = Some(state.edit.clone());
     state.ws_before = Some(state.store.workspaces.clone());
-    send(weak, state, rules, ws);
+    state.ws_applied = after;
+    send(weak, state, rules, ws, unbind);
 }
 
 /// The Workspaces tab: row `index` is workspace index + 1.
@@ -561,7 +763,7 @@ fn edit_workspace(state: &mut State, verb: &str, index: usize, value: f32) {
                 }
                 (0, None) => {}
                 (c, _) => {
-                    let Some(monitor) = state.monitors.get(c - 1).map(Monitor::selector) else { return };
+                    let Some(monitor) = state.monitors.get(c - 1).map(|m| m.selector(&state.monitors)) else { return };
                     match pos {
                         Some(p) => state.ws_edit[p].monitor = monitor,
                         None => state.ws_edit.push(StoredWorkspace {
@@ -607,17 +809,52 @@ pub fn tick(weak: &slint::Weak<MainWindow>, state: &mut State) {
 
 fn revert(weak: &slint::Weak<MainWindow>, state: &mut State) {
     if let Some((_, previous)) = state.keep.take() {
-        let rules = changes(&state.live, &previous);
+        let (rules, ws, unbind, after) = reverting(state, &previous);
+        // The file still has what was there before Apply.
+        let safe = state.loaded && state.saved.as_deref() == Some(state.text(&previous).as_str());
         state.edit = previous;
-        let ws = state.ws_before.take().unwrap_or_else(|| state.store.workspaces.clone());
-        state.ws_edit = ws.clone();
-        send(weak, state, rules, ws);
+        state.applied = None;
+        state.ws_applied = after.clone();
+        state.ws_edit = state.ws_before.take().unwrap_or_else(|| state.store.workspaces.clone());
+        send(weak, state, rules, ws, unbind);
+        if workspaces_changed(&after, &state.ws_edit) > 0 {
+            reload_for_workspaces(weak, state, safe);
+        }
+    }
+}
+
+/// What takes an Apply back: the monitor rules that changed, the workspace rules to send and
+/// unbind, and the workspace bindings Hyprland has then.
+#[allow(clippy::type_complexity)]
+fn reverting(
+    state: &State,
+    previous: &[MonitorRule],
+) -> (Vec<MonitorRule>, Vec<StoredWorkspace>, Vec<String>, Vec<StoredWorkspace>) {
+    let before = state.ws_before.clone().unwrap_or_else(|| state.store.workspaces.clone());
+    let (ws, unbind, after) = workspace_changes(&state.ws_applied, &before, state.ws_live());
+    (changes(&state.live, previous), ws, unbind, after)
+}
+
+/// The window closes and Lituus quits while Apply waits for Keep: the old settings go back now,
+/// since the countdown ends with Lituus.
+pub fn revert_on_quit(state: &mut State) {
+    if let Some((_, previous)) = state.keep.take() {
+        let (rules, ws, unbind, _) = reverting(state, &previous);
+        if let Some(sending) = sending(state, rules, ws, unbind) {
+            sending.run();
+        }
     }
 }
 
 fn save(state: &mut State) {
+    let rules = state.live.clone();
+    save_rules(state, &rules);
+}
+
+/// Writes the page's part of Lituus's file for these rules.
+fn save_rules(state: &mut State, rules: &[MonitorRule]) {
     let Some(file) = &state.file else { return };
-    let text = state.text(&state.live);
+    let text = state.text(rules);
     match file.write_section(SECTION, &text) {
         Ok(()) => state.saved = Some(text),
         Err(e) => state.error = Some(format!("Couldn't write {}: {e}", file.path().display())),
@@ -670,7 +907,7 @@ fn edit(
         }
         "mirror" => {
             let others: Vec<&Monitor> = all.iter().filter(|m| m.name != monitor.name).collect();
-            rule.mirror = if index == 0 { None } else { others.get(index - 1).map(|m| m.selector()) };
+            rule.mirror = if index == 0 { None } else { others.get(index - 1).map(|m| m.selector(all)) };
         }
         "colour" => rule.cm = COLOUR_MODES.get(index).map_or("srgb", |c| c.0).to_owned(),
         "bitdepth" => rule.ten_bit = index == 1,
@@ -851,11 +1088,25 @@ fn along(pos: i32, len: i32, o: i32, olen: i32, more: impl Iterator<Item = i32>)
     v
 }
 
-/// What keeps Apply off: an invalid scale, or monitors on top of each other.
+/// What keeps Apply off: an invalid scale, a mirror of a monitor that's off or mirrors one
+/// itself (Hyprland refuses those), or monitors on top of each other.
 fn problem(state: &State) -> Option<String> {
     for (r, m) in state.edit.iter().zip(&state.monitors) {
         if !r.disabled && !scale_is_valid(r.mode.width, r.mode.height, r.scale) {
             return Some(format!("{}: Hyprland can't use scale {}", m.name, short(r.scale)));
+        }
+        let mirrored = r
+            .mirror
+            .as_deref()
+            .filter(|_| !r.disabled)
+            .and_then(|sel| state.edit.iter().zip(&state.monitors).find(|(o, _)| o.output == sel));
+        if let Some((o, om)) = mirrored {
+            if o.disabled {
+                return Some(format!("{} mirrors {}, which is off", m.name, om.name));
+            }
+            if o.mirror.is_some() {
+                return Some(format!("{} mirrors {}, which mirrors another monitor", m.name, om.name));
+            }
         }
     }
     let rects: Vec<(usize, i32, i32, i32, i32)> = state
@@ -1012,7 +1263,7 @@ pub fn view(state: &State) -> DisplaysView {
                     state
                         .monitors
                         .iter()
-                        .find(|o| r.mirror.as_deref() == Some(o.selector().as_str()))
+                        .find(|o| r.mirror.as_deref() == Some(o.selector(&state.monitors).as_str()))
                         .map_or("", |o| o.name.as_str())
                 )
             } else {
@@ -1123,8 +1374,11 @@ pub fn view(state: &State) -> DisplaysView {
     let others: Vec<&Monitor> = state.monitors.iter().filter(|o| o.name != m.name).collect();
     v.mirrors =
         strings(std::iter::once("Off".to_owned()).chain(others.iter().map(|o| format!("{} · {}", o.name, o.model))));
-    v.mirror =
-        r.mirror.as_deref().and_then(|sel| others.iter().position(|o| o.selector() == sel)).map_or(0, |p| p as i32 + 1);
+    v.mirror = r
+        .mirror
+        .as_deref()
+        .and_then(|sel| others.iter().position(|o| o.selector(&state.monitors) == sel))
+        .map_or(0, |p| p as i32 + 1);
     v.colour_modes = strings(COLOUR_MODES.iter().map(|c| c.1.to_owned()));
     v.colour_mode = COLOUR_MODES.iter().position(|c| c.0 == r.cm).unwrap_or(0) as i32;
     v.hdr = r.cm.starts_with("hdr");
@@ -1165,6 +1419,8 @@ pub fn view(state: &State) -> DisplaysView {
         ("1 change not applied".to_owned(), "accent")
     } else if changed > 1 {
         (format!("{changed} changes not applied"), "accent")
+    } else if let Some(note) = &state.note {
+        (note.clone(), "warn")
     } else if state.saved.is_none() {
         // Lituus hasn't written its file yet, and nothing changed.
         ("No changes".to_owned(), "faint")
@@ -1210,7 +1466,7 @@ pub fn view(state: &State) -> DisplaysView {
                 WorkspaceRow {
                     name: s(n.to_string()),
                     monitor: w
-                        .and_then(|w| state.monitors.iter().position(|m| m.selector() == w.monitor))
+                        .and_then(|w| state.monitors.iter().position(|m| m.selector(&state.monitors) == w.monitor))
                         .map_or(0, |p| p as i32 + 1),
                     bound: w.is_some(),
                     default: w.is_some_and(|w| w.default),
@@ -1808,7 +2064,7 @@ mod tests {
         assert_eq!(st.edit[2].mirror.as_deref(), Some("desc:Samsung Electric Company Odyssey G61SH HNAL600836"));
         act(&w, &mut st, "colour", "2", 0.0);
         act(&w, &mut st, "bitdepth", "1", 0.0);
-        assert!(st.edit[2].lua_live().contains(r#"bitdepth = 10, cm = "hdr""#));
+        assert!(st.edit[2].lua_live(Some(-1)).contains(r#"bitdepth = 10, cm = "hdr""#));
     }
 
     #[test]
@@ -1829,7 +2085,7 @@ mod tests {
         act(&w, &mut st, "ws-monitor", "1", 3.0);
         act(&w, &mut st, "ws-default", "0", 0.0);
         act(&w, &mut st, "ws-default", "1", 0.0);
-        let g8 = st.monitors[2].selector();
+        let g8 = st.monitors[2].selector(&st.monitors);
         let defaults: Vec<(&str, bool)> = st.ws_edit.iter().map(|w| (w.workspace.as_str(), w.default)).collect();
         assert_eq!(defaults, [("1", false), ("2", true)]);
         assert!(st.ws_edit.iter().all(|w| w.monitor == g8));
@@ -1854,7 +2110,8 @@ mod tests {
             ..Profile::default()
         });
         // The real displays.toml mustn't be touched: no file, no Hyprland here.
-        let profile = st.store.matching(&st.monitors.iter().map(Monitor::selector).collect::<Vec<_>>()).cloned();
+        let profile =
+            st.store.matching(&st.monitors.iter().map(|m| m.selector(&st.monitors)).collect::<Vec<_>>()).cloned();
         assert_eq!(profile.as_ref().map(|p| p.name.as_str()), Some("Desk"));
         assert_eq!(profile_rules(&st, &profile.unwrap()), desk);
         assert_eq!(st.store.active(&desk), Some(0));
@@ -1997,7 +2254,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("lituus.lua")).unwrap(), text);
         assert_eq!(view(&st).status, "Everything is applied and saved");
         // Profiles still match the monitors, and the setting is remembered.
-        let connected: Vec<String> = st.monitors.iter().map(Monitor::selector).collect();
+        let connected: Vec<String> = st.monitors.iter().map(|m| m.selector(&st.monitors)).collect();
         assert_eq!(st.store.matching(&connected).map(|p| p.name.as_str()), Some("Desk"));
         assert_eq!(st.store.active(&st.live), Some(0));
         assert!(!profiles::load(&dir.join("displays.toml")).unwrap().name_by_description);
@@ -2113,6 +2370,174 @@ mod tests {
         assert!(v.not_loaded);
         assert_eq!(v.status, "Applied; lost when Hyprland restarts");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two monitors of the same make, model and serial keep their own rules, in the file, live
+    /// and in a profile: they go by their ports.
+    #[test]
+    fn two_monitors_of_the_same_make_and_serial_keep_their_own_rules() {
+        let mut monitors = fixture();
+        monitors.truncate(2);
+        monitors[1].description = monitors[0].description.clone();
+        monitors[1].serial = monitors[0].serial.clone();
+        let mut st = State { store_read: true, hypr_dir: Some("/nonexistent".into()), ..State::default() };
+        loaded(&mut st, Ok((Hyprland::at("/nonexistent"), true, monitors)));
+        let named = st.named_rules(&st.live);
+        assert_ne!(named[0].output, named[1].output, "both rules name the same monitor");
+        st.store.name_by_description = false;
+        let named = st.named_rules(&st.live);
+        assert_eq!(named.iter().map(|r| r.output.as_str()).collect::<Vec<_>>(), ["DP-3", "DP-5"]);
+        // A profile saved from them gives each its own rule back.
+        let profile = Profile { monitors: st.live.iter().map(StoredMonitor::from).collect(), ..Profile::default() };
+        assert_eq!(profile_rules(&st, &profile), st.live);
+    }
+
+    /// Keep answered before Hyprland's monitors were read again saves what was applied, not the
+    /// settings from before (09-2, 02-11).
+    #[test]
+    fn keep_before_the_reread_saves_what_was_applied() {
+        let (mut st, dir) = state_in("keep-early");
+        let w = weak();
+        // DP-4 from 59.95 Hz to its fastest mode.
+        act(&w, &mut st, "select", "3", 0.0);
+        act(&w, &mut st, "rate", "0", 0.0);
+        let applied = st.text(&st.edit);
+        assert_ne!(applied, st.text(&st.live));
+        act(&w, &mut st, "apply", "", 0.0);
+        act(&w, &mut st, "keep", "", 0.0);
+        assert_eq!(st.saved.as_deref(), Some(applied.as_str()), "what lituus.lua got");
+        let mut after = fixture();
+        after[2].refresh_rate = 239.757;
+        reread(&mut st, &after);
+        assert_eq!(view(&st).status, "Everything is applied and saved");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What Hyprland takes live of a change to the workspace bindings: everything from 0.56
+    /// (a rule can be turned off), all but unbinding on 0.55, only what's new before (hyprlang).
+    #[test]
+    fn workspace_changes_hyprland_takes_live() {
+        let ws = |n: &str, m: &str, default: bool| StoredWorkspace {
+            workspace: n.into(),
+            monitor: m.into(),
+            default,
+            persistent: false,
+        };
+        let from = vec![ws("1", "DP-3", true), ws("2", "DP-3", false), ws("3", "DP-5", false)];
+        let to = vec![ws("1", "DP-3", false), ws("3", "DP-4", false), ws("4", "DP-5", false)];
+        let (send, unbind, after) = workspace_changes(&from, &to, WsLive::Unbind);
+        assert_eq!((send, unbind, after.clone()), (to.clone(), vec!["2".to_owned()], to.clone()));
+        let (send, unbind, after) = workspace_changes(&from, &to, WsLive::Lua);
+        assert_eq!(send, to);
+        assert!(unbind.is_empty());
+        assert_eq!(after, [to[0].clone(), from[1].clone(), to[1].clone(), to[2].clone()]);
+        let (send, _, after) = workspace_changes(&from, &to, WsLive::Hyprlang);
+        assert_eq!(send, [to[2].clone()]);
+        assert_eq!(after, [from[0].clone(), from[1].clone(), from[2].clone(), to[2].clone()]);
+    }
+
+    /// Unbinding a workspace on Hyprland 0.55 can't be done live: no countdown to keep it. The
+    /// file has it; Hyprland reads it again when its config loads Lituus's file, and otherwise
+    /// the page says it waits.
+    #[test]
+    fn a_binding_hyprland_cant_drop_live_isnt_kept_for() {
+        let (mut st, dir) = state_in("ws-055");
+        st.version = Some(Version { version: "0.55.4".into(), ..Default::default() });
+        let w = weak();
+        act(&w, &mut st, "ws-monitor", "2", 1.0); // workspace 3 on DP-3
+        act(&w, &mut st, "apply", "", 0.0);
+        assert!(st.keep_pending(), "a new binding is live");
+        act(&w, &mut st, "keep", "", 0.0);
+        act(&w, &mut st, "ws-monitor", "2", 0.0);
+        act(&w, &mut st, "apply", "", 0.0);
+        assert!(!st.keep_pending());
+        let file = std::fs::read_to_string(dir.join("lituus.lua")).unwrap();
+        assert!(!file.contains("workspace = \"3\""), "{file}");
+        assert_eq!(view(&st).status, "Everything is applied and saved");
+        // Not loaded by the config: nothing reads it, and the page says so.
+        std::fs::remove_file(dir.join("hyprland.lua")).unwrap();
+        reread(&mut st, &fixture());
+        act(&w, &mut st, "ws-monitor", "2", 1.0);
+        act(&w, &mut st, "apply", "", 0.0);
+        act(&w, &mut st, "keep", "", 0.0);
+        act(&w, &mut st, "ws-monitor", "2", 0.0);
+        act(&w, &mut st, "apply", "", 0.0);
+        assert!(!st.keep_pending());
+        assert_eq!(view(&st).status, "Saved; the workspaces change when Hyprland reads Lituus's file again");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Before 0.55 the reserved area is written as `addreserved`, and comes back from the file.
+    #[test]
+    fn hyprlang_keeps_the_reserved_area() {
+        let (mut st, dir) = state_in("reserved-conf");
+        std::fs::write(dir.join("hyprland.conf"), "source = ~/.config/hypr/lituus.conf\n").unwrap();
+        loaded(&mut st, Ok((Hyprland::at("/nonexistent"), false, fixture())));
+        let w = weak();
+        act(&w, &mut st, "select", "3", 0.0);
+        act(&w, &mut st, "reserved", "0:40", 0.0);
+        act(&w, &mut st, "apply", "", 0.0);
+        act(&w, &mut st, "keep", "", 0.0);
+        let file = std::fs::read_to_string(dir.join("lituus.conf")).unwrap();
+        assert!(file.contains(", addreserved, 40, 0, 0, 0\n"), "{file}");
+        let mut again = State { hypr_dir: st.hypr_dir.clone(), store_path: st.store_path.clone(), ..State::default() };
+        loaded(&mut again, Ok((Hyprland::at("/nonexistent"), false, fixture())));
+        assert_eq!(again.live[3].reserved, [40, 0, 0, 0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The monitor being edited stays selected when an Apply moves it before the others.
+    #[test]
+    fn the_selected_monitor_stays_selected_when_the_order_changes() {
+        let mut st = state();
+        act(&weak(), &mut st, "select", "3", 0.0);
+        assert_eq!(st.monitors[st.selected].name, "DP-4");
+        let mut moved = fixture();
+        moved[2].x = 0; // DP-4, left of the others
+        reread(&mut st, &moved);
+        assert_eq!(st.monitors[0].name, "DP-4");
+        assert_eq!(st.monitors[st.selected].name, "DP-4");
+    }
+
+    /// Hyprland refuses a mirror of a monitor that mirrors one itself, or is off.
+    #[test]
+    fn mirrors_of_mirrors_keep_apply_off() {
+        let mut st = state();
+        st.edit[0].mirror = Some(st.edit[2].output.clone());
+        st.edit[2].mirror = Some(st.edit[0].output.clone());
+        let v = view(&st);
+        assert_eq!(v.status, "DP-3 mirrors DP-5, which mirrors another monitor, so Apply is off");
+        assert!(!v.can_apply);
+        st.edit[2].mirror = None;
+        st.edit[2].disabled = true;
+        assert_eq!(view(&st).status, "DP-3 mirrors DP-5, which is off, so Apply is off");
+    }
+
+    /// Saving the layout under a profile's name asks first, as its Update does.
+    #[test]
+    fn saving_under_a_profiles_name_asks_first() {
+        let (mut st, dir) = state_in("profile-again");
+        let w = weak();
+        assert_eq!(act(&w, &mut st, "profile-save", "Desk", 0.0), None);
+        let desk = st.store.profiles.clone();
+        let mut moved = fixture();
+        moved[2].x += 100;
+        reread(&mut st, &moved);
+        let asked = act(&w, &mut st, "profile-save", " Desk ", 0.0).unwrap();
+        assert_eq!(asked.title, "Update Desk?");
+        assert_eq!(asked.then, Confirmed::Displays("profile-update", "Desk".into()));
+        assert_eq!(st.store.profiles, desk);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A good read clears what a failed one said.
+    #[test]
+    fn a_good_read_clears_a_failed_ones_error() {
+        let mut st = state();
+        loaded(&mut st, Err(lituus_hypr::Error::Refused("no answer".into())));
+        assert_eq!(view(&st).status, "no answer");
+        reread(&mut st, &fixture());
+        assert_eq!(view(&st).status, "No changes");
     }
 
     #[test]

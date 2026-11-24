@@ -68,6 +68,10 @@ pub struct Flags {
     pub mouse: bool,
     /// The window in focus gets the keys too.
     pub non_consuming: bool,
+    /// hyprlang's other letters (`bindp`'s "p"), kept as they are.
+    pub letters: String,
+    /// Lua's other options (`{ dont_inhibit = true }`), as written, kept as they are.
+    pub options: Vec<(String, String)>,
 }
 
 /// A value in a Lua expression, as far as Lituus follows it.
@@ -113,6 +117,16 @@ impl Value {
 
     fn truthy(&self) -> bool {
         matches!(self, Value::Bool(true))
+    }
+
+    /// Lituus didn't follow it, or something in it: a name it doesn't know, a function.
+    fn unknown(&self) -> bool {
+        match self {
+            Value::Unknown | Value::Function => true,
+            Value::Table(fields) => fields.iter().any(|(_, v)| v.unknown()),
+            Value::Dispatcher(_, args) => args.iter().any(Value::unknown),
+            _ => false,
+        }
     }
 }
 
@@ -165,6 +179,7 @@ impl Bind {
         .iter()
         .filter(|(_, on)| *on)
         .map(|(name, _)| format!("{name} = true"))
+        .chain(f.options.iter().map(|(name, value)| format!("{name} = {value}")))
         .collect();
         if !self.description.is_empty() {
             opts.push(format!("description = {}", lua_string(&self.description)));
@@ -198,11 +213,14 @@ impl Bind {
                 letters.push(l);
             }
         }
+        letters.push_str(&f.letters);
+        // A lone `#` starts a comment in hyprlang; `##` is one.
         let desc = if self.description.is_empty() {
             String::new()
         } else {
-            format!("{}, ", self.description.replace(',', " "))
+            format!("{}, ", self.description.replace(',', " ").replace('#', "##"))
         };
+        let arg = arg.replace('#', "##");
         Some(
             format!("bind{letters} = {}, {}, {desc}{dispatcher}, {arg}", self.mods.join(" "), self.key)
                 .trim_end()
@@ -254,14 +272,12 @@ pub struct Config {
     pub requires: Vec<(String, PathBuf, usize)>,
 }
 
-/// The binds in the config in `dir`: hyprland.lua and the files it requires, or else
-/// hyprland.conf and the files it sources.
-pub fn read(dir: &Path) -> Config {
-    let lua = dir.join("hyprland.lua");
-    if lua.exists() {
-        let mut reader =
-            LuaReader { dir: dir.to_path_buf(), seen: Vec::new(), config: Config::default(), follow: true };
-        reader.file(&lua);
+/// The binds in the config in `dir`: hyprland.lua and the files it requires (`lua`, as the
+/// Hyprland running reads it: `reads_lua`), or hyprland.conf and the files it sources.
+pub fn read(dir: &Path, lua: bool) -> Config {
+    if lua {
+        let mut reader = LuaReader::new(dir.to_path_buf(), true);
+        reader.file(&dir.join("hyprland.lua"));
         reader.config
     } else {
         let mut config = Config::default();
@@ -274,7 +290,7 @@ pub fn read(dir: &Path) -> Config {
 /// The binds and unbinds in Lua `text` (a part of Lituus's file), as if it were `file`; its
 /// `require`s aren't followed.
 pub fn parse_lua(text: &str, file: &Path) -> Config {
-    let mut reader = LuaReader { dir: PathBuf::new(), seen: Vec::new(), config: Config::default(), follow: false };
+    let mut reader = LuaReader::new(PathBuf::new(), false);
     reader.text(text, file);
     reader.config
 }
@@ -286,17 +302,7 @@ pub fn normalized_keys(keys: &str) -> String {
 
 /// A Lua string literal.
 pub fn lua_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    crate::rules::lua_string(text)
 }
 
 impl Value {
@@ -452,8 +458,8 @@ fn tokens(text: &str) -> Vec<(Tok, usize)> {
             i += 1;
         } else if c == '-' && chars.get(i + 1) == Some(&'-') {
             if let Some(eq) = long_open(i + 2) {
-                let (body, end) = long_body(i + 2, eq);
-                line += body.matches('\n').count() + 1;
+                let (_, end) = long_body(i + 2, eq);
+                line += chars[i..end].iter().filter(|c| **c == '\n').count();
                 i = end;
             } else {
                 while i < chars.len() && chars[i] != '\n' {
@@ -472,11 +478,18 @@ fn tokens(text: &str) -> Vec<(Tok, usize)> {
             while i < chars.len() && chars[i] != c {
                 if chars[i] == '\\' && i + 1 < chars.len() {
                     i += 1;
-                    s.push(match chars[i] {
-                        'n' => '\n',
-                        't' => '\t',
-                        other => other,
-                    });
+                    match chars[i] {
+                        'n' => s.push('\n'),
+                        'r' => s.push('\r'),
+                        't' => s.push('\t'),
+                        // \ddd: a byte by its number.
+                        '0'..='9' => {
+                            let digits: String = chars[i..].iter().take(3).take_while(|c| c.is_ascii_digit()).collect();
+                            s.extend(digits.parse::<u32>().ok().and_then(char::from_u32));
+                            i += digits.len() - 1;
+                        }
+                        other => s.push(other),
+                    }
                 } else {
                     if chars[i] == '\n' {
                         line += 1;
@@ -530,6 +543,9 @@ struct LuaReader {
     config: Config,
     /// Reads the files `require` names.
     follow: bool,
+    /// The global names set so far, in any file: a `terminal = "kitty"` in vars.lua is there
+    /// for the binds in binds.lua.
+    globals: HashMap<String, Value>,
 }
 
 /// One file's tokens being read, with the names it has set.
@@ -543,6 +559,10 @@ struct Chunk<'a> {
 }
 
 impl LuaReader {
+    fn new(dir: PathBuf, follow: bool) -> Self {
+        LuaReader { dir, seen: Vec::new(), config: Config::default(), follow, globals: HashMap::new() }
+    }
+
     fn file(&mut self, path: &Path) {
         let Ok(canonical) = path.canonicalize() else { return };
         if self.seen.contains(&canonical) {
@@ -640,6 +660,9 @@ impl Chunk<'_> {
                 return v.clone();
             }
         }
+        if let Some(v) = self.reader.globals.get(name) {
+            return v.clone();
+        }
         if name == "hl" { Value::Path("hl".into()) } else { Value::Unknown }
     }
 
@@ -654,7 +677,7 @@ impl Chunk<'_> {
                 return;
             }
         }
-        self.vars[0].insert(name, v);
+        self.reader.globals.insert(name, v);
     }
 
     /// Where the block from here ends: the token after its `end` (or `until`), or `limit`.
@@ -1078,12 +1101,27 @@ impl Chunk<'_> {
             Some(Value::Text(keys)) => split_lua_keys(keys),
             _ => (Vec::new(), String::new()),
         };
+        let opts = args.get(2);
+        // A bind with an argument or option Lituus didn't follow can't be written again: it
+        // would come out with `nil` in its place. It's listed as unread.
         let action = match args.get(1) {
-            Some(Value::Dispatcher(name, args)) => Action::Dispatcher { name: name.clone(), args: args.clone() },
+            Some(Value::Dispatcher(name, a)) if !a.iter().chain(opts).any(Value::unknown) => {
+                Action::Dispatcher { name: name.clone(), args: a.clone() }
+            }
             _ => Action::Unread,
         };
-        let opts = args.get(2);
         let flag = |name: &str| opts.and_then(|o| o.field(name)).is_some_and(Value::truthy);
+        const KNOWN: [&str; 9] =
+            ["repeating", "locked", "release", "long_press", "mouse", "non_consuming", "description", "desc", "submap"];
+        let options = match opts {
+            Some(Value::Table(fields)) => fields
+                .iter()
+                .filter_map(|(k, v)| {
+                    k.as_ref().filter(|k| !KNOWN.contains(&k.as_str())).map(|k| (k.clone(), v.to_lua()))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let flags = Flags {
             repeating: flag("repeating"),
             locked: flag("locked"),
@@ -1091,6 +1129,8 @@ impl Chunk<'_> {
             long_press: flag("long_press"),
             mouse: flag("mouse"),
             non_consuming: flag("non_consuming"),
+            letters: String::new(),
+            options,
         };
         let description = opts
             .and_then(|o| o.field("description").or_else(|| o.field("desc")))
@@ -1256,6 +1296,80 @@ fn expand_home(path: &str, dir: &Path) -> PathBuf {
     }
 }
 
+/// A hyprlang line without its comment: a lone `#` starts one, `##` is a literal `#`.
+fn conf_line(raw: &str) -> String {
+    let line = raw.replace("##", "\u{0}");
+    line.split('#').next().unwrap_or_default().replace('\u{0}', "#")
+}
+
+/// The files a `source` names: the one, or those a pattern in it matches (`*`, `?`, `[…]`),
+/// sorted, as Hyprland's glob(3) gives them.
+fn sourced(path: &Path) -> Vec<PathBuf> {
+    if !path.to_string_lossy().contains(['*', '?', '[']) {
+        return vec![path.to_path_buf()];
+    }
+    let mut found = vec![PathBuf::new()];
+    for part in path.components() {
+        let name = part.as_os_str().to_string_lossy();
+        if !name.contains(['*', '?', '[']) {
+            found.iter_mut().for_each(|p| p.push(part));
+            continue;
+        }
+        let pattern: Vec<char> = name.chars().collect();
+        let mut next = Vec::new();
+        for dir in &found {
+            let Ok(entries) =
+                std::fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir.as_path() })
+            else {
+                continue;
+            };
+            let mut names: Vec<String> =
+                entries.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            names.sort();
+            for n in names {
+                // As glob(3): a leading dot is matched only by one in the pattern.
+                let chars: Vec<char> = n.chars().collect();
+                if (!n.starts_with('.') || name.starts_with('.')) && wildcard(&pattern, &chars) {
+                    next.push(dir.join(&n));
+                }
+            }
+        }
+        found = next;
+    }
+    found.retain(|p| p.exists());
+    found
+}
+
+/// `name` matches the shell pattern `pattern`: `*`, `?` and `[…]` (`[!…]` for none of them).
+fn wildcard(pattern: &[char], name: &[char]) -> bool {
+    match pattern.first() {
+        None => name.is_empty(),
+        Some('*') => (0..=name.len()).any(|k| wildcard(&pattern[1..], &name[k..])),
+        Some('?') => !name.is_empty() && wildcard(&pattern[1..], &name[1..]),
+        Some('[') if pattern.iter().skip(2).any(|c| *c == ']') => {
+            let close = pattern.iter().skip(2).position(|c| *c == ']').map_or(0, |p| p + 2);
+            let (negate, set) = match pattern[1] {
+                '!' | '^' => (true, &pattern[2..close]),
+                _ => (false, &pattern[1..close]),
+            };
+            let Some(&c) = name.first() else { return false };
+            let mut hit = false;
+            let mut k = 0;
+            while k < set.len() {
+                if k + 2 < set.len() && set[k + 1] == '-' {
+                    hit |= (set[k]..=set[k + 2]).contains(&c);
+                    k += 3;
+                } else {
+                    hit |= set[k] == c;
+                    k += 1;
+                }
+            }
+            hit != negate && wildcard(&pattern[close + 1..], &name[1..])
+        }
+        Some(p) => name.first() == Some(p) && wildcard(&pattern[1..], &name[1..]),
+    }
+}
+
 fn read_conf(path: &Path, vars: &mut HashMap<String, String>, binds: &mut Vec<Bind>, seen: &mut Vec<PathBuf>) {
     let Ok(canonical) = path.canonicalize() else { return };
     if seen.contains(&canonical) {
@@ -1266,9 +1380,7 @@ fn read_conf(path: &Path, vars: &mut HashMap<String, String>, binds: &mut Vec<Bi
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut submap = String::new();
     for (i, raw) in text.lines().enumerate() {
-        // `##` is a literal `#`.
-        let line = raw.replace("##", "\u{0}");
-        let line = line.split('#').next().unwrap_or_default().replace('\u{0}', "#");
+        let line = conf_line(raw);
         let Some((name, value)) = line.split_once('=') else { continue };
         let (name, value) = (name.trim(), value.trim());
         if let Some(var) = name.strip_prefix('$') {
@@ -1279,8 +1391,9 @@ fn read_conf(path: &Path, vars: &mut HashMap<String, String>, binds: &mut Vec<Bi
         let value = substitute(value, vars);
         match name {
             "source" => {
-                let target = expand_home(&value, dir);
-                read_conf(&target, vars, binds, seen);
+                for target in sourced(&expand_home(&value, dir)) {
+                    read_conf(&target, vars, binds, seen);
+                }
             }
             "submap" => submap = if value == "reset" { String::new() } else { value.clone() },
             _ => {
@@ -1318,6 +1431,8 @@ fn conf_bind(name: &str, value: &str, path: &Path, line: usize, submap: &str) ->
             long_press: letters.contains('o'),
             mouse,
             non_consuming: letters.contains('n'),
+            letters: letters.chars().filter(|c| !"elromnd".contains(*c)).collect(),
+            options: Vec::new(),
         },
         description,
         file: path.to_path_buf(),
@@ -1332,7 +1447,7 @@ fn conf_bind(name: &str, value: &str, path: &Path, line: usize, submap: &str) ->
 pub fn parse_conf(text: &str, file: &Path) -> Config {
     let mut config = Config::default();
     for (i, raw) in text.lines().enumerate() {
-        let line = raw.split('#').next().unwrap_or_default();
+        let line = conf_line(raw);
         let Some((name, value)) = line.split_once('=') else { continue };
         let (name, value) = (name.trim(), value.trim());
         if name == "unbind" {
@@ -1407,7 +1522,7 @@ mod tests {
     fn reads_the_default_config() {
         let d = dir("default");
         std::fs::write(d.join("hyprland.lua"), include_str!("../tests/fixtures/default.lua")).unwrap();
-        let binds = read(&d).binds;
+        let binds = read(&d, true).binds;
         assert_eq!(binds.len(), 48, "{binds:#?}");
         let first = &binds[0];
         assert_eq!((first.mods.as_slice(), first.key.as_str(), first.line), (&["SUPER".to_owned()][..], "Q", 268));
@@ -1457,7 +1572,7 @@ end)
         )
         .unwrap();
         std::fs::write(d.join("binds.lua"), "hl.bind('ALT + code:10', hl.dsp.focus({ workspace = 1 }))\n").unwrap();
-        let binds = read(&d).binds;
+        let binds = read(&d, true).binds;
         let keys: Vec<(&str, usize, &str)> =
             binds.iter().map(|b| (b.key.as_str(), b.line, b.submap.as_str())).collect();
         assert_eq!(
@@ -1517,7 +1632,7 @@ end)
         )
         .unwrap();
         std::fs::write(d.join("more.conf"), "bindd = SUPER_SHIFT, B, Browser, exec, firefox\n").unwrap();
-        let binds = read(&d).binds;
+        let binds = read(&d, false).binds;
         assert_eq!(binds.len(), 6);
         assert_eq!(dispatcher(&binds[0]), ("exec_cmd", &[Value::Text("kitty".into())][..]));
         assert_eq!(binds[1].mods, ["SUPER", "SHIFT"]);
@@ -1537,7 +1652,7 @@ end)
         let live: Vec<LiveBind> = serde_json::from_str(include_str!("../tests/fixtures/binds.json")).unwrap();
         let d = dir("live");
         std::fs::write(d.join("hyprland.lua"), include_str!("../tests/fixtures/default.lua")).unwrap();
-        let binds = read(&d).binds;
+        let binds = read(&d, true).binds;
         let unmatched: Vec<&LiveBind> = live.iter().filter(|l| !binds.iter().any(|b| l.matches(b))).collect();
         assert_eq!(unmatched.len(), 1, "{unmatched:?}");
         assert_eq!(unmatched[0].key, "B");
@@ -1549,7 +1664,7 @@ end)
     fn writes_binds_as_lua() {
         let d = dir("write");
         std::fs::write(d.join("hyprland.lua"), include_str!("../tests/fixtures/default.lua")).unwrap();
-        for b in read(&d).binds {
+        for b in read(&d, true).binds {
             let lua = b.to_lua().unwrap();
             let again = parse_lua(&lua, Path::new("x.lua")).binds;
             assert_eq!(again.len(), 1, "{lua}");
@@ -1590,6 +1705,90 @@ end)
         assert_eq!(c.requires, [("lituus".to_owned(), PathBuf::from("l.lua"), 2)]);
         assert_eq!(c.binds.len(), 1);
         assert_eq!(normalized_keys("SUPER + q"), normalized_keys("super+Q"));
+    }
+
+    /// hyprlang takes a lone `#` as a comment; a literal one is written `##`, and read back.
+    #[test]
+    fn a_hash_survives_hyprlang() {
+        let lua = "hl.bind(\"SUPER + C\", hl.dsp.exec_cmd(\"swaybg -c #202020\"), { description = \"Grey #2\" })";
+        let b = parse_lua(lua, Path::new("x.lua")).binds.remove(0);
+        let line = b.to_conf().unwrap();
+        assert_eq!(line, "bindd = SUPER, C, Grey ##2, exec, swaybg -c ##202020");
+        let back = parse_conf(&format!("{line} # a comment"), Path::new("lituus.conf")).binds.remove(0);
+        assert_eq!(back.action.text(), Some("swaybg -c #202020"));
+        assert_eq!(back.description, "Grey #2");
+    }
+
+    /// A bind with an argument, an option or keys Lituus didn't follow is unread: written
+    /// again, it would have `nil` in their place. Globals of another required file are followed.
+    #[test]
+    fn what_lituus_doesnt_follow_is_unread() {
+        let d = dir("unknown");
+        std::fs::write(
+            d.join("hyprland.lua"),
+            "require(\"vars\")\nlocal term = os.getenv(\"TERMINAL\") or \"kitty\"\n\
+             hl.bind(\"SUPER + Return\", hl.dsp.exec_cmd(term))\n\
+             hl.bind(\"SUPER + T\", hl.dsp.exec_cmd(terminal))\n\
+             hl.bind(mainMod .. \" + Q\", hl.dsp.window.close())\n\
+             hl.bind(\"SUPER + L\", hl.dsp.exit(), { locked = isLaptop })\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("vars.lua"), "terminal = \"kitty\"\nlocal mainMod = \"SUPER\"\n").unwrap();
+        let binds = read(&d, true).binds;
+        assert_eq!(binds[0].action, Action::Unread);
+        assert_eq!(binds[0].to_lua(), None);
+        assert_eq!(binds[1].action.text(), Some("kitty"));
+        // vars.lua's own local isn't the config's.
+        assert_eq!((binds[2].key.as_str(), binds[2].action.to_lua().as_deref()), ("", Some("hl.dsp.window.close()")));
+        assert_eq!(binds[3].action, Action::Unread);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Bind options Lituus doesn't know stay when it writes the bind again.
+    #[test]
+    fn flags_lituus_doesnt_know_stay() {
+        let c = parse_conf("bindp = SUPER, F9, exec, obs-cli record toggle\n", Path::new("x.conf"));
+        assert_eq!(c.binds[0].to_conf().as_deref(), Some("bindp = SUPER, F9, exec, obs-cli record toggle"));
+        let lua = r#"hl.bind("SUPER + F9", hl.dsp.exec_cmd("obs"), { locked = true, dont_inhibit = true })"#;
+        let b = parse_lua(lua, Path::new("x.lua")).binds.remove(0);
+        assert_eq!(b.to_lua().as_deref(), Some(lua));
+    }
+
+    /// A carriage return pasted into a description or command is escaped, and read back.
+    #[test]
+    fn a_carriage_return_is_escaped() {
+        assert!(!lua_string("a\rb").contains('\r'));
+        let b = parse_lua(r#"hl.bind("SUPER + C", hl.dsp.exec_cmd("a\rb\009c"))"#, Path::new("x.lua")).binds.remove(0);
+        assert_eq!(b.action.text(), Some("a\rb\tc"));
+        assert_eq!(parse_lua(&b.to_lua().unwrap(), Path::new("x.lua")).binds[0].action, b.action);
+    }
+
+    /// A `--[[ … ]]` comment on one line keeps the count of lines.
+    #[test]
+    fn a_long_comment_on_one_line_keeps_the_count_of_lines() {
+        let c = parse_lua("--[[ a note ]]\nhl.bind(\"SUPER + Q\", hl.dsp.exit())\n", Path::new("x.lua"));
+        assert_eq!(c.binds[0].line, 2);
+        let c = parse_lua("--[[ a\nnote ]]\nhl.bind(\"SUPER + Q\", hl.dsp.exit())\n", Path::new("x.lua"));
+        assert_eq!(c.binds[0].line, 3);
+        let c = parse_lua("--[[\nnote\n]]\nhl.bind(\"SUPER + Q\", hl.dsp.exit())\n", Path::new("x.lua"));
+        assert_eq!(c.binds[0].line, 4);
+    }
+
+    /// hyprlang's `source` takes a pattern, as Hyprland's glob does.
+    #[test]
+    fn follows_a_source_with_a_glob() {
+        let d = dir("glob");
+        std::fs::create_dir_all(d.join("conf.d")).unwrap();
+        std::fs::write(d.join("hyprland.conf"), "source = ./conf.d/*.conf\n").unwrap();
+        std::fs::write(d.join("conf.d/b.conf"), "bind = SUPER, Q, killactive,\n").unwrap();
+        std::fs::write(d.join("conf.d/a.conf"), "$mainMod = SUPER\nbind = $mainMod, W, exit,\n").unwrap();
+        std::fs::write(d.join("conf.d/.hidden.conf"), "bind = SUPER, H, exit,\n").unwrap();
+        std::fs::write(d.join("conf.d/c.txt"), "bind = SUPER, T, exit,\n").unwrap();
+        let keys: Vec<String> = read(&d, false).binds.iter().map(Bind::keys).collect();
+        assert_eq!(keys, ["SUPER + W", "SUPER + Q"]);
+        let w = |p: &str, n: &str| wildcard(&p.chars().collect::<Vec<_>>(), &n.chars().collect::<Vec<_>>());
+        assert!(w("[a-c]?.conf", "b1.conf") && !w("[!a-c]*", "b") && w("*", "") && !w("?", ""));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

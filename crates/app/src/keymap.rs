@@ -30,29 +30,26 @@ impl Keymap {
             Some(options.to_owned()),
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )?;
-        let mut keys: Vec<(u32, Vec<u32>)> = Vec::new();
-        for code in keymap.min_keycode().raw()..=keymap.max_keycode().raw() {
-            let code = xkb::Keycode::new(code);
+        // Each symbol goes to the key that types it best: a key of the main block before the
+        // others (xkeyboard-config's inet(evdev) gives "(", ")", "$" and "€" multimedia keys of
+        // their own, which nobody presses for them), then the lowest level (a key's own symbol
+        // without Shift is its own, even if another key types it with Shift), then the first.
+        let mut best: HashMap<u32, ((bool, u32, u32), u32)> = HashMap::new();
+        for raw in keymap.min_keycode().raw()..=keymap.max_keycode().raw() {
+            let code = xkb::Keycode::new(raw);
             let levels = keymap.num_levels_for_key(code, 0);
             let syms: Vec<Vec<u32>> = (0..levels)
                 .map(|level| keymap.key_get_syms_by_level(code, 0, level).iter().map(|s| s.raw()).collect())
                 .collect();
-            if let Some(&first) = syms.first().and_then(|s| s.first()) {
-                keys.push((first, syms.into_iter().flatten().collect()));
+            let Some(&first) = syms.first().and_then(|s| s.first()) else { continue };
+            for (level, sym) in syms.iter().enumerate().flat_map(|(l, s)| s.iter().map(move |s| (l as u32, *s))) {
+                let rank = (!main_block(raw), level, raw);
+                if best.get(&sym).is_none_or(|(r, _)| rank < *r) {
+                    best.insert(sym, (rank, first));
+                }
             }
         }
-        // A symbol a key types without Shift is that key's own, even if another key types it
-        // with Shift; otherwise the first key that types it.
-        let mut base = HashMap::new();
-        for (first, _) in &keys {
-            base.entry(*first).or_insert(*first);
-        }
-        for (first, syms) in &keys {
-            for sym in syms {
-                base.entry(*sym).or_insert(*first);
-            }
-        }
-        Some(Keymap { base })
+        Some(Keymap { base: best.into_iter().map(|(sym, (_, key))| (sym, key)).collect() })
     }
 
     /// The layout Hyprland's main keyboard uses now: one of its `kb_layout` ("ch,us") with its
@@ -71,6 +68,12 @@ impl Keymap {
         let base = *self.base.get(&sym.raw())?;
         Some(xkb::keysym_get_name(xkb::Keysym::new(base)))
     }
+}
+
+/// A key of the keyboard's main block (xkb's keycodes are evdev's plus 8): Esc to F12 with the
+/// keypad and the ISO key beside Shift, and the Japanese and Brazilian keys that type `\` and `/`.
+fn main_block(code: u32) -> bool {
+    matches!(code, 9..=97 | 132)
 }
 
 /// The character a key's name types ("adiaeresis" ä, "ampersand" &), for its key cap; none for
@@ -106,6 +109,19 @@ mod tests {
         assert_eq!(us.key_name('!').as_deref(), Some("1"));
         assert_eq!(us.key_name('ä'), None);
         assert!(Keymap::new("no-such-layout", "", "").is_none());
+    }
+
+    /// The multimedia keys "(", ")", "$" and "€" of xkeyboard-config's inet(evdev) aren't the
+    /// keys a keyboard types those with; Hyprland matches the key pressed.
+    #[test]
+    fn symbols_typed_with_shift_or_altgr_are_their_main_keys() {
+        let us = Keymap::new("us", "", "").unwrap();
+        assert_eq!(us.key_name('(').as_deref(), Some("9"));
+        assert_eq!(us.key_name(')').as_deref(), Some("0"));
+        assert_eq!(us.key_name('$').as_deref(), Some("4"));
+        let ch = Keymap::new("ch", "", "").unwrap();
+        assert_eq!(ch.key_name('(').as_deref(), Some("8"));
+        assert_eq!(ch.key_name('€').as_deref(), Some("e"));
     }
 
     #[test]
