@@ -1384,6 +1384,20 @@ mod tests {
         assert_eq!(from_ui(&state, &ui).oc, state.form.oc);
     }
 
+    /// An imported WireGuard file opens with its own private key: no "Generate" that would make
+    /// a key the server doesn't know.
+    #[test]
+    fn an_imported_conf_keeps_its_private_key() {
+        let text = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.2/24\n\n\
+            [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nAllowedIPs = 0.0.0.0/0\n\
+            Endpoint = vpn.example.com:51820\n";
+        let conf = crate::wireguard::parse(text).unwrap();
+        let settings = crate::wireguard::settings(&conf, "office", "6c1f0b5e-0000-4000-8000-000000000001", None);
+        let state = EditorState::new(None, settings, Vec::new(), None, None);
+        assert_eq!(state.form.wg.private_key, conf.private_key);
+        assert_eq!(state.errors().total(state.kind), 0);
+    }
+
     /// A DNS server still in its field when Apply is pressed is added, as Enter would; one of the
     /// other family, or no address at all, isn't.
     #[test]

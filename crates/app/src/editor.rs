@@ -580,7 +580,8 @@ fn read_wg(s: &Settings) -> WgForm {
     let nonzero = |key: &str| int(s, "wireguard", key).filter(|&n| n > 0).map(|n| n.to_string()).unwrap_or_default();
     WgForm {
         interface: string(s, "connection", "interface-name").unwrap_or_default(),
-        private_key: String::new(),
+        // A saved connection's settings come without secrets; an imported file's have its key.
+        private_key: string(s, "wireguard", "private-key").unwrap_or_default(),
         public_key: String::new(),
         listen_port: nonzero("listen-port"),
         fwmark: nonzero("fwmark"),
@@ -1254,12 +1255,15 @@ fn write_wg(s: &mut Settings, initial: Option<&WgForm>, w: &WgForm) {
         put(s, "wireguard", "peer-routes", Value::from(w.peer_routes));
     }
     if edited!(peers) {
+        // The form has no pre-shared keys. A saved connection's settings have none either
+        // (NetworkManager keeps them), but an imported file's do: keep each peer's.
+        let preshared = crate::wireguard::preshared_keys(s);
         let peers: Vec<crate::wireguard::Peer> = w
             .peers
             .iter()
             .map(|p| crate::wireguard::Peer {
                 public_key: p.public_key.trim().to_owned(),
-                preshared_key: String::new(),
+                preshared_key: preshared.get(p.public_key.trim()).cloned().unwrap_or_default(),
                 endpoint: p.endpoint.trim().to_owned(),
                 allowed_ips: p.allowed_ips.clone(),
                 keepalive: p.keepalive.trim().parse().unwrap_or(0),
@@ -1574,5 +1578,35 @@ mod tests {
         assert_eq!(read(&s).1.ip6, f.ip6);
         f.ip6.routes[0].prefix = "200".into();
         assert_eq!(check(kind, None, &f).ip6.routes, "The prefix of fd00:: is from 0 to 128.");
+    }
+
+    const WG_FILE: &str = "[Interface]\nPrivateKey = dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=\nAddress = 10.8.0.2/24\n\n\
+        [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\n\
+        PresharedKey = /UwcSPg38hW/D9Y3tcS1FOV0K1wuURMbS0sesJEP5ak=\nEndpoint = vpn.example.org:51820\nAllowedIPs = 0.0.0.0/0\n";
+
+    /// An imported file opens as a new connection read from its settings: the file's private
+    /// key is the one saved, without asking for one.
+    #[test]
+    fn an_imported_wireguard_file_needs_no_new_private_key() {
+        let conf = crate::wireguard::parse(WG_FILE).unwrap();
+        let imported = crate::wireguard::settings(&conf, "wg-home", "u-1", Some("me"));
+        let (kind, form) = read(&imported);
+        assert_eq!(check(kind, None, &form).wg_key, "", "the file's private key counts");
+        let saved = write(kind, &imported, None, &form, "me");
+        assert_eq!(
+            <&str>::try_from(&*saved["wireguard"]["private-key"]).unwrap(),
+            "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo="
+        );
+    }
+
+    #[test]
+    fn an_imported_wireguard_file_keeps_its_preshared_keys() {
+        let conf = crate::wireguard::parse(WG_FILE).unwrap();
+        let imported = crate::wireguard::settings(&conf, "wg-home", "u-1", Some("me"));
+        let (kind, form) = read(&imported);
+        let saved = write(kind, &imported, None, &form, "me");
+        let mut wg: Settings = HashMap::new();
+        wg.insert("wireguard".into(), saved["wireguard"].clone());
+        assert_eq!(crate::wireguard::preshared_keys(&wg).len(), 1, "the peer's pre-shared key is saved");
     }
 }
