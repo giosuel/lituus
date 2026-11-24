@@ -19,11 +19,15 @@ pub const WIFI_SECURITY: &str = "802-11-wireless-security";
 #[derive(Clone, Default)]
 pub struct Keyrings(Arc<Mutex<Option<Arc<Keyring>>>>);
 
+/// How long opening the keyring may take. The bus starts a Secret Service on demand, and one that
+/// never comes up would keep every caller waiting for the bus to give up (two minutes).
+const OPENING: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Keyrings {
     pub async fn get(&self) -> Option<Arc<Keyring>> {
         let mut keyring = self.0.lock().await;
         if keyring.is_none() {
-            *keyring = Keyring::session().await.map(Arc::new);
+            *keyring = tokio::time::timeout(OPENING, Keyring::session()).await.ok().flatten().map(Arc::new);
         }
         keyring.clone()
     }

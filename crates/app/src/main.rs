@@ -1996,8 +1996,13 @@ fn spawn_network_manager(
             // The OpenConnect VPNs' settings paths, from the last snapshot.
             let mut oc_paths = Arc::new(std::collections::HashSet::new());
             let ui = AgentUi(weak.clone());
+            // Which keyring there is: found beside NetworkManager, not before it, so a keyring that's
+            // slow to start doesn't hold up the Network pages. One look at a time.
+            let mut probe: Option<tokio::task::JoinHandle<()>> = None;
             loop {
-                tell_keyring(&weak, &keyrings).await;
+                if probe.as_ref().is_none_or(|p| p.is_finished()) {
+                    probe = Some(tokio::spawn(tell_keyring(weak.clone(), keyrings.clone())));
+                }
                 let result = async {
                     let client = lituus_nm::Client::system().await?;
                     let mut snapshots = Box::pin(client.watch().await?);
@@ -2059,7 +2064,7 @@ fn spawn_network_manager(
     });
 }
 
-async fn tell_keyring(weak: &slint::Weak<MainWindow>, keyrings: &secrets::Keyrings) {
+async fn tell_keyring(weak: slint::Weak<MainWindow>, keyrings: secrets::Keyrings) {
     let name = keyrings.get().await.map(|k| k.name());
     let _ = weak.upgrade_in_event_loop(move |window| {
         APP.with(|app| app.borrow_mut().keyring = name);
