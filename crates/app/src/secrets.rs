@@ -83,8 +83,10 @@ fn prompt_secret(request: &SecretRequest) -> Option<(KeyMgmt, &'static str, Stri
             let key = if tls { "private-key-password" } else { "password" };
             Some((KeyMgmt::Sae, key, c.string("802-1x", "identity").unwrap_or_default().to_owned()))
         }
-        // OpenVPN: the password, or the private key's password with certificates only.
-        "vpn" => {
+        // OpenVPN: the password, or the private key's password with certificates only. Other
+        // plugins name their secrets their own way: they're left to an agent with the plugin's
+        // own dialog (nm-applet, GNOME Shell), which NetworkManager asks next.
+        "vpn" if crate::openvpn::is_openvpn(&c.settings) => {
             let data = c
                 .settings
                 .get("vpn")
@@ -325,8 +327,17 @@ mod tests {
         let tls = request(&[("802-1x", "eap", vec!["tls".to_owned()].into())], "802-1x");
         assert_eq!(prompt_secret(&tls).unwrap().1, "private-key-password");
         let data = HashMap::from([("connection-type", "password"), ("username", "ab12cd")]);
-        let vpn = request(&[("vpn", "data", data.into())], "vpn");
+        let vpn = request(
+            &[("vpn", "service-type", crate::openvpn::SERVICE.into()), ("vpn", "data", data.clone().into())],
+            "vpn",
+        );
         assert_eq!(prompt_secret(&vpn).map(|(_, k, u)| (k, u)), Some(("password", "ab12cd".to_owned())));
+        // vpnc wants "Xauth password", libreswan "xauthpassword": not Lituus's to ask.
+        let vpnc = request(
+            &[("vpn", "service-type", "org.freedesktop.NetworkManager.vpnc".into()), ("vpn", "data", data.into())],
+            "vpn",
+        );
+        assert!(prompt_secret(&vpnc).is_none());
         let psk = request(&[(WIFI_SECURITY, "key-mgmt", "wpa-psk".into())], WIFI_SECURITY);
         assert_eq!(prompt_secret(&psk).unwrap().1, "psk");
     }
