@@ -78,12 +78,17 @@ fn read(path: PathBuf, own: bool, desktop: &str) -> ListFile {
         }
         let Some((mime, ids)) = line.split_once('=') else { continue };
         let ids: Vec<String> = ids.split(';').map(str::trim).filter(|i| !i.is_empty()).map(str::to_owned).collect();
-        let entry = (mime.trim().to_owned(), ids);
-        match section {
-            "default" => f.defaults.push(entry),
-            "added" => f.added.push(entry),
-            "removed" => f.removed.push(entry),
-            _ => {}
+        let list = match section {
+            "default" => &mut f.defaults,
+            "added" => &mut f.added,
+            "removed" => &mut f.removed,
+            _ => continue,
+        };
+        // A type named twice (also in a section written twice): the later line counts, as GLib reads it.
+        let mime = mime.trim();
+        match list.iter_mut().find(|(m, _)| m == mime) {
+            Some(entry) => entry.1 = ids,
+            None => list.push((mime.to_owned(), ids)),
         }
     }
     f
@@ -152,34 +157,49 @@ pub fn set_defaults(path: &Path, mimes: &[String], app: &str) -> std::io::Result
 
 fn with_defaults(text: &str, mimes: &[String], app: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let start = lines.iter().position(|l| l.trim() == "[Default Applications]");
-    let start = match start {
-        Some(s) => s,
-        None => {
-            if lines.last().is_some_and(|l| !l.trim().is_empty()) {
-                lines.push(String::new());
-            }
-            lines.push("[Default Applications]".into());
-            lines.len() - 1
+    if !lines.iter().any(|l| l.trim() == "[Default Applications]") {
+        if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+            lines.push(String::new());
         }
-    };
-    let end =
-        lines.iter().skip(start + 1).position(|l| l.trim().starts_with('[')).map_or(lines.len(), |p| start + 1 + p);
-    let mut insert_at = end;
-    // Before the blank lines that end the section.
-    while insert_at > start + 1 && lines[insert_at - 1].trim().is_empty() {
-        insert_at -= 1;
+        lines.push("[Default Applications]".into());
     }
-    let mut new = Vec::new();
+    // A file may have the section twice (scripts that append one); GLib reads them as one.
+    let sections = |lines: &[String]| -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.trim() == "[Default Applications]" {
+                let end =
+                    lines[i + 1..].iter().position(|l| l.trim().starts_with('[')).map_or(lines.len(), |p| i + 1 + p);
+                out.push((i + 1, end));
+            }
+        }
+        out
+    };
     for mime in mimes {
         let line = format!("{mime}={app};");
-        match (start + 1..end).find(|&i| lines[i].split_once('=').is_some_and(|(m, _)| m.trim() == mime)) {
-            Some(i) => lines[i] = line,
-            None => new.push(line),
+        let found: Vec<usize> = sections(&lines)
+            .into_iter()
+            .flat_map(|(start, end)| start..end)
+            .filter(|&i| lines[i].split_once('=').is_some_and(|(m, _)| m.trim() == mime))
+            .collect();
+        match found.split_first() {
+            // Its first line is changed, and any later one goes: a later line would win.
+            Some((&first, rest)) => {
+                lines[first] = line;
+                for &i in rest.iter().rev() {
+                    lines.remove(i);
+                }
+            }
+            // New: at the end of the first section, before the blank lines that end it.
+            None => {
+                let (start, end) = sections(&lines)[0];
+                let mut at = end;
+                while at > start && lines[at - 1].trim().is_empty() {
+                    at -= 1;
+                }
+                lines.insert(at, line);
+            }
         }
-    }
-    for (n, line) in new.into_iter().enumerate() {
-        lines.insert(insert_at + n, line);
     }
     let mut out = lines.join("\n");
     out.push('\n');
@@ -261,5 +281,17 @@ mod tests {
             with_defaults("[Added Associations]\na/b=c.desktop;\n", &["text/html".into()], "f.desktop"),
             "[Added Associations]\na/b=c.desktop;\n\n[Default Applications]\ntext/html=f.desktop;\n"
         );
+    }
+
+    #[test]
+    fn a_second_default_applications_group_is_changed_too() {
+        // GLib merges the two, and the later line wins: Lituus reads and writes it the same way.
+        let text = "[Default Applications]\ntext/html=firefox.desktop;\n\n[Default Applications]\ntext/html=chromium.desktop;\n";
+        let root = test_dir::with("mimeapps-twice", &[("home/.config/mimeapps.list", text)]);
+        let f = read(root.join("home/.config/mimeapps.list"), true, "");
+        assert_eq!(f.default_for("text/html"), ["chromium.desktop"]);
+        let out = with_defaults(text, &["text/html".into()], "brave.desktop");
+        assert_eq!(out, "[Default Applications]\ntext/html=brave.desktop;\n\n[Default Applications]\n");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

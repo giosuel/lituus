@@ -26,53 +26,92 @@ impl DesktopFile {
         t
     }
 
-    /// The lines of a group: (first line after its header, end).
-    fn group(&self, group: &str) -> Option<(usize, usize)> {
+    /// The lines of a group, in each place it is (a file may have it twice; GLib reads them as
+    /// one, the later's keys winning): (first line after its header, end).
+    fn groups(&self, group: &str) -> Vec<(usize, usize)> {
         let header = format!("[{group}]");
-        let start = self.lines.iter().position(|l| l.trim() == header)? + 1;
-        let end =
-            self.lines[start..].iter().position(|l| l.trim().starts_with('[')).map_or(self.lines.len(), |p| start + p);
-        Some((start, end))
-    }
-
-    pub fn get(&self, group: &str, key: &str) -> Option<String> {
-        let (start, end) = self.group(group)?;
-        self.lines[start..end].iter().find_map(|l| {
-            let (k, v) = l.split_once('=')?;
-            (k.trim() == key).then(|| v.trim().to_owned())
-        })
-    }
-
-    /// Sets a key (`None` removes it); a new key goes after the group's last key.
-    pub fn set(&mut self, group: &str, key: &str, value: Option<&str>) {
-        let (start, end) = match self.group(group) {
-            Some(g) => g,
-            None => {
-                if value.is_none() {
-                    return;
-                }
-                if self.lines.last().is_some_and(|l| !l.trim().is_empty()) {
-                    self.lines.push(String::new());
-                }
-                self.lines.push(format!("[{group}]"));
-                (self.lines.len(), self.lines.len())
+        let mut out = Vec::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.trim() == header {
+                let start = i + 1;
+                let end = self.lines[start..]
+                    .iter()
+                    .position(|l| l.trim().starts_with('['))
+                    .map_or(self.lines.len(), |p| start + p);
+                out.push((start, end));
             }
+        }
+        out
+    }
+
+    /// The lines that set `key` in a group, and with `translations` its `key[de]` lines too.
+    fn key_lines(&self, group: &str, key: &str, translations: bool) -> Vec<usize> {
+        let is_key = |k: &str| {
+            k == key || (translations && k.strip_prefix(key).is_some_and(|r| r.starts_with('[') && r.ends_with(']')))
         };
-        let at = (start..end).find(|&i| self.lines[i].split_once('=').is_some_and(|(k, _)| k.trim() == key));
-        match (at, value) {
-            (Some(i), Some(v)) => self.lines[i] = format!("{key}={v}"),
-            (Some(i), None) => {
-                self.lines.remove(i);
+        self.groups(group)
+            .into_iter()
+            .flat_map(|(start, end)| start..end)
+            .filter(|&i| self.lines[i].split_once('=').is_some_and(|(k, _)| is_key(k.trim())))
+            .collect()
+    }
+
+    /// A key's value; the last one when the file has it twice, as GLib and `desktop::parse` read it.
+    pub fn get(&self, group: &str, key: &str) -> Option<String> {
+        let i = *self.key_lines(group, key, false).last()?;
+        self.lines[i].split_once('=').map(|(_, v)| v.trim().to_owned())
+    }
+
+    /// Sets a key (`None` removes it); a new key goes after the group's last key. A new value
+    /// also removes the key's translations (`Name[de]`): a launcher in German would show those
+    /// instead. The same value changes nothing, translations included.
+    pub fn set(&mut self, group: &str, key: &str, value: Option<&str>) {
+        if self.get(group, key).as_deref() == value {
+            return;
+        }
+        if self.groups(group).is_empty() {
+            if self.lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                self.lines.push(String::new());
+            }
+            self.lines.push(format!("[{group}]"));
+        }
+        // The last line of the key is changed; the rest go: its translations, and any earlier
+        // line of it, which GLib reads as overwritten.
+        let mut gone = self.key_lines(group, key, true);
+        let last = self.key_lines(group, key, false).last().copied();
+        match (last, value) {
+            (Some(i), Some(v)) => {
+                self.lines[i] = format!("{key}={v}");
+                gone.retain(|&g| g != i);
             }
             (None, Some(v)) => {
-                let mut last = end;
-                while last > start && self.lines[last - 1].trim().is_empty() {
-                    last -= 1;
+                let (start, end) = *self.groups(group).last().expect("the group was added");
+                let mut at = end;
+                while at > start && self.lines[at - 1].trim().is_empty() {
+                    at -= 1;
                 }
-                self.lines.insert(last, format!("{key}={v}"));
+                self.lines.insert(at, format!("{key}={v}"));
+                for g in &mut gone {
+                    if *g >= at {
+                        *g += 1;
+                    }
+                }
             }
-            (None, None) => {}
+            (_, None) => {}
         }
+        for i in gone.into_iter().rev() {
+            self.lines.remove(i);
+        }
+    }
+
+    /// The groups of the file's quick actions ("Desktop Action new").
+    pub fn actions(&self) -> Vec<String> {
+        self.lines
+            .iter()
+            .filter_map(|l| l.trim().strip_prefix('[')?.strip_suffix(']'))
+            .filter(|g| g.starts_with("Desktop Action "))
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn set_bool(&mut self, key: &str, on: bool) {
@@ -275,6 +314,38 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+
+    #[test]
+    fn a_new_value_drops_the_keys_translations() {
+        // A launcher in German shows Name[de], not Name (the spec's "Localized values for keys").
+        let vim = "[Desktop Entry]\nType=Application\nName=Vim\nName[de]=Vim\nName[sr@latin]=Vim\nComment=Edit text files\nComment[de]=Textdateien bearbeiten\nKeywords=Text;editor;\nKeywords[de]=Text;Editor;\nExec=vim %F\n\n[Desktop Action new]\nName=New\nName[de]=Neu\n";
+        let mut f = DesktopFile::parse(vim);
+        // The same value changes nothing.
+        f.set(ENTRY, "Name", Some("Vim"));
+        assert_eq!(f.text(), vim);
+        f.set(ENTRY, "Name", Some("My Editor"));
+        f.set(ENTRY, "Keywords", Some("code;"));
+        f.set(ENTRY, "Comment", None);
+        assert_eq!(
+            f.text(),
+            "[Desktop Entry]\nType=Application\nName=My Editor\nKeywords=code;\nExec=vim %F\n\n[Desktop Action new]\nName=New\nName[de]=Neu\n"
+        );
+    }
+
+    #[test]
+    fn a_duplicated_key_is_changed_where_it_counts() {
+        // Scripts that append a line: GLib (and desktop::parse) read the last one.
+        let mut f = DesktopFile::parse("[Desktop Entry]\nType=Application\nName=A\nNoDisplay=false\nNoDisplay=true\n");
+        assert_eq!(f.get(ENTRY, "NoDisplay").as_deref(), Some("true"));
+        f.set(ENTRY, "NoDisplay", None);
+        let app = crate::desktop::parse("a.desktop", Path::new("/a.desktop"), &f.text()).unwrap();
+        assert!(!app.no_display, "{}", f.text());
+        // A group written twice is one group: its key is set once, in the later one.
+        let mut f = DesktopFile::parse("[Desktop Entry]\nName=A\nExec=a\n[Desktop Entry]\nExec=b\n");
+        assert_eq!(f.get(ENTRY, "Exec").as_deref(), Some("b"));
+        f.set(ENTRY, "Exec", Some("c"));
+        assert_eq!(f.text(), "[Desktop Entry]\nName=A\n[Desktop Entry]\nExec=c\n");
+    }
     #[test]
     fn electron_and_wayland() {
         assert_eq!(program("env GDK_BACKEND=x11 obsidian %U"), "obsidian");
