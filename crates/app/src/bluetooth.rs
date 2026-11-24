@@ -1194,6 +1194,10 @@ pub fn act(window: &MainWindow, verb: &str, argument: &str) {
                 let Some(device) = selected else { return };
                 match argument {
                     "connect" | "disconnect" | "pair" => activate(state),
+                    // One send at a time: while one runs, its dialog comes back instead.
+                    "send-files" if app.files.sending.as_ref().is_some_and(crate::files::Sending::running) => {
+                        app.files.hidden = false;
+                    }
                     "send-files" => {
                         let (address, name) = (device.address.clone(), device.alias.clone());
                         crate::files::choose_and_send(window.as_weak(), address, name);
