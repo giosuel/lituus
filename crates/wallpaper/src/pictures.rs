@@ -3,6 +3,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 /// What both programs show (awww has more behind build options; hyprpaper checks these).
@@ -135,11 +136,19 @@ pub fn thumbnail(path: &Path, cache: &Path, width: u32, height: u32) -> Result<P
     // Lanczos: a sharper small copy than Triangle's, made once per picture.
     let small = img.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3);
     std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
-    // Through a temporary file, so a half-written one is never taken for done.
-    let tmp = out.with_extension("tmp");
-    small.save_with_format(&tmp, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
-    Ok(out)
+    // Through a temporary file, so a half-written one is never taken for done; one of this
+    // call's own, so two threads making the same thumbnail don't write into one file and rename
+    // it from under each other.
+    static MADE: AtomicU64 = AtomicU64::new(0);
+    let tmp = out.with_extension(format!("{}.{}.tmp", std::process::id(), MADE.fetch_add(1, Ordering::Relaxed)));
+    let saved = small
+        .save_with_format(&tmp, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())
+        .and_then(|()| std::fs::rename(&tmp, &out).map_err(|e| e.to_string()));
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    saved.map(|()| out)
 }
 
 #[cfg(test)]
@@ -185,6 +194,29 @@ mod tests {
         // Made once.
         assert_eq!(thumbnail(&d.join("b.png"), &cache, 32, 18).unwrap(), t);
         assert!(thumbnail(&d.join("clip.mp4"), &cache, 32, 18).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn the_same_thumbnail_made_twice_at_once() {
+        let d = std::env::temp_dir().join(format!("lituus-wallpaper-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        image::RgbImage::from_pixel(3000, 1700, image::Rgb([10, 120, 200])).save(d.join("a.png")).unwrap();
+        for round in 0..20 {
+            let cache = d.join(format!("cache{round}"));
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    let (p, c) = (d.join("a.png"), cache.clone());
+                    std::thread::spawn(move || thumbnail(&p, &c, 512, 288))
+                })
+                .collect();
+            for t in threads {
+                assert!(t.join().unwrap().is_ok(), "round {round}");
+            }
+            // Nothing left behind.
+            assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1, "round {round}");
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

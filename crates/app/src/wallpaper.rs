@@ -267,6 +267,10 @@ thread_local! {
     static HERO_THUMBS: RefCell<HashMap<PathBuf, Image>> = RefCell::new(HashMap::new());
     /// The page was rendered last time: leaving it drops its thumbnails.
     static PAGE_OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The thumbnails being made, (picture, hero's): asked for again before they're done (the
+    /// page left and opened again, or the folder's and the pictures shown at its first open),
+    /// they aren't made twice at once.
+    static MAKING: RefCell<HashSet<(PathBuf, bool)>> = RefCell::new(HashSet::new());
 }
 
 /// The pictures whose thumbnails the page shows: in the grid, the folder's pictures, its
@@ -305,7 +309,14 @@ type Made = (PathBuf, Option<SharedPixelBuffer<Rgba8Pixel>>, Option<(u32, u32)>)
 
 fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) {
     let store = if hero { &HERO_THUMBS } else { &THUMBS };
-    let wanted: Vec<PathBuf> = store.with(|t| wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect());
+    let wanted: Vec<PathBuf> = store.with(|t| {
+        MAKING.with(|making| {
+            let mut making = making.borrow_mut();
+            let mut wanted: Vec<PathBuf> = wanted.into_iter().filter(|p| !t.borrow().contains_key(p)).collect();
+            wanted.retain(|p| making.insert((p.clone(), hero)));
+            wanted
+        })
+    });
     let (w, h) = if hero { HERO_THUMB } else { THUMB };
     if wanted.is_empty() {
         return;
@@ -327,6 +338,12 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
                 // The page was left, or shows another folder, since they were asked for.
                 let open = window.get_page() == "wallpaper";
                 update(&w, move |app| {
+                    MAKING.with(|m| {
+                        let mut m = m.borrow_mut();
+                        for (path, _, _) in &done {
+                            m.remove(&(path.clone(), hero));
+                        }
+                    });
                     let (grid, shown) = shown_thumbnails(app.wallpapers.folder.as_ref(), &app.wallpapers.current);
                     let wanted = if hero { shown } else { grid };
                     let store = if hero { &HERO_THUMBS } else { &THUMBS };
@@ -336,7 +353,15 @@ fn thumbnails(weak: &slint::Weak<MainWindow>, wanted: Vec<PathBuf>, hero: bool) 
                             if let Some(size) = size {
                                 app.wallpapers.sizes.insert(path.clone(), size);
                             }
-                            t.insert(path, pixels.map(Image::from_rgba8).unwrap_or_default());
+                            // A failure doesn't take the place of one made before.
+                            match pixels {
+                                Some(pixels) => {
+                                    t.insert(path, Image::from_rgba8(pixels));
+                                }
+                                None => {
+                                    t.entry(path).or_default();
+                                }
+                            }
                         }
                     });
                 })
