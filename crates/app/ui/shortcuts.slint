@@ -568,10 +568,10 @@ export component ShortcutEditDialog inherits Modal {
                         selected: root.dialog.kind;
                         chosen(i) => { root.act("d-kind", "" + i); }
                     }
-                    if root.dialog.field == "command": TextField { horizontal-stretch: 1; mono: true; label: "Command"; text: root.dialog.command; edited => { root.act("d-command", self.text); } }
+                    if root.dialog.field == "command": TextField { horizontal-stretch: 1; mono: true; label: "Command"; value: root.dialog.command; edited => { root.act("d-command", self.text); } }
                     if root.dialog.field == "workspace": HorizontalLayout {
                         alignment: start;
-                        TextField { width: 120px; label: "Workspace"; text: root.dialog.workspace; edited => { root.act("d-workspace", self.text); } }
+                        TextField { width: 120px; label: "Workspace"; value: root.dialog.workspace; edited => { root.act("d-workspace", self.text); } }
                     }
                     if root.dialog.field == "direction": HorizontalLayout {
                         alignment: start;
@@ -584,7 +584,7 @@ export component ShortcutEditDialog inherits Modal {
                             chosen(i) => { root.act("d-direction", "" + i); }
                         }
                     }
-                    if root.dialog.field == "special": TextField { horizontal-stretch: 1; label: "Special workspace"; text: root.dialog.special; edited => { root.act("d-special", self.text); } }
+                    if root.dialog.field == "special": TextField { horizontal-stretch: 1; label: "Special workspace"; value: root.dialog.special; edited => { root.act("d-special", self.text); } }
                 }
                 if root.dialog.field == "command": Note { text: "Runs with sh, as Hyprland's exec does"; }
                 if root.dialog.field == "workspace": Note { text: "A number, or a workspace's name"; }
@@ -599,7 +599,7 @@ export component ShortcutEditDialog inherits Modal {
             if !root.dialog.unread: Part {
                 icon: "pencil";
                 title: "Description";
-                TextField { label: "Description"; text: root.dialog.description; placeholder: "Optional"; edited => { root.act("d-description", self.text); } }
+                TextField { label: "Description"; value: root.dialog.description; placeholder: "Optional"; edited => { root.act("d-description", self.text); } }
                 Note { text: "Its name here and in hyprctl binds"; }
             }
             if !root.dialog.unread: Part {
@@ -721,7 +721,7 @@ export component ShortcutsPage inherits VerticalLayout {
                     width: 340px;
                     label: "Search shortcuts";
                     placeholder: "Search keys or actions";
-                    text: root.view.query;
+                    value: root.view.query;
                     edited => { root.act("query", self.text); }
                 }
                 Text { text: root.view.count; color: Theme.faint; font-size: Type.note; vertical-alignment: center; overflow: elide; }

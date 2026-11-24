@@ -323,7 +323,7 @@ component Storage inherits VerticalLayout {
     in-out property <int> storage;
     in property <string> keyring;
     spacing: 6px;
-    HorizontalLayout { alignment: start; Segmented { options: ["For me only", "All users", "Ask each time"]; selected <=> root.storage; label: "Remember the password"; } }
+    HorizontalLayout { alignment: start; Segmented { options: ["For me only", "All users", "Ask each time"]; selected: root.storage; label: "Remember the password"; changed(i) => { root.storage = i; } } }
     Hint {
         text: root.storage == 0
             ? (root.keyring != "" ? "Kept in " + root.keyring + ". No admin password needed." : "No keyring is running, so NetworkManager keeps it; only you can use the connection.")
@@ -344,11 +344,11 @@ component EapPage inherits VerticalLayout {
     FormRow {
         label: "Authentication";
         label-top: 12px;
-        HorizontalLayout { alignment: start; Segmented { options: root.options.eap-methods; selected <=> root.eap.method; label: "Authentication"; } }
+        HorizontalLayout { alignment: start; Segmented { options: root.options.eap-methods; selected: root.eap.method; label: "Authentication"; changed(i) => { root.eap.method = i; } } }
     }
     if root.tunnelled: FormRow {
         label: "Inner authentication";
-        HorizontalLayout { alignment: start; Select { options: root.options.phase2; selected <=> root.eap.phase2; label: "Inner authentication"; width: 240px; } }
+        HorizontalLayout { alignment: start; Select { options: root.options.phase2; selected: root.eap.phase2; label: "Inner authentication"; width: 240px; chosen(i) => { root.eap.phase2 = i; } } }
     }
     FormRow {
         label: root.tls ? "Identity" : "Username";
@@ -382,7 +382,7 @@ component EapPage inherits VerticalLayout {
     FormRow {
         label: "CA certificate";
         label-top: 2px;
-        CheckBox { checked <=> root.eap.system-ca; text: "Use the system's certificates"; }
+        CheckBox { checked: root.eap.system-ca; text: "Use the system's certificates"; toggled(on) => { root.eap.system-ca = on; } }
         FileRow { path <=> root.eap.ca-cert; label: "CA certificate"; choose => { root.choose-file("eap.ca-cert"); } }
         if !root.eap.system-ca && root.eap.ca-cert == "": Hint { text: "Without a CA certificate, any server is believed. Choose one, or the system's."; color: Theme.warn-text; }
     }
@@ -475,7 +475,7 @@ component IpPage inherits VerticalLayout {
     // Five or six methods: a list, which also fits an editor as narrow as the smallest window's.
     FormRow {
         label: "Method";
-        HorizontalLayout { alignment: start; Select { options: root.methods; selected <=> root.ip.method; label: "Method"; width: 240px; } }
+        HorizontalLayout { alignment: start; Select { options: root.methods; selected: root.ip.method; label: "Method"; width: 240px; chosen(i) => { root.ip.method = i; } } }
     }
     if root.v6 && root.current.length > 0: FormRow {
         label: "Current addresses";
@@ -516,7 +516,7 @@ component IpPage inherits VerticalLayout {
     }
     if root.v6 && !root.off: FormRow {
         label: "Privacy extensions";
-        HorizontalLayout { alignment: start; Select { options: root.privacy; selected <=> root.ip.privacy; label: "Privacy extensions"; width: 360px; } }
+        HorizontalLayout { alignment: start; Select { options: root.privacy; selected: root.ip.privacy; label: "Privacy extensions"; width: 360px; chosen(i) => { root.ip.privacy = i; } } }
     }
     if root.v6 && !root.off: FormRow {
         label: "Address generation";
@@ -579,7 +579,7 @@ component IpPage inherits VerticalLayout {
     if !root.off: FormRow {
         label: "Required";
         label-top: 2px;
-        CheckBox { checked <=> root.ip.required; text: root.v6 ? "Fail the connection if IPv6 can't be configured" : "Fail the connection if IPv4 can't be configured"; }
+        CheckBox { checked: root.ip.required; text: root.v6 ? "Fail the connection if IPv6 can't be configured" : "Fail the connection if IPv4 can't be configured"; toggled(on) => { root.ip.required = on; } }
     }
 }
 
@@ -734,7 +734,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Connect automatically";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.autoconnect; text: "When it's available"; label: "Connect automatically"; }
+                        CheckBox { checked: root.form.autoconnect; text: "When it's available"; label: "Connect automatically"; toggled(on) => { root.form.autoconnect = on; } }
                     }
                     FormRow {
                         label: "Priority";
@@ -755,15 +755,15 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Metered";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "Yes", "No"]; selected <=> root.form.metered; label: "Metered"; width: 300px; } }
+                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "Yes", "No"]; selected: root.form.metered; label: "Metered"; width: 300px; changed(i) => { root.form.metered = i; } } }
                     }
                     if root.options.has-zones: FormRow {
                         label: "Firewall zone";
-                        HorizontalLayout { alignment: start; Select { options: root.options.zones; selected <=> root.form.zone; label: "Firewall zone"; width: 240px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.zones; selected: root.form.zone; label: "Firewall zone"; width: 240px; chosen(i) => { root.form.zone = i; } } }
                     }
                     if root.options.vpns.length > 1: FormRow {
                         label: "Start VPN with this network";
-                        HorizontalLayout { alignment: start; Select { options: root.options.vpns; selected <=> root.form.vpn; label: "Start VPN with this network"; width: 240px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.vpns; selected: root.form.vpn; label: "Start VPN with this network"; width: 240px; chosen(i) => { root.form.vpn = i; } } }
                     }
                 }
                 if root.tab == "wifi": VerticalLayout {
@@ -776,21 +776,21 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Mode";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: ["Client", "Hotspot", "Ad-hoc"]; selected <=> root.form.mode; label: "Mode"; width: 280px; } }
+                        HorizontalLayout { alignment: start; Segmented { options: ["Client", "Hotspot", "Ad-hoc"]; selected: root.form.mode; label: "Mode"; width: 280px; changed(i) => { root.form.mode = i; } } }
                     }
                     FormRow {
                         label: "Band";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "2.4 GHz", "5 GHz"]; selected <=> root.form.band; label: "Band"; width: 300px; } }
+                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "2.4 GHz", "5 GHz"]; selected: root.form.band; label: "Band"; width: 300px; changed(i) => { root.form.band = i; } } }
                     }
                     FormRow {
                         label: "Access point";
-                        HorizontalLayout { alignment: start; Select { options: root.options.bssids; selected <=> root.form.bssid; label: "Access point"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.bssids; selected: root.form.bssid; label: "Access point"; width: 360px; chosen(i) => { root.form.bssid = i; } } }
                         Hint { text: "Locking to one access point stops roaming between them."; }
                     }
                     FormRow {
                         label: "MAC address";
-                        HorizontalLayout { alignment: start; Select { options: root.options.macs; selected <=> root.form.mac; label: "MAC address"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.macs; selected: root.form.mac; label: "MAC address"; width: 360px; chosen(i) => { root.form.mac = i; } } }
                         if root.form.mac == root.options.macs.length - 1: HorizontalLayout { alignment: start; TextField { text <=> root.form.mac-fixed; mono: true; width: 220px; label: "Fixed MAC address"; placeholder: "54:E1:AD:7C:20:9B"; invalid: root.errors.mac != ""; } }
                         if root.errors.mac != "": Error { text: root.errors.mac; }
                     }
@@ -807,14 +807,14 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Hidden network";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.hidden; text: "Probe for this network even when it isn't broadcast"; }
+                        CheckBox { checked: root.form.hidden; text: "Probe for this network even when it isn't broadcast"; toggled(on) => { root.form.hidden = on; } }
                     }
                 }
                 if root.tab == "security": VerticalLayout {
                     spacing: 18px;
                     FormRow {
                         label: "Security";
-                        HorizontalLayout { alignment: start; Select { options: root.options.securities; details: root.options.security-details; selected <=> root.form.security; label: "Security"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.securities; details: root.options.security-details; selected: root.form.security; label: "Security"; width: 360px; chosen(i) => { root.form.security = i; } } }
                     }
                     if root.form.security >= 2 && root.form.security <= 4: FormRow {
                         label: "Password";
@@ -831,7 +831,7 @@ export component Editor inherits Rectangle {
                     if root.form.security >= 2 && root.form.security <= 4: FormRow {
                         label: "Remember the password";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: ["For me only", "All users", "Ask each time"]; selected <=> root.form.storage; label: "Remember the password"; width: 400px; } }
+                        HorizontalLayout { alignment: start; Segmented { options: ["For me only", "All users", "Ask each time"]; selected: root.form.storage; label: "Remember the password"; width: 400px; changed(i) => { root.form.storage = i; } } }
                     }
                     if root.form.security >= 5: EapPage {
                         eap <=> root.form.eap;
@@ -845,11 +845,11 @@ export component Editor inherits Rectangle {
                     spacing: 18px;
                     FormRow {
                         label: "Device";
-                        HorizontalLayout { alignment: start; Select { options: root.options.interfaces; selected <=> root.form.interface; label: "Device"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.interfaces; selected: root.form.interface; label: "Device"; width: 360px; chosen(i) => { root.form.interface = i; } } }
                     }
                     FormRow {
                         label: "MAC address";
-                        HorizontalLayout { alignment: start; Select { options: root.options.macs; selected <=> root.form.mac; label: "MAC address"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.macs; selected: root.form.mac; label: "MAC address"; width: 360px; chosen(i) => { root.form.mac = i; } } }
                         if root.form.mac == root.options.macs.length - 1: HorizontalLayout { alignment: start; TextField { text <=> root.form.mac-fixed; mono: true; width: 220px; label: "Fixed MAC address"; placeholder: "54:E1:AD:7C:20:9B"; invalid: root.errors.mac != ""; } }
                         if root.errors.mac != "": Error { text: root.errors.mac; }
                     }
@@ -866,7 +866,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Link negotiation";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "Manual", "Ignore"]; selected <=> root.form.negotiation; label: "Link negotiation"; width: 300px; } }
+                        HorizontalLayout { alignment: start; Segmented { options: ["Automatic", "Manual", "Ignore"]; selected: root.form.negotiation; label: "Link negotiation"; width: 300px; changed(i) => { root.form.negotiation = i; } } }
                     }
                     FormRow {
                         label: "Speed and duplex";
@@ -877,7 +877,7 @@ export component Editor inherits Rectangle {
                             alignment: start;
                             HorizontalLayout { alignment: start; TextField { text <=> root.form.speed; mono: true; width: 100px; label: "Speed"; placeholder: "1000"; invalid: root.errors.speed != ""; } }
                             Hint { text: "Mb/s"; vertical-alignment: center; }
-                            CheckBox { checked <=> root.form.full-duplex; text: "Full duplex"; y: (parent.height - self.height) / 2; }
+                            CheckBox { checked: root.form.full-duplex; text: "Full duplex"; y: (parent.height - self.height) / 2; toggled(on) => { root.form.full-duplex = on; } }
                         }
                         if root.errors.speed != "": Error { text: root.errors.speed; }
                     }
@@ -887,9 +887,9 @@ export component Editor inherits Rectangle {
                         HorizontalLayout {
                             spacing: 18px;
                             alignment: start;
-                            CheckBox { checked <=> root.form.wol-magic; text: "Magic packet"; }
-                            CheckBox { checked <=> root.form.wol-unicast; text: "Unicast"; }
-                            CheckBox { checked <=> root.form.wol-broadcast; text: "Broadcast"; }
+                            CheckBox { checked: root.form.wol-magic; text: "Magic packet"; toggled(on) => { root.form.wol-magic = on; } }
+                            CheckBox { checked: root.form.wol-unicast; text: "Unicast"; toggled(on) => { root.form.wol-unicast = on; } }
+                            CheckBox { checked: root.form.wol-broadcast; text: "Broadcast"; toggled(on) => { root.form.wol-broadcast = on; } }
                         }
                     }
                 }
@@ -898,7 +898,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "802.1X";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.eap.enabled; text: "Sign in to the network with 802.1X"; }
+                        CheckBox { checked: root.form.eap.enabled; text: "Sign in to the network with 802.1X"; toggled(on) => { root.form.eap.enabled = on; } }
                         Hint { text: "For office and university networks that ask for a username or certificate on the cable."; }
                     }
                     if root.form.eap.enabled: EapPage {
@@ -975,7 +975,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Routes";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.wg.peer-routes; text: "Add routes for each peer's allowed IPs"; }
+                        CheckBox { checked: root.form.wg.peer-routes; text: "Add routes for each peer's allowed IPs"; toggled(on) => { root.form.wg.peer-routes = on; } }
                     }
                     if !root.new: FormRow {
                         label: "Configuration file";
@@ -1011,7 +1011,7 @@ export component Editor inherits Rectangle {
                     }
                     FormRow {
                         label: "Authentication";
-                        HorizontalLayout { alignment: start; Select { options: root.options.ovpn-auth; selected <=> root.form.ovpn.auth; label: "Authentication"; width: 240px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.ovpn-auth; selected: root.form.ovpn.auth; label: "Authentication"; width: 240px; chosen(i) => { root.form.ovpn.auth = i; } } }
                     }
                     if root.form.ovpn.auth == 0 || root.form.ovpn.auth == 2: FormRow {
                         label: "Username";
@@ -1056,8 +1056,8 @@ export component Editor inherits Rectangle {
                         // One under the other: side by side, they're wider than a narrow editor.
                         if root.form.ovpn.tls-key != "": VerticalLayout {
                             spacing: 8px;
-                            HorizontalLayout { alignment: start; Segmented { options: root.options.ovpn-tls-modes; selected <=> root.form.ovpn.tls-key-mode; label: "How the TLS key is used"; } }
-                            if root.form.ovpn.tls-key-mode == 0: HorizontalLayout { alignment: start; Segmented { options: ["No direction", "0", "1"]; selected <=> root.form.ovpn.tls-key-direction; label: "Key direction"; } }
+                            HorizontalLayout { alignment: start; Segmented { options: root.options.ovpn-tls-modes; selected: root.form.ovpn.tls-key-mode; label: "How the TLS key is used"; changed(i) => { root.form.ovpn.tls-key-mode = i; } } }
+                            if root.form.ovpn.tls-key-mode == 0: HorizontalLayout { alignment: start; Segmented { options: ["No direction", "0", "1"]; selected: root.form.ovpn.tls-key-direction; label: "Key direction"; changed(i) => { root.form.ovpn.tls-key-direction = i; } } }
                         }
                     }
                     FormRow {
@@ -1067,7 +1067,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Compression";
                         label-top: 12px;
-                        HorizontalLayout { alignment: start; Segmented { options: root.options.ovpn-compression; selected <=> root.form.ovpn.compression; label: "Compression"; } }
+                        HorizontalLayout { alignment: start; Segmented { options: root.options.ovpn-compression; selected: root.form.ovpn.compression; label: "Compression"; changed(i) => { root.form.ovpn.compression = i; } } }
                         if root.form.ovpn.compression != 0: Hint { text: "Compression over a VPN can leak what you send (VORACLE); use it only when the server needs it."; color: Theme.warn-text; }
                     }
                     FormRow {
@@ -1091,7 +1091,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Device";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.ovpn.tap; text: "Use a TAP device (layer 2) instead of TUN"; }
+                        CheckBox { checked: root.form.ovpn.tap; text: "Use a TAP device (layer 2) instead of TUN"; toggled(on) => { root.form.ovpn.tap = on; } }
                     }
                     Hint { text: "To send only the VPN's own network through it, see \"Use this connection only for resources on its network\" under IPv4 and IPv6 → Edit routes."; }
                 }
@@ -1105,7 +1105,7 @@ export component Editor inherits Rectangle {
                     }
                     FormRow {
                         label: "Protocol";
-                        HorizontalLayout { alignment: start; Select { options: root.options.oc-protocols; selected <=> root.form.oc.protocol; label: "Protocol"; width: 300px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.oc-protocols; selected: root.form.oc.protocol; label: "Protocol"; width: 300px; chosen(i) => { root.form.oc.protocol = i; } } }
                         Hint { text: "Also GlobalProtect, Pulse / Ivanti, Juniper, Fortinet, F5 and Array: the same plugin connects to all of them."; }
                     }
                     FormRow {
@@ -1151,7 +1151,7 @@ export component Editor inherits Rectangle {
                     }
                     FormRow {
                         label: "Operating system";
-                        HorizontalLayout { alignment: start; Select { options: root.options.oc-systems; selected <=> root.form.oc.system; label: "Operating system"; width: 300px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.oc-systems; selected: root.form.oc.system; label: "Operating system"; width: 300px; chosen(i) => { root.form.oc.system = i; } } }
                         Hint { text: "What the server sees. Some servers only let Windows or macOS in."; }
                     }
                     FormRow {
@@ -1163,7 +1163,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Use UDP (DTLS)";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.oc.udp; text: "Use UDP when the server offers it"; label: "Use UDP (DTLS)"; }
+                        CheckBox { checked: root.form.oc.udp; text: "Use UDP when the server offers it"; label: "Use UDP (DTLS)"; toggled(on) => { root.form.oc.udp = on; } }
                         Hint { text: "Faster. Turn it off if the connection drops behind strict firewalls."; }
                     }
                     FormRow {
@@ -1186,7 +1186,7 @@ export component Editor inherits Rectangle {
                     spacing: 18px;
                     FormRow {
                         label: "Parent device";
-                        HorizontalLayout { alignment: start; Select { options: root.options.parents; selected <=> root.form.virt.parent; label: "Parent device"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.parents; selected: root.form.virt.parent; label: "Parent device"; width: 360px; chosen(i) => { root.form.virt.parent = i; } } }
                         Hint { text: "The wired device (or bond) the VLAN's tagged frames go out on."; }
                     }
                     FormRow {
@@ -1213,10 +1213,10 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Advanced";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.virt.reorder-headers; text: "Reorder headers (looks like plain Ethernet to the system)"; }
-                        CheckBox { checked <=> root.form.virt.gvrp; text: "Register with GVRP"; }
-                        CheckBox { checked <=> root.form.virt.mvrp; text: "Register with MVRP"; }
-                        CheckBox { checked <=> root.form.virt.loose-binding; text: "Loose binding (stay up when the parent goes down)"; }
+                        CheckBox { checked: root.form.virt.reorder-headers; text: "Reorder headers (looks like plain Ethernet to the system)"; toggled(on) => { root.form.virt.reorder-headers = on; } }
+                        CheckBox { checked: root.form.virt.gvrp; text: "Register with GVRP"; toggled(on) => { root.form.virt.gvrp = on; } }
+                        CheckBox { checked: root.form.virt.mvrp; text: "Register with MVRP"; toggled(on) => { root.form.virt.mvrp = on; } }
+                        CheckBox { checked: root.form.virt.loose-binding; text: "Loose binding (stay up when the parent goes down)"; toggled(on) => { root.form.virt.loose-binding = on; } }
                     }
                 }
                 if root.tab == "bridge": VerticalLayout {
@@ -1233,7 +1233,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "Spanning tree (STP)";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.virt.stp; text: "Turn on spanning tree"; label: "Spanning tree"; }
+                        CheckBox { checked: root.form.virt.stp; text: "Turn on spanning tree"; label: "Spanning tree"; toggled(on) => { root.form.virt.stp = on; } }
                         Hint { text: "Stops loops when the bridge has more than one way to the same network."; }
                     }
                     if root.form.virt.stp: FormRow {
@@ -1261,7 +1261,7 @@ export component Editor inherits Rectangle {
                     FormRow {
                         label: "VLAN filtering";
                         label-top: 2px;
-                        CheckBox { checked <=> root.form.virt.vlan-filtering; text: "Only pass frames for the VLANs set on each port"; }
+                        CheckBox { checked: root.form.virt.vlan-filtering; text: "Only pass frames for the VLANs set on each port"; toggled(on) => { root.form.virt.vlan-filtering = on; } }
                     }
                 }
                 if root.tab == "bond": VerticalLayout {
@@ -1275,7 +1275,7 @@ export component Editor inherits Rectangle {
                     }
                     FormRow {
                         label: "Mode";
-                        HorizontalLayout { alignment: start; Select { options: root.options.bond-modes; selected <=> root.form.virt.mode; label: "Mode"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.bond-modes; selected: root.form.virt.mode; label: "Mode"; width: 360px; chosen(i) => { root.form.virt.mode = i; } } }
                         if root.form.virt.mode == 1: Hint { text: "One port carries the traffic; another takes over when its link goes down. Works with any switch."; }
                         if root.form.virt.mode == 4: Hint { text: "Needs a switch with LACP set up on the same ports."; }
                     }
@@ -1285,16 +1285,16 @@ export component Editor inherits Rectangle {
                     }
                     if root.form.virt.mode == 1: FormRow {
                         label: "Primary port";
-                        HorizontalLayout { alignment: start; Select { options: root.options.primaries; selected <=> root.form.virt.primary; label: "Primary port"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.primaries; selected: root.form.virt.primary; label: "Primary port"; width: 360px; chosen(i) => { root.form.virt.primary = i; } } }
                         Hint { text: "Used whenever its link is up; the others take over when it isn't."; }
                     }
                     if lacp: FormRow {
                         label: "LACP rate";
-                        HorizontalLayout { alignment: start; Select { options: root.options.lacp-rates; selected <=> root.form.virt.lacp-rate; label: "LACP rate"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.lacp-rates; selected: root.form.virt.lacp-rate; label: "LACP rate"; width: 360px; chosen(i) => { root.form.virt.lacp-rate = i; } } }
                     }
                     if root.form.virt.mode == 2 || root.form.virt.mode == 4 || root.form.virt.mode == 5: FormRow {
                         label: "Transmit hash";
-                        HorizontalLayout { alignment: start; Select { options: root.options.hash-policies; selected <=> root.form.virt.hash; label: "Transmit hash"; width: 360px; } }
+                        HorizontalLayout { alignment: start; Select { options: root.options.hash-policies; selected: root.form.virt.hash; label: "Transmit hash"; width: 360px; chosen(i) => { root.form.virt.hash = i; } } }
                         Hint { text: "Which port each connection goes out on."; }
                     }
                     FormRow {
@@ -1458,10 +1458,10 @@ export component Editor inherits Rectangle {
         if v6: RouteRows { routes <=> root.form.ip6.routes; edited => { root.form-edited(); } remove(i) => { root.remove-row("ip6-route", i); } }
         if (v6 ? root.errors.ip6-routes : root.errors.ip4-routes) != "": Error { text: v6 ? root.errors.ip6-routes : root.errors.ip4-routes; }
         HorizontalLayout { alignment: start; AddButton { label: "Add route"; clicked => { root.add-row(v6 ? "ip6-route" : "ip4-route"); } } }
-        if !v6: CheckBox { checked <=> root.form.ip4.ignore-auto-routes; text: "Ignore routes from DHCP"; }
-        if v6: CheckBox { checked <=> root.form.ip6.ignore-auto-routes; text: "Ignore routes from the network"; }
-        if !v6: CheckBox { checked <=> root.form.ip4.never-default; text: "Use this connection only for resources on its network"; }
-        if v6: CheckBox { checked <=> root.form.ip6.never-default; text: "Use this connection only for resources on its network"; }
+        if !v6: CheckBox { checked: root.form.ip4.ignore-auto-routes; text: "Ignore routes from DHCP"; toggled(on) => { root.form.ip4.ignore-auto-routes = on; } }
+        if v6: CheckBox { checked: root.form.ip6.ignore-auto-routes; text: "Ignore routes from the network"; toggled(on) => { root.form.ip6.ignore-auto-routes = on; } }
+        if !v6: CheckBox { checked: root.form.ip4.never-default; text: "Use this connection only for resources on its network"; toggled(on) => { root.form.ip4.never-default = on; } }
+        if v6: CheckBox { checked: root.form.ip6.never-default; text: "Use this connection only for resources on its network"; toggled(on) => { root.form.ip6.never-default = on; } }
         DialogButtons {
             Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.routes-done(false); } }
             Button { label: "Done"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.routes-done(true); } }

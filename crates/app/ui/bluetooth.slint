@@ -317,8 +317,9 @@ export component BtPairDialog inherits Modal {
         if root.pair.hint != "": Text { text: root.pair.hint; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     }
     if root.pair.always != "": CheckBox {
-        checked <=> root.always;
+        checked: root.always;
         text: root.pair.always;
+        toggled(on) => { root.always = on; }
     }
     if root.pair.mode == "service": Text { text: "Marks it as trusted; you can change this in its details."; color: Theme.muted; font-size: Type.note; x: 28px; }
     DialogButtons {
@@ -363,14 +364,14 @@ export component BtAdapterDialog inherits Modal {
             label: "Visible for";
             HorizontalLayout {
                 alignment: start;
-                Segmented { options: ["3 minutes", "Always"]; selected <=> root.visible-choice; label: "Visible for"; height: 38px; }
+                Segmented { options: ["3 minutes", "Always"]; selected: root.visible-choice; label: "Visible for"; height: 38px; changed(i) => { root.visible-choice = i; } }
             }
             Text { text: "How long the Visible switch keeps the computer visible"; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
         }
         FormRow {
             label: "Pairable";
             label-top: 0;
-            CheckBox { checked <=> root.pairable; text: "New devices can ask to pair"; label: "Pairable"; }
+            CheckBox { checked: root.pairable; text: "New devices can ask to pair"; label: "Pairable"; toggled(on) => { root.pairable = on; } }
         }
     }
     DialogButtons {
