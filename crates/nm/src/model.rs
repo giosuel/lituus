@@ -17,6 +17,9 @@ pub struct Snapshot {
     pub devices: Vec<Device>,
     /// Saved connection profiles.
     pub connections: Vec<SavedConnection>,
+    /// Saved profiles this user may not read (another account's, kept to itself): left out of
+    /// `connections`, as libnm leaves them out.
+    pub unreadable: usize,
     pub active: Vec<ActiveConnection>,
     /// The active connection that carries the default route.
     pub primary_connection: Option<String>,

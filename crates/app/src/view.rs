@@ -2,8 +2,8 @@
 //! selection, search). Pure, so it's tested without a window.
 
 use lituus_nm::{
-    ActiveState, Band, ConnectionKind, Device, DeviceKind, KeyMgmt, Network, SavedConnection, Security, Snapshot,
-    WifiJoin, bars, channel,
+    ActiveState, Band, ConnectionKind, Device, DeviceKind, DeviceState, KeyMgmt, Network, SavedConnection, Security,
+    Snapshot, WifiJoin, bars, channel,
 };
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -342,7 +342,7 @@ fn ip_items(device: &Device) -> Vec<DetailItem> {
     items
 }
 
-pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) -> View {
+pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, state: &UiState) -> View {
     let mut view = View { show_search: true, wifi_on: true, ..View::default() };
     view.hostname = snapshot.map(|s| s.hostname.clone()).unwrap_or_default();
     let Some(snapshot) = snapshot else {
@@ -354,16 +354,25 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) 
             tone: "muted",
             ..NetHero::default()
         };
+        // Only NetworkManager missing is "isn't running"; a refusal or a broken bus says itself.
         view.banner = match error {
-            Some(e) => format!("{e}. Lituus needs it to manage connections."),
+            Some(e @ lituus_nm::Error::NotRunning) => format!("{e}. Lituus needs it to manage connections."),
+            Some(e) => format!("Couldn't read NetworkManager: {}.", e.to_string().trim_end_matches('.')),
             None => String::new(),
         };
         view.empty = Some(match error {
-            Some(_) => Empty {
+            Some(lituus_nm::Error::NotRunning) => Empty {
                 icon: "warning",
                 title: "NetworkManager isn't running".into(),
                 text: "Lituus manages connections through NetworkManager. Start it with:".into(),
                 command: NOT_RUNNING_COMMAND.into(),
+                page: true,
+                ..Empty::default()
+            },
+            Some(_) => Empty {
+                icon: "warning",
+                title: "Couldn't read NetworkManager".into(),
+                text: "Lituus manages connections through NetworkManager, and keeps trying to reach it.".into(),
                 page: true,
                 ..Empty::default()
             },
@@ -399,8 +408,18 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) 
     };
     // Rows grouped by section title, the selection resolved, and the selected row's details.
     view.row_ids = rows.iter().flat_map(|(_, r)| r.iter().map(|r| r.id.clone())).collect();
-    let selected =
-        state.selected.clone().filter(|id| view.row_ids.contains(id)).or_else(|| view.row_ids.first().cloned());
+    let picked = state.selected.clone().filter(|id| view.row_ids.contains(id));
+    // A network picked on the Wi-Fi page that a scan didn't find stays picked, out of range,
+    // until it's back or another row is picked. Falling back to the first row put the connected
+    // network's details there, with Disconnect where Connect had been, under the pointer.
+    let out_of_range = state.selected.clone().filter(|id| {
+        picked.is_none()
+            && state.page == Page::Wifi
+            && view.empty.is_none()
+            && id.starts_with("wifi:")
+            && row_name(snapshot, id).is_none()
+    });
+    let selected = picked.or_else(|| view.row_ids.first().cloned().filter(|_| out_of_range.is_none()));
     view.sections = rows
         .into_iter()
         .filter(|(_, rows)| !rows.is_empty())
@@ -425,12 +444,32 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&str>, state: &UiState) 
         .collect();
     if let Some(id) = &selected {
         view.details = details(snapshot, state, id).map(Details::from);
+    } else if let Some(id) = &out_of_range {
+        view.details = Some(out_of_range_details(id).into());
     }
     if view.empty.is_none() && view.row_ids.is_empty() && state.page.is_network() {
         view.empty = Some(nothing_here(state.page, !state.search.is_empty()));
     }
-    view.selected = selected;
+    view.selected = selected.or(out_of_range);
     view
+}
+
+/// The details of a picked network that the last scan didn't find: its name, from its row id.
+fn out_of_range_details(id: &str) -> DetailsData {
+    let hex = id.strip_prefix("wifi:").and_then(|rest| rest.split_once(':')).map_or("", |(hex, _)| hex);
+    let ssid: Vec<u8> =
+        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+    DetailsData {
+        title: String::from_utf8_lossy(&ssid).into_owned(),
+        status: "Out of range".into(),
+        status_tone: "faint",
+        status_extra: String::new(),
+        actions: vec![Action { enabled: false, ..action("connect", "Connect", "primary") }],
+        toggles: Vec::new(),
+        metered: None,
+        items: Vec::new(),
+        note: "The last scan didn't find it.".into(),
+    }
 }
 
 /// The keys that work on a Network page now, for the bar at the bottom: the search, the list,
@@ -529,9 +568,14 @@ pub fn hotspot_view(snap: &Snapshot) -> HotspotView {
 }
 
 fn hotspot_page(snap: &Snapshot) -> HotspotView {
-    let device = wifi_device(snap);
-    let saved = snap.connections.iter().find(|c| c.hotspot);
-    let active = saved.and_then(|c| active_uuid_state(snap, &c.uuid)).filter(|a| a.state != ActiveState::Deactivated);
+    // There can be more than one hotspot profile (GNOME's "Hotspot", and one made later for
+    // 5 GHz, say): the one that's on, else the first.
+    let on = |c: &SavedConnection| active_uuid_state(snap, &c.uuid).filter(|a| a.state != ActiveState::Deactivated);
+    let hotspots = || snap.connections.iter().filter(|c| c.hotspot);
+    let saved = hotspots().find(|c| on(c).is_some()).or_else(|| hotspots().next());
+    let active = saved.and_then(on);
+    // While it's on, the card it runs on.
+    let device = active.and_then(|a| a.devices.first()).and_then(|d| snap.device(d)).or_else(|| wifi_device(snap));
     // What it shares: the connection with the default route.
     let sharing = snap
         .primary_connection
@@ -575,8 +619,21 @@ fn hotspot_page(snap: &Snapshot) -> HotspotView {
     }
 }
 
+/// The Wi-Fi device the Wi-Fi page, the quick panel and the tray are about, and that Connect,
+/// Rescan and a hidden network use: the one connected to a network, else one NetworkManager
+/// manages (a usable one first), else the first. Not simply the first listed: with a USB
+/// adapter beside the internal card, or a card kept out of NetworkManager, the connection is
+/// often on the second.
 pub(crate) fn wifi_device(snapshot: &Snapshot) -> Option<&Device> {
-    snapshot.devices.iter().find(|d| d.kind == DeviceKind::Wifi)
+    snapshot.devices.iter().filter(|d| d.kind == DeviceKind::Wifi).min_by_key(|d| {
+        let active = d.active_connection.as_deref().and_then(|a| snapshot.active_connection(a));
+        (
+            active.is_none_or(|a| is_hotspot(snapshot, a)),
+            active.is_none(),
+            !d.managed,
+            d.state <= DeviceState::Unavailable,
+        )
+    })
 }
 
 /// What the computer is online through: the primary connection, or else any device's.
@@ -612,17 +669,18 @@ fn active_vpns(snap: &Snapshot) -> Vec<&lituus_nm::ActiveConnection> {
         .collect()
 }
 
-fn is_hotspot(snap: &Snapshot, active: &lituus_nm::ActiveConnection) -> bool {
+pub(crate) fn is_hotspot(snap: &Snapshot, active: &lituus_nm::ActiveConnection) -> bool {
     snap.connections.iter().any(|c| c.hotspot && c.uuid == active.uuid)
 }
 
 /// The Network item's sidebar status, and its sub-items'.
 fn network_status(snap: &Snapshot, view: &mut View) {
     view.wifi_available = wifi_device(snap).is_some();
-    view.net_status = if snap.wireless_off() {
-        "Off".to_owned()
-    } else {
-        online_through(snap).map_or_else(|| "Offline".to_owned(), |a| a.id.clone())
+    // A cable still connects with the radios off (airplane mode on a desktop).
+    view.net_status = match online_through(snap) {
+        Some(a) => a.id.clone(),
+        None if snap.wireless_off() => "Off".to_owned(),
+        None => "Offline".to_owned(),
     };
     let wifi = match active_on(snap, DeviceKind::Wifi) {
         _ if !view.wifi_available => "none".to_owned(),
@@ -715,10 +773,11 @@ fn wifi_hero(snap: &Snapshot, device: &Device, networks: &[Network], out_of_rang
     };
     let sub = [active.id.clone(), others].into_iter().chain(saved_out).collect::<Vec<_>>().join(" · ");
     let wifi = device.wifi.as_ref();
-    // NetworkManager names the access point in use; failing that, the network's strongest.
-    let ap = wifi
-        .and_then(|w| w.active_access_point.as_deref().and_then(|p| w.access_points.iter().find(|ap| ap.path == p)))
-        .or_else(|| network.map(|n| n.strongest()));
+    // The access point in use, as the details have it (the device's, or else the one its
+    // active connection is on); a hidden network isn't in the list, so the device's.
+    let ap = network.map(Network::current).or_else(|| {
+        wifi.and_then(|w| w.active_access_point.as_deref().and_then(|p| w.access_points.iter().find(|ap| ap.path == p)))
+    });
     let mut meta = vec![if active.state == ActiveState::Activated { "Connected" } else { "Connecting…" }.to_owned()];
     if let Some(band) = ap.and_then(|ap| Band::from_mhz(ap.frequency)) {
         meta.push(band.label().to_owned());
@@ -847,8 +906,10 @@ fn hotspot_hero(h: &HotspotView) -> NetHero {
     }
 }
 
+/// A network's row id. By its security's family, not its label: a band coming or going can
+/// change "WPA2" to "WPA2/WPA3", and the row stays the same.
 pub(crate) fn network_id(n: &Network) -> String {
-    format!("wifi:{}:{}", hex(&n.ssid), n.security.label())
+    format!("wifi:{}:{}", hex(&n.ssid), n.security.family().label())
 }
 
 fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, Vec<RowData>)> {
@@ -925,9 +986,17 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
     }
     view.bottom_label = "Connect to hidden network…".into();
     let networks = snap.networks().into_iter().find(|(p, _)| *p == device.path).map(|(_, n)| n).unwrap_or_default();
-    // Saved networks that aren't in range: the old Saved page's Wi-Fi part, the hotspot included.
-    let out_of_range: Vec<&SavedConnection> =
-        saved_wifi(snap).filter(|c| !networks.iter().any(|n| Some(n.ssid.as_slice()) == c.wifi_ssid())).collect();
+    // Saved networks that aren't in range: the old Saved page's Wi-Fi part, the hotspot included
+    // (it isn't a network to join, in range or not).
+    let in_range =
+        |c: &SavedConnection| !c.hotspot && networks.iter().any(|n| Some(n.ssid.as_slice()) == c.wifi_ssid());
+    let out_of_range: Vec<&SavedConnection> = saved_wifi(snap).filter(|c| !in_range(c)).collect();
+    // Another profile for a network in range (from an old password, or made by another tool):
+    // the network's buttons act on the one in use, or the one NetworkManager would pick, so the
+    // others are listed on their own, to edit, use or forget.
+    let other_profiles: Vec<&SavedConnection> = saved_wifi(snap)
+        .filter(|c| in_range(c) && !networks.iter().any(|n| n.saved.as_deref() == Some(c.uuid.as_str())))
+        .collect();
     view.net_hero = wifi_hero(snap, device, &networks, out_of_range.len());
     view.count = count(networks.len(), "network in range", "networks in range");
     let connecting = device.state.is_connecting();
@@ -952,7 +1021,7 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
             meta,
             tone,
             icon: "bars",
-            bars: bars(n.strength()),
+            bars: bars(n.current().strength),
             secure: n.security.needs_secrets(),
             indent: false,
         };
@@ -971,7 +1040,24 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
             ..RowData::default()
         })
         .collect();
-    vec![("Connected".into(), connected), ("Available".into(), available), ("Saved, not in range".into(), elsewhere)]
+    let others = other_profiles
+        .into_iter()
+        .filter(|c| matches_search(&c.id, &state.search))
+        .map(|c| RowData {
+            id: format!("conn:{}", c.uuid),
+            name: c.id.clone(),
+            meta: format!("Another profile for {}", String::from_utf8_lossy(c.wifi_ssid().unwrap_or_default())),
+            tone: "faint",
+            icon: "wifi",
+            ..RowData::default()
+        })
+        .collect();
+    vec![
+        ("Connected".into(), connected),
+        ("Available".into(), available),
+        ("Saved, not in range".into(), elsewhere),
+        ("Other profiles".into(), others),
+    ]
 }
 
 fn connection_kind_label(c: &SavedConnection) -> String {
@@ -1033,16 +1119,7 @@ fn wired_page(snap: &Snapshot, view: &mut View) -> Vec<(String, Vec<RowData>)> {
     for device in snap.devices.iter().filter(|d| d.kind == DeviceKind::Ethernet) {
         let carrier = device.wired.as_ref().is_some_and(|w| w.carrier);
         let active = device.active_connection.as_deref().and_then(|a| snap.active_connection(a));
-        // A port of a bridge or bond is shown there.
-        if snap
-            .connections
-            .iter()
-            .any(|c| c.port.is_some() && c.interface.as_deref() == Some(device.interface.as_str()))
-        {
-            continue;
-        }
-        let active_uuid = active.map(|a| a.uuid.as_str());
-        let mut rows: Vec<RowData> = snap
+        let own: Vec<&SavedConnection> = snap
             .connections
             .iter()
             .filter(|c| {
@@ -1050,6 +1127,22 @@ fn wired_page(snap: &Snapshot, view: &mut View) -> Vec<(String, Vec<RowData>)> {
                     && c.port.is_none()
                     && c.interface.as_deref().is_none_or(|i| i == device.interface)
             })
+            .collect();
+        // A port of a bridge or bond is shown there: while it's one now, or when a port
+        // profile is all the card has. A port profile alone (for a bridge that's off) doesn't
+        // hide the card's own profiles.
+        let port_now =
+            active.and_then(|a| snap.connections.iter().find(|c| c.uuid == a.uuid)).is_some_and(|c| c.port.is_some());
+        let port_profile = snap
+            .connections
+            .iter()
+            .any(|c| c.port.is_some() && c.interface.as_deref() == Some(device.interface.as_str()));
+        if port_now || (port_profile && own.is_empty()) {
+            continue;
+        }
+        let active_uuid = active.map(|a| a.uuid.as_str());
+        let mut rows: Vec<RowData> = own
+            .into_iter()
             .map(|c| {
                 let active = active_uuid == Some(c.uuid.as_str());
                 let (meta, tone) = if active {
@@ -1331,7 +1424,8 @@ fn wifi_details(snap: &Snapshot, state: &UiState, id: &str) -> Option<DetailsDat
     let device = wifi_device(snap)?;
     let networks = snap.networks().into_iter().find(|(p, _)| *p == device.path)?.1;
     let n = networks.into_iter().find(|n| network_id(n) == format!("wifi:{id}"))?;
-    let ap = n.strongest().clone();
+    // Connected: the access point in use, which needn't be the strongest of the network's.
+    let ap = n.current().clone();
     let saved = n.saved.as_deref().and_then(|uuid| snap.connections.iter().find(|c| c.uuid == uuid));
     let connecting = n.active && device.state.is_connecting();
     let band_line = |mhz: u32| {
@@ -1694,6 +1788,9 @@ pub fn intent(snap: &Snapshot, selected: &str, action: &str) -> Option<Intent> {
             .find(|n| network_id(n) == format!("wifi:{id}"))?;
         let saved = network.saved.as_deref().and_then(|uuid| snap.connections.iter().find(|c| c.uuid == uuid));
         return match action {
+            // Enter on the connected network: activating it again would drop the connection
+            // and bring it back up.
+            "connect" if network.active => None,
             "connect" => Some(match saved {
                 Some(c) => Intent::Run(Command::Activate {
                     connection: c.path.clone(),
@@ -1731,6 +1828,13 @@ pub fn intent(snap: &Snapshot, selected: &str, action: &str) -> Option<Intent> {
         let c = snap.connections.iter().find(|c| c.uuid == uuid)?;
         let active = active_uuid_state(snap, uuid);
         return match action {
+            // Already on or coming on: activating it again would restart it (a VPN's sign-in
+            // too).
+            "connect"
+                if active.is_some_and(|a| matches!(a.state, ActiveState::Activated | ActiveState::Activating)) =>
+            {
+                None
+            }
             "connect" => {
                 // A wired profile goes on its own (or the first) Ethernet port; NetworkManager
                 // picks the device for VPNs.
@@ -1830,7 +1934,7 @@ pub(crate) mod tests {
     use lituus_nm::{AccessPoint, ActiveConnection, DeviceState, IpConfig, WifiDevice, WiredDevice};
     use slint::Model;
 
-    fn ap(path: &str, ssid: &str, mhz: u32, strength: u8, security: Security) -> AccessPoint {
+    pub(crate) fn ap(path: &str, ssid: &str, mhz: u32, strength: u8, security: Security) -> AccessPoint {
         AccessPoint {
             path: path.into(),
             ssid: ssid.as_bytes().to_vec(),
@@ -1898,6 +2002,7 @@ pub(crate) mod tests {
             wireless_hardware_enabled: true,
             wwan_enabled: true,
             devices: vec![wifi, eth],
+            unreadable: 0,
             connections: vec![SavedConnection {
                 path: "/c/1".into(),
                 uuid: "u-home".into(),
@@ -1978,6 +2083,162 @@ pub(crate) mod tests {
         let actions: Vec<String> = d.actions.iter().map(|a| a.label.to_string()).collect();
         assert_eq!(actions, ["Disconnect", "Edit", "Share", "Forget"]);
         assert_eq!(view.hostname, "thinkpad-x1");
+    }
+
+    /// Connected to the weaker of two access points of one network.
+    fn on_the_weaker_access_point() -> Snapshot {
+        let mut snap = home();
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        wifi.access_points[0].strength = 40; // /ap/1, 5 GHz, the one in use
+        wifi.access_points.push(ap("/ap/9", "Lumen Home", 2437, 95, Security::Wpa2Wpa3));
+        snap
+    }
+
+    #[test]
+    fn the_connected_networks_details_describe_the_access_point_in_use() {
+        let mut snap = on_the_weaker_access_point();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_hero.meta, "Connected · 5 GHz · 866 Mb/s");
+        let shown = [
+            view.details.as_ref().unwrap().status_extra.to_string(),
+            detail(&view, "Signal").unwrap(),
+            detail(&view, "Band").unwrap(),
+            detail(&view, "BSSID").unwrap(),
+        ];
+        assert_eq!(shown, ["· 5 GHz · 866 Mb/s", "40 %", "5 GHz · channel 36", "BB:/ap/1"]);
+        // The device doesn't name it, its active connection does: the hero agrees with the details.
+        snap.devices[0].wifi.as_mut().unwrap().active_access_point = None;
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_hero.meta, "Connected · 5 GHz · 866 Mb/s");
+        assert_eq!(view.details.as_ref().unwrap().status_extra, "· 5 GHz · 866 Mb/s");
+    }
+
+    #[test]
+    fn the_connected_networks_bars_are_those_of_the_access_point_in_use() {
+        let snap = on_the_weaker_access_point();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.sections[0].rows.iter().next().unwrap().bars, 2);
+        let q = crate::quick::build(Some(&snap), false, &[]);
+        assert_eq!((q.networks[0].bars, q.icon), (2, crate::quick::TrayIcon::Wifi(2)));
+    }
+
+    /// An internal card NetworkManager doesn't manage, listed before the adapter in use.
+    fn two_adapters() -> Snapshot {
+        let mut snap = home();
+        let mut internal = snap.devices[0].clone();
+        internal.path = "/d/wlan-internal".into();
+        internal.interface = "wlp1s0".into();
+        internal.state = DeviceState::Unmanaged;
+        internal.managed = false;
+        internal.active_connection = None;
+        internal.ip4 = None;
+        internal.ip6 = None;
+        internal.wifi = Some(WifiDevice::default());
+        snap.devices.insert(0, internal);
+        snap
+    }
+
+    #[test]
+    fn the_wifi_page_follows_the_adapter_in_use() {
+        let snap = two_adapters();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_items.wifi, "Lumen Home");
+        assert_eq!(view.net_hero.name, "Lumen Home");
+        assert_eq!(rows(&view)[0], ("CONNECTED".to_owned(), vec!["Lumen Home".to_owned()]));
+        assert_eq!(rescan(&snap), Some(Command::Rescan { device: "/d/wlan".into() }));
+    }
+
+    #[test]
+    fn the_quick_panel_follows_the_adapter_in_use() {
+        let q = crate::quick::build(Some(&two_adapters()), false, &[]);
+        assert_eq!(q.status, "Wi-Fi: Lumen Home");
+        assert_eq!(q.icon, crate::quick::TrayIcon::Wifi(4));
+    }
+
+    /// Both adapters managed and in range, the connection on the second one.
+    #[test]
+    fn connected_through_the_second_of_two_managed_adapters() {
+        let mut snap = two_adapters();
+        snap.devices[0].state = DeviceState::Disconnected;
+        snap.devices[0].managed = true;
+        snap.devices[0].wifi = Some(WifiDevice {
+            access_points: vec![ap("/ap/i1", "Lumen Home", 5180, 70, Security::Wpa2Wpa3)],
+            ..WifiDevice::default()
+        });
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(rows(&view)[0], ("CONNECTED".to_owned(), vec!["Lumen Home".to_owned()]));
+        assert_eq!(view.details.as_ref().unwrap().status, "Connected");
+        // Connect on another network goes to the adapter in use, not the idle card.
+        let cafe = view.row_ids.iter().find(|id| id.contains(&hex("Aster Café".as_bytes()))).unwrap();
+        let Some(Intent::Join(target)) = intent(&snap, cafe, "connect") else { panic!("the password dialog") };
+        assert_eq!(target.device, "/d/wlan");
+        // With nothing connected: the first that NetworkManager manages.
+        snap.devices[1].active_connection = None;
+        snap.active.clear();
+        assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan-internal"));
+        snap.devices[0].managed = false;
+        assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan"));
+    }
+
+    /// A second profile for "Lumen Home", which NetworkManager lists first.
+    fn with_an_old_profile() -> Snapshot {
+        let mut snap = home();
+        let mut old = snap.connections[0].clone();
+        old.path = "/c/0".into();
+        old.uuid = "u-old".into();
+        old.id = "Lumen Home (old)".into();
+        old.autoconnect = false;
+        snap.connections.insert(0, old);
+        snap
+    }
+
+    /// The connection in use (/a/1) is u-home: the network's buttons act on that one.
+    #[test]
+    fn the_connected_networks_buttons_act_on_the_profile_in_use() {
+        let snap = with_an_old_profile();
+        let view = build(Some(&snap), None, &UiState::default());
+        let id = view.row_ids[0].clone();
+        assert_eq!(saved_connection(&snap, &id).map(|c| c.uuid.as_str()), Some("u-home"));
+        assert_eq!(view.details.as_ref().unwrap().toggles.row_data(0).map(|t| t.on), Some(true));
+        match intent(&snap, &id, "forget") {
+            Some(Intent::Confirm { command: Command::Forget { connection }, .. }) => assert_eq!(connection, "/c/1"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The other profile of a network in range is still listed, to edit, use or forget.
+    #[test]
+    fn a_second_profile_of_a_network_in_range_can_be_reached() {
+        let snap = with_an_old_profile();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(rows(&view).last().unwrap(), &("OTHER PROFILES".to_owned(), vec!["Lumen Home (old)".to_owned()]));
+        let row = view.sections.last().unwrap().rows.row_data(0).unwrap();
+        assert_eq!((row.id.as_str(), row.meta.as_str()), ("conn:u-old", "Another profile for Lumen Home"));
+        assert_eq!(saved_connection(&snap, "conn:u-old").map(|c| c.path.as_str()), Some("/c/0"));
+    }
+
+    /// A picked network that drops out of a scan stays picked, rather than the connected one
+    /// taking its place with Disconnect where Connect was.
+    #[test]
+    fn a_picked_network_that_drops_out_of_a_scan_stays_picked() {
+        let mut snap = home();
+        let cafe = build(Some(&snap), None, &UiState::default()).row_ids[1].clone();
+        let state = UiState { selected: Some(cafe.clone()), ..UiState::default() };
+        snap.devices[0].wifi.as_mut().unwrap().access_points.remove(1);
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(view.selected.as_deref(), Some(cafe.as_str()));
+        assert!(view.sections.iter().flat_map(|s| s.rows.iter()).all(|r| !r.selected));
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        let d = view.details.unwrap();
+        assert_eq!((d.title.as_str(), d.status.as_str()), ("Aster Café", "Out of range"));
+        let actions: Vec<(String, bool)> = d.actions.iter().map(|a| (a.label.to_string(), a.enabled)).collect();
+        assert_eq!(actions, [("Connect".to_owned(), false)]);
+        // Back in range: it's picked again.
+        let view = build(Some(&home()), None, &state);
+        assert_eq!(view.details.unwrap().title, "Aster Café");
+        // A search that hides it isn't a scan that lost it: the first match is picked, as before.
+        let state = UiState { search: "bib".into(), ..state };
+        assert_eq!(build(Some(&home()), None, &state).details.unwrap().title, "Bibliothek-Free");
     }
 
     #[test]
@@ -2134,6 +2395,67 @@ pub(crate) mod tests {
         assert_eq!(detail(&view, "Spanning tree").as_deref(), Some("On"));
     }
 
+    /// The card's own profile is in use; a bridge (off) has a port profile for the same card.
+    #[test]
+    fn a_bridge_port_profile_doesnt_hide_the_cards_own_profile() {
+        let mut snap = home();
+        let eth = &mut snap.devices[1];
+        eth.wired = Some(WiredDevice { carrier: true, speed: 1000 });
+        eth.active_connection = Some("/a/eth".into());
+        let mut plain = saved("u-eth", "Wired connection 1", ConnectionKind::Ethernet, "", None);
+        plain.interface = None;
+        snap.connections.push(plain);
+        snap.active.push(ActiveConnection {
+            path: "/a/eth".into(),
+            id: "Wired connection 1".into(),
+            uuid: "u-eth".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/eth".into()],
+            connection: Some("/c/u-eth".into()),
+            specific_object: None,
+            vpn: false,
+        });
+        snap.connections.push(saved("u-br", "br0", ConnectionKind::Bridge { stp: true }, "br0", None));
+        snap.connections.push(saved("u-p", "bridge-slave-enp3s0", ConnectionKind::Ethernet, "enp3s0", Some("u-br")));
+        let state = UiState { page: Page::Wired, ..UiState::default() };
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(rows(&view)[0], ("ENP3S0 · E1000E".to_owned(), vec!["Wired connection 1".to_owned()]));
+        assert_eq!(view.sections[0].rows.row_data(0).unwrap().meta, "Connected · 1000 Mb/s");
+        assert_eq!(rows(&view)[1], ("BRIDGES AND BONDS".to_owned(), vec!["br0".to_owned(), "enp3s0".to_owned()]));
+        // The bridge on, the card one of its ports: it's shown there only.
+        snap.active[1].uuid = "u-p".into();
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(rows(&view)[0].0, "BRIDGES AND BONDS");
+    }
+
+    /// Airplane mode on a computer that's online by cable.
+    #[test]
+    fn network_status_follows_the_cable_with_the_radios_off() {
+        let mut snap = home();
+        snap.wireless_enabled = false;
+        snap.wwan_enabled = false;
+        snap.devices[0].active_connection = None;
+        let eth = &mut snap.devices[1];
+        eth.wired = Some(WiredDevice { carrier: true, speed: 1000 });
+        eth.active_connection = Some("/a/eth".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/eth".into(),
+            id: "Wired connection 1".into(),
+            uuid: "u-eth".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/eth".into()],
+            connection: None,
+            specific_object: None,
+            vpn: false,
+        }];
+        snap.primary_connection = Some("/a/eth".into());
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_status, "Wired connection 1");
+        // Nothing connected: off.
+        snap.devices[1].active_connection = None;
+        (snap.active, snap.primary_connection) = (Vec::new(), None);
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_status, "Off");
+    }
+
     #[test]
     fn an_enterprise_network_opens_the_editor() {
         let mut snap = home();
@@ -2199,8 +2521,8 @@ pub(crate) mod tests {
 
     #[test]
     fn network_manager_missing() {
-        let view = build(None, Some("NetworkManager isn't running"), &UiState::default());
-        assert!(view.banner.starts_with("NetworkManager isn't running"));
+        let view = build(None, Some(&lituus_nm::Error::NotRunning), &UiState::default());
+        assert_eq!(view.banner, "NetworkManager isn't running. Lituus needs it to manage connections.");
         let empty = view.empty.unwrap();
         assert_eq!(empty.title, "NetworkManager isn't running");
         // The command, for its Copy button.
@@ -2209,6 +2531,17 @@ pub(crate) mod tests {
         // Still reading: a spinner (no icon), and the hero as it will be.
         let view = build(None, None, &UiState::default());
         assert_eq!(view.empty.map(|e| (e.icon, e.page)), Some(("", false)));
+    }
+
+    /// An error that isn't "NetworkManager is gone" doesn't say it isn't running, nor how to
+    /// start it, and its text isn't followed by a second full stop.
+    #[test]
+    fn a_refused_read_isnt_shown_as_networkmanager_not_running() {
+        let error = lituus_nm::Error::Denied("Insufficient privileges.".into());
+        let view = build(None, Some(&error), &UiState::default());
+        assert_eq!(view.banner, "Couldn't read NetworkManager: not allowed: Insufficient privileges.");
+        let empty = view.empty.unwrap();
+        assert_eq!((empty.title.as_str(), empty.command.as_str()), ("Couldn't read NetworkManager", ""));
     }
 
     /// The bar lists only the keys that work: Enter says what it does to the selected row, and
@@ -2418,6 +2751,41 @@ pub(crate) mod tests {
         assert_eq!(rescan(&snap), Some(Command::Rescan { device: "/d/wlan".into() }));
     }
 
+    /// Enter on the connected network, which the bar doesn't offer, does nothing.
+    #[test]
+    fn enter_on_the_connected_network_leaves_it_alone() {
+        let snap = home();
+        let view = build(Some(&snap), None, &UiState::default());
+        let selected = view.selected.clone().unwrap();
+        assert_eq!(selected, view.row_ids[0]); // "Lumen Home", connected, selected on opening
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        assert_eq!(intent(&snap, &selected, "connect"), None);
+    }
+
+    /// The same for a connected VPN (a `conn:` row).
+    #[test]
+    fn enter_on_a_connected_vpn_leaves_it_alone() {
+        let mut snap = home();
+        let mut vpn = saved("u-wg", "Office", ConnectionKind::WireGuard, "wg0", None);
+        vpn.interface = None;
+        snap.connections.push(vpn);
+        snap.active.push(ActiveConnection {
+            path: "/a/wg".into(),
+            id: "Office".into(),
+            uuid: "u-wg".into(),
+            state: ActiveState::Activated,
+            devices: vec![],
+            connection: Some("/c/u-wg".into()),
+            specific_object: None,
+            vpn: false,
+        });
+        let state = UiState { page: Page::Vpn, selected: Some("conn:u-wg".into()), ..UiState::default() };
+        let view = build(Some(&snap), None, &state);
+        assert_eq!(view.selected.as_deref(), Some("conn:u-wg"));
+        assert!(keys(&view).iter().all(|h| h.key != "↵"));
+        assert_eq!(intent(&snap, "conn:u-wg", "connect"), None);
+    }
+
     #[test]
     fn saved_wifi_reconnects_through_its_strongest_access_point() {
         let mut snap = home();
@@ -2508,6 +2876,75 @@ pub(crate) mod tests {
         assert_eq!(bytes_label(19_293_798), "18.4 MiB");
         let snap = home();
         assert_eq!(traffic_item(&snap.devices[1]).unwrap().value, "18.4 MiB / 2.1 MiB");
+    }
+
+    /// While the hotspot runs, NetworkManager lists an access point for it as the one in use.
+    #[test]
+    fn the_hotspot_isnt_a_network_wifi_is_connected_to() {
+        let mut snap = home();
+        let mut hs = saved("u-hs", "Hotspot", ConnectionKind::Wifi { ssid: b"thinkpad-x1".to_vec() }, "", None);
+        (hs.hotspot, hs.interface) = (true, None);
+        snap.connections.push(hs);
+        let wifi = snap.devices[0].wifi.as_mut().unwrap();
+        wifi.access_points.push(AccessPoint {
+            path: "/ap/hs".into(),
+            ssid: b"thinkpad-x1".to_vec(),
+            bssid: "9C:B6:D0:4A:12:7E".into(), // the card's own address
+            frequency: 2412,
+            strength: 0,
+            security: Security::Wpa2,
+            max_bitrate: 0,
+        });
+        wifi.active_access_point = Some("/ap/hs".into());
+        snap.devices[0].active_connection = Some("/a/hs".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/hs".into(),
+            id: "Hotspot".into(),
+            uuid: "u-hs".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/wlan".into()],
+            connection: Some("/c/u-hs".into()),
+            specific_object: Some("/ap/hs".into()),
+            vpn: false,
+        }];
+        snap.primary_connection = None;
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_items.wifi, "hotspot");
+        assert!(rows(&view).iter().all(|(title, _)| title != "CONNECTED"), "{:?}", rows(&view));
+        assert!(!rows(&view).iter().any(|(_, names)| names.contains(&"thinkpad-x1".to_owned())));
+        let q = crate::quick::build(Some(&snap), false, &[]);
+        assert_eq!(q.status, "Wi-Fi: hotspot");
+        assert!(q.networks.iter().all(|n| !n.active && n.name != "thinkpad-x1"));
+        assert_eq!(q.icon, crate::quick::TrayIcon::Hotspot);
+    }
+
+    /// Of two hotspot profiles, the page is about the one that's on.
+    #[test]
+    fn the_hotspot_page_shows_the_hotspot_that_runs() {
+        let mut snap = home();
+        for (uuid, ssid) in [("u-hs1", "Hotspot"), ("u-hs2", "thinkpad-x1 5G")] {
+            let mut c = saved(uuid, ssid, ConnectionKind::Wifi { ssid: ssid.as_bytes().to_vec() }, "", None);
+            c.hotspot = true;
+            snap.connections.push(c);
+        }
+        snap.devices[0].active_connection = Some("/a/hs2".into());
+        snap.active = vec![ActiveConnection {
+            path: "/a/hs2".into(),
+            id: "thinkpad-x1 5G".into(),
+            uuid: "u-hs2".into(),
+            state: ActiveState::Activated,
+            devices: vec!["/d/wlan".into()],
+            connection: Some("/c/u-hs2".into()),
+            specific_object: None,
+            vpn: false,
+        }];
+        let h = hotspot_view(&snap);
+        assert_eq!((h.connection.as_deref(), h.active.as_deref()), (Some("/c/u-hs2"), Some("/a/hs2")));
+        assert_eq!((h.ssid.as_str(), h.warning.as_str()), ("thinkpad-x1 5G", ""));
+        assert_eq!(build(Some(&snap), None, &UiState::default()).net_items.hotspot, "on");
+        // Off again: the first.
+        snap.active.clear();
+        assert_eq!(hotspot_view(&snap).connection.as_deref(), Some("/c/u-hs1"));
     }
 
     #[test]

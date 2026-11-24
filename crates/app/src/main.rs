@@ -126,7 +126,7 @@ enum Dialog {
 #[derive(Default)]
 struct App {
     snapshot: Option<lituus_nm::Snapshot>,
-    error: Option<String>,
+    error: Option<lituus_nm::Error>,
     ui: view::UiState,
     row_ids: Vec<String>,
     /// The palette from the colour sources, while it's followed; `None` means the built-in theme.
@@ -606,7 +606,11 @@ fn toggle_quick(window: &MainWindow) {
 
 /// The tray and the popup show what changed.
 fn render_quick(app: &mut App, airplane: bool) {
-    let q = quick::build(app.snapshot.as_ref(), airplane, &app.signing_in);
+    let mut q = quick::build(app.snapshot.as_ref(), airplane, &app.signing_in);
+    // While the popup is open, its networks stay in their places: opening it starts a scan.
+    if QUICK.with(|popup| popup.borrow().as_ref().is_some_and(|p| p.window().is_visible())) {
+        quick::keep_order(&mut q.networks, &app.quick.networks);
+    }
     let bt = bluetooth::quick(&app.bt);
     let sound = sound::quick(&app.sound);
     if q == app.quick && bt == app.quick_bt && sound == app.quick_sound && !std::mem::take(&mut app.quick_new) {
@@ -784,8 +788,11 @@ fn connect_callbacks(window: &MainWindow) {
             if ids.is_empty() {
                 return;
             }
-            let current = app.ui.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)).unwrap_or(0);
-            let next = (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize;
+            let next = match app.ui.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)) {
+                Some(current) => (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize,
+                // Nothing in the list is picked (the network picked is out of range): the top.
+                None => 0,
+            };
             app.ui.selected = Some(ids[next].clone());
         });
     });
@@ -1219,11 +1226,12 @@ fn go(app: &mut App, id: &str) {
     }
 }
 
-/// The hotspot page opens with its saved settings, or with the hostname and a new password.
+/// The hotspot page opens with its saved settings (the hotspot that's on, if one is), or with
+/// the hostname and a new password.
 fn open_hotspot(app: &mut App) {
     let Some(snap) = &app.snapshot else { return };
-    match snap.connections.iter().find(|c| c.hotspot) {
-        Some(c) => send(app, view::Command::LoadHotspot { connection: c.path.clone() }),
+    match view::hotspot_view(snap).connection {
+        Some(connection) => send(app, view::Command::LoadHotspot { connection }),
         None => app.hotspot_fields = Some((snap.hostname.clone(), hotspot::new_password().unwrap_or_default(), 0)),
     }
 }
@@ -1725,7 +1733,7 @@ fn render(window: &MainWindow) {
         let state = &mut *app;
         let airplane = airplane::follow(&mut state.airplane, state.snapshot.as_ref(), state.bt.snapshot.as_ref());
         app.ui.airplane = airplane;
-        let v = view::build(app.snapshot.as_ref(), app.error.as_deref(), &app.ui);
+        let v = view::build(app.snapshot.as_ref(), app.error.as_ref(), &app.ui);
         let network_keys = view::keys(&v);
         let mut entries = nav_entries(&app);
         let statuses = [&v.net_status, &v.net_items.wifi, &v.net_items.wired, &v.net_items.vpn, &v.net_items.hotspot];
@@ -1811,7 +1819,8 @@ fn render(window: &MainWindow) {
         window.set_hostname_open(app.hostname_open);
         window.set_hostname_error(app.hostname_error.as_str().into());
         app.row_ids = v.row_ids;
-        // Keep a selection that went away (a network out of range) from sticking.
+        // A selection that went away (a profile forgotten) doesn't stick; a network the last scan
+        // didn't find stays picked (see view::build).
         app.ui.selected = v.selected;
         let tray_sub = match (app.settings.tray, app.tray.is_some()) {
             (true, false) => "Show Lituus in the system tray · no tray found: start a bar with one, such as Waybar",
@@ -2911,12 +2920,20 @@ fn deliver(weak: &slint::Weak<MainWindow>, snapshot: Result<lituus_nm::Snapshot,
                             notifier.send(notice);
                         }
                     }
+                    // Said once, not with every snapshot.
+                    let before = app.snapshot.as_ref().map_or(0, |s| s.unreadable);
+                    if snapshot.unreadable != before && snapshot.unreadable > 0 {
+                        eprintln!(
+                            "lituus: {} saved connection(s) belong to another user, who keeps them private, so they aren't shown",
+                            snapshot.unreadable
+                        );
+                    }
                     app.snapshot = Some(snapshot);
                     app.error = None;
                 }
                 Err(error) => {
                     app.snapshot = None;
-                    app.error = Some(error.to_string());
+                    app.error = Some(error);
                 }
             }
         });
