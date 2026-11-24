@@ -494,7 +494,7 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
 
 /// The message for a path hyprpaper.conf can't hold (`hyprpaper_unwritable`).
 fn cant_hold(why: &str) -> String {
-    format!("hyprpaper.conf can't hold a path with {why}: rename the file or folder to use it with hyprpaper.")
+    format!("hyprpaper.conf can't hold a path with {why}: rename it.")
 }
 
 /// Runs the command after a change, if there is one.
@@ -1795,10 +1795,7 @@ mod tests {
         assert_eq!(lituus_wallpaper::hyprpaper_entries(&text)[0].path, hash.display().to_string());
         let calls_before = calls(&d).len();
         act_with(None, &mut state, "set", "/w/$HOME.png", 0.0);
-        assert_eq!(
-            state.message.as_deref(),
-            Some("hyprpaper.conf can't hold a path with a $: rename the file or folder to use it with hyprpaper.")
-        );
+        assert_eq!(state.message.as_deref(), Some("hyprpaper.conf can't hold a path with a $: rename it."));
         assert_eq!(calls(&d).len(), calls_before, "{:?}", calls(&d));
         assert_eq!(std::fs::read_to_string(&conf).unwrap(), text);
         // Nor a slideshow of a folder it can't hold: it stays off.
