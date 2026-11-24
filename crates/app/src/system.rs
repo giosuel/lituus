@@ -513,6 +513,20 @@ fn facts(info: &Info) -> (Vec<SystemFact>, Vec<String>) {
     (facts, unknown)
 }
 
+/// A mount point for the report: the system's own folders as they are, the rest only by where
+/// they are. Drives are mounted under the login name and their label (/run/media/<login>/<label>),
+/// and folders in the home have its name.
+fn report_mount(mount: &str) -> String {
+    const SYSTEM: [&str; 12] =
+        ["/", "/boot", "/boot/efi", "/efi", "/home", "/var", "/var/log", "/usr", "/opt", "/srv", "/nix", "/tmp"];
+    let parts: Vec<&str> = mount.split('/').filter(|p| !p.is_empty()).collect();
+    if SYSTEM.contains(&mount) || parts.len() < 2 {
+        return mount.to_owned();
+    }
+    let keep = if mount.starts_with("/run/media/") { 2 } else { 1 };
+    format!("/{}/…", parts[..keep.min(parts.len() - 1)].join("/"))
+}
+
 /// The whole page as plain text, for an issue or a forum post: no names, no serial numbers.
 pub fn report(state: &State, info: &Info) -> String {
     let mut lines = vec![format!("Lituus {} system info", env!("APP_VERSION"))];
@@ -582,7 +596,10 @@ pub fn report(state: &State, info: &Info) -> String {
                 let fs = d
                     .filesystems
                     .iter()
-                    .map(|f| format!("{} {} {}%", f.kind, f.mounts.join(", "), percent(f.used, f.size)))
+                    .map(|f| {
+                        let mounts: Vec<String> = f.mounts.iter().map(|m| report_mount(m)).collect();
+                        format!("{} {} {}%", f.kind, mounts.join(", "), percent(f.used, f.size))
+                    })
                     .collect::<Vec<_>>();
                 format!("{} ({})", if d.model.is_empty() { &d.device } else { &d.model }, fs.join("; "))
             })
@@ -958,7 +975,36 @@ mod tests {
         assert_eq!(v.uses.row_data(3).unwrap().name, "awww");
         // The report: no names.
         assert!(!v.report.contains("orbis") && !v.report.contains("Giosuel"), "{}", v.report);
+        assert!(v.report.contains("Samsung SSD 990 PRO 2TB (btrfs /, /home 20%)"), "{}", v.report);
         assert!(v.report.contains("CPU:       AMD Ryzen 7 7800X3D, 8 cores, 16 threads"), "{}", v.report);
+    }
+
+    /// Drives mounted under the login name and their label, and folders in the home, aren't
+    /// named in the report.
+    #[test]
+    fn the_report_names_no_mount_points() {
+        let fs = |kind: &str, mounts: &[&str]| lituus_system::Filesystem {
+            kind: kind.into(),
+            mounts: mounts.iter().map(|m| m.to_string()).collect(),
+            size: 100,
+            used: 50,
+        };
+        let drive = |device: &str, filesystems| Drive { device: device.into(), filesystems, ..Default::default() };
+        let info = Info {
+            drives: vec![
+                drive("nvme0n1", vec![fs("btrfs", &["/", "/home", "/home/giosuel/vms"]), fs("vfat", &["/boot"])]),
+                drive("sdb", vec![fs("exfat", &["/run/media/giosuel/Backups"])]),
+                drive("sdc", vec![fs("ext4", &["/media/giosuel/Giosuel's Passport", "/data"])]),
+            ],
+            ..info()
+        };
+        let report = report(&State::default(), &info);
+        let storage = report.lines().find(|l| l.starts_with("Storage:")).unwrap();
+        assert_eq!(
+            storage,
+            "Storage:   nvme0n1 (btrfs /, /home, /home/… 50%; vfat /boot 50%), sdb (exfat /run/media/… 50%), \
+             sdc (ext4 /media/…, /data 50%)"
+        );
     }
 
     #[test]
