@@ -29,6 +29,9 @@ type Drawn = (Option<SystemTime>, SharedPixelBuffer<Rgba8Pixel>);
 /// its file, for the one app selected.
 const LIST_ICON: f32 = 36.0;
 
+/// The details' icon, and the icon picker's (36).
+const DETAILS_ICON: f32 = 56.0;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Problem {
     /// The command's program isn't there; maybe a newer AppImage beside where it was.
@@ -261,11 +264,28 @@ fn read(dirs: Dirs, scale: f32, known: &HashMap<PathBuf, Drawn>) -> Data {
     Data { dirs, apps, icons, theme, problems, electron, drawn, scale }
 }
 
+fn is_svg(file: &Path) -> bool {
+    file.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+}
+
+/// usvg's options for an icon: an `<image>` in it is drawn from data in the file itself, never
+/// from a file it names. Any icon theme or desktop file can name one, and a FIFO there would hang
+/// the read, /dev/zero fill the memory.
+fn svg_options() -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    options
+}
+
 /// An icon's pixels, at most `side` square: an SVG drawn at that size, a bigger picture made
 /// smaller. None for what can't be read here; the window's thread then tries its file.
-fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
-        let tree = resvg::usvg::Tree::from_data(&std::fs::read(file).ok()?, &resvg::usvg::Options::default()).ok()?;
+pub(crate) fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    // Not a FIFO or a device, which a read would wait on or never finish.
+    if !file.is_file() {
+        return None;
+    }
+    if is_svg(file) {
+        let tree = resvg::usvg::Tree::from_data(&std::fs::read(file).ok()?, &svg_options()).ok()?;
         let size = tree.size();
         let scale = side as f32 / size.width().max(size.height());
         let (w, h) = ((size.width() * scale).round().max(1.0) as u32, (size.height() * scale).round().max(1.0) as u32);
@@ -287,6 +307,16 @@ fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     };
     let rgba = picture.to_rgba8();
     Some(SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
+
+/// An icon's file as a picture for the window, `side` pixels at most. An SVG is drawn here with
+/// `svg_options`: Slint's own loader would read the files it names, on the window's thread, and
+/// takes no options.
+pub(crate) fn icon_image(file: &Path, side: u32) -> Image {
+    if is_svg(file) || !file.is_file() {
+        return draw_icon(file, side).map(Image::from_rgba8).unwrap_or_default();
+    }
+    Image::load_from_path(file).unwrap_or_default()
 }
 
 /// What's wrong with the apps, found by looking at their files.
@@ -954,13 +984,11 @@ fn choice_large(state: &mut State, app: &App) -> AppChoice {
     app_choice(app, icon)
 }
 
-/// A picture loaded from its file, once.
+/// A picture loaded from its file, once, for the details and the icon picker.
 fn loaded(state: &mut State, file: &Path) -> Image {
-    state
-        .images
-        .entry(format!("icon:{}", file.display()))
-        .or_insert_with(|| Image::load_from_path(file).unwrap_or_default())
-        .clone()
+    let scale = state.data.as_ref().map_or(1.0, |d| d.scale);
+    let side = (DETAILS_ICON * scale).round().max(1.0) as u32;
+    state.images.entry(format!("icon:{}", file.display())).or_insert_with(|| icon_image(file, side)).clone()
 }
 
 fn app_choice(app: &App, icon: Image) -> AppChoice {
@@ -1575,5 +1603,69 @@ mod tests {
         assert_eq!(category_label("X-GNOME-SystemSettings"), "GNOME system settings");
         assert_eq!(category_key("Web browser"), "WebBrowser");
         assert_eq!(category_key("Internet"), "Network");
+    }
+
+    /// An empty folder for a test.
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lituus-apps-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    // An SVG icon that names another file: an `<image>` of it.
+    fn icon_naming(href: &Path) -> String {
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><image width="8" height="8" xlink:href="{}"/></svg>"##,
+            href.display()
+        )
+    }
+
+    const RED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#f00"/></svg>"##;
+
+    #[test]
+    fn an_svg_icon_does_not_load_files_it_names() {
+        let root = test_root("svg");
+        write(&root, "elsewhere/red.svg", RED);
+        write(&root, "icon.svg", &icon_naming(&root.join("elsewhere/red.svg")));
+        // The lists' icons, drawn on the reading thread…
+        let pixels = draw_icon(&root.join("icon.svg"), 8).unwrap();
+        assert_eq!(pixels.as_slice()[0].a, 0, "the icon drew a file from elsewhere: {:?}", pixels.as_slice()[0]);
+        // …and the details', the icon picker's and Default apps', on the window's.
+        let pixels = icon_image(&root.join("icon.svg"), 8).to_rgba8().unwrap();
+        assert_eq!(pixels.as_slice()[0].a, 0, "the window drew a file from elsewhere: {:?}", pixels.as_slice()[0]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_svg_icon_naming_a_fifo_does_not_hang() {
+        let root = test_root("fifo");
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("pipe.png");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        write(&root, "icon.svg", &icon_naming(&fifo));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let icon = root.join("icon.svg");
+        let fifo_icon = fifo.clone();
+        let thread = std::thread::spawn(move || {
+            let _ = draw_icon(&icon, 8);
+            let _ = icon_image(&icon, 8);
+            // The FIFO itself as an icon (a theme can have one by any name).
+            let _ = icon_image(&fifo_icon, 8);
+            let _ = tx.send(());
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        if !done {
+            // Lets the blocked reader go: a writer that opens and closes gives it the end.
+            use std::os::unix::fs::OpenOptionsExt;
+            for _ in 0..50 {
+                if std::fs::OpenOptions::new().write(true).custom_flags(0o4000).open(&fifo).is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        thread.join().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(done, "an icon was still reading the FIFO after 5 s");
     }
 }
