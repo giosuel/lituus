@@ -115,3 +115,63 @@ async fn kwallet() {
     assert_eq!(keyring.name(), "KWallet");
     round_trip(&keyring).await;
 }
+
+/// A gnome-keyring on `bus` that keeps its files in `home`, unlocked with the password "test".
+async fn gnome_keyring(bus: &Bus, home: &std::path::Path) -> Child {
+    use tokio::io::AsyncWriteExt;
+    let mut daemon = Command::new("gnome-keyring-daemon")
+        .args(["--foreground", "--unlock", "--components=secrets"])
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .env("HOME", home)
+        .env("XDG_RUNTIME_DIR", home)
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("gnome-keyring-daemon runs");
+    let mut stdin = daemon.stdin.take().unwrap();
+    stdin.write_all(b"test").await.unwrap();
+    drop(stdin);
+    let conn = connect(&bus.address).await;
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await.unwrap();
+    for _ in 0..100 {
+        if dbus.name_has_owner("org.freedesktop.secrets".try_into().unwrap()).await.unwrap() {
+            return daemon;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("gnome-keyring didn't start");
+}
+
+/// The Secret Service went away and came back while Lituus kept running (KeePassXC reopened,
+/// `gnome-keyring-daemon --replace`, a crash): the session it had opened went with the old one,
+/// and a new one is opened.
+#[tokio::test]
+async fn secret_service_restarts() {
+    let installed = std::process::Command::new("gnome-keyring-daemon").arg("--version").output().is_ok();
+    let Some(bus) = private_bus().await.filter(|_| installed) else {
+        eprintln!("skipped: needs gnome-keyring-daemon");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("lituus-keyring-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let mut daemon = gnome_keyring(&bus, &home).await;
+    let keyring = Keyring::open(connect(&bus.address).await).await.expect("a keyring on that bus");
+    let psk = Entry { uuid: "restart-test", setting: "802-11-wireless-security", key: "psk" };
+    keyring.store(psk, "Aster Café", "café-pass").await.unwrap();
+    assert_eq!(keyring.find(psk.uuid, psk.setting).await.unwrap()["psk"], "café-pass");
+
+    // SIGTERM, so it writes its files.
+    let pid = daemon.id().unwrap().to_string();
+    assert!(std::process::Command::new("kill").arg(&pid).status().unwrap().success());
+    daemon.wait().await.unwrap();
+    let _daemon = gnome_keyring(&bus, &home).await;
+
+    let found = keyring.find(psk.uuid, psk.setting).await;
+    let stored = keyring.store(Entry { key: "wep-key0", ..psk }, "Aster Café", "wep").await;
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(found.is_ok() && stored.is_ok(), "after the restart, find gives {found:?}\nand store gives {stored:?}");
+    assert_eq!(found.unwrap()["psk"], "café-pass");
+}

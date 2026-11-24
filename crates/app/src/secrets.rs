@@ -211,11 +211,13 @@ async fn get_secrets(request: SecretRequest, keyrings: &Keyrings, ui: &impl Ui) 
     // A rejected password isn't looked up again.
     if !request.request_new()
         && let Some(keyring) = &keyring
-        && let Ok(found) = keyring.find(&request.connection.uuid, &request.setting).await
-        && !found.is_empty()
     {
-        request.reply(Ok(found));
-        return;
+        match keyring.find(&request.connection.uuid, &request.setting).await {
+            Ok(found) if !found.is_empty() => return request.reply(Ok(found)),
+            Ok(_) => {}
+            // The dialog asks, as if nothing were saved.
+            Err(error) => eprintln!("lituus: couldn't read the password of {}: {error}", request.connection.id),
+        }
     }
     let (Some((key_mgmt, key, user)), true) = (prompt_secret(&request), request.interactive()) else {
         request.reply(Err(Refusal::NoSecrets));
