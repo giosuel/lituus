@@ -773,10 +773,11 @@ fn wifi_hero(snap: &Snapshot, device: &Device, networks: &[Network], out_of_rang
     };
     let sub = [active.id.clone(), others].into_iter().chain(saved_out).collect::<Vec<_>>().join(" · ");
     let wifi = device.wifi.as_ref();
-    // NetworkManager names the access point in use; failing that, the network's strongest.
-    let ap = wifi
-        .and_then(|w| w.active_access_point.as_deref().and_then(|p| w.access_points.iter().find(|ap| ap.path == p)))
-        .or_else(|| network.map(|n| n.strongest()));
+    // The access point in use, as the details have it (the device's, or else the one its
+    // active connection is on); a hidden network isn't in the list, so the device's.
+    let ap = network.map(Network::current).or_else(|| {
+        wifi.and_then(|w| w.active_access_point.as_deref().and_then(|p| w.access_points.iter().find(|ap| ap.path == p)))
+    });
     let mut meta = vec![if active.state == ActiveState::Activated { "Connected" } else { "Connecting…" }.to_owned()];
     if let Some(band) = ap.and_then(|ap| Band::from_mhz(ap.frequency)) {
         meta.push(band.label().to_owned());
@@ -2095,7 +2096,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_connected_networks_details_describe_the_access_point_in_use() {
-        let snap = on_the_weaker_access_point();
+        let mut snap = on_the_weaker_access_point();
         let view = build(Some(&snap), None, &UiState::default());
         assert_eq!(view.net_hero.meta, "Connected · 5 GHz · 866 Mb/s");
         let shown = [
@@ -2105,6 +2106,11 @@ pub(crate) mod tests {
             detail(&view, "BSSID").unwrap(),
         ];
         assert_eq!(shown, ["· 5 GHz · 866 Mb/s", "40 %", "5 GHz · channel 36", "BB:/ap/1"]);
+        // The device doesn't name it, its active connection does: the hero agrees with the details.
+        snap.devices[0].wifi.as_mut().unwrap().active_access_point = None;
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(view.net_hero.meta, "Connected · 5 GHz · 866 Mb/s");
+        assert_eq!(view.details.as_ref().unwrap().status_extra, "· 5 GHz · 866 Mb/s");
     }
 
     #[test]
