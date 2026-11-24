@@ -947,9 +947,17 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
     }
     view.bottom_label = "Connect to hidden network…".into();
     let networks = snap.networks().into_iter().find(|(p, _)| *p == device.path).map(|(_, n)| n).unwrap_or_default();
-    // Saved networks that aren't in range: the old Saved page's Wi-Fi part, the hotspot included.
-    let out_of_range: Vec<&SavedConnection> =
-        saved_wifi(snap).filter(|c| !networks.iter().any(|n| Some(n.ssid.as_slice()) == c.wifi_ssid())).collect();
+    // Saved networks that aren't in range: the old Saved page's Wi-Fi part, the hotspot included
+    // (it isn't a network to join, in range or not).
+    let in_range =
+        |c: &SavedConnection| !c.hotspot && networks.iter().any(|n| Some(n.ssid.as_slice()) == c.wifi_ssid());
+    let out_of_range: Vec<&SavedConnection> = saved_wifi(snap).filter(|c| !in_range(c)).collect();
+    // Another profile for a network in range (from an old password, or made by another tool):
+    // the network's buttons act on the one in use, or the one NetworkManager would pick, so the
+    // others are listed on their own, to edit, use or forget.
+    let other_profiles: Vec<&SavedConnection> = saved_wifi(snap)
+        .filter(|c| in_range(c) && !networks.iter().any(|n| n.saved.as_deref() == Some(c.uuid.as_str())))
+        .collect();
     view.net_hero = wifi_hero(snap, device, &networks, out_of_range.len());
     view.count = count(networks.len(), "network in range", "networks in range");
     let connecting = device.state.is_connecting();
@@ -993,7 +1001,24 @@ fn wifi_page(snap: &Snapshot, state: &UiState, view: &mut View) -> Vec<(String, 
             ..RowData::default()
         })
         .collect();
-    vec![("Connected".into(), connected), ("Available".into(), available), ("Saved, not in range".into(), elsewhere)]
+    let others = other_profiles
+        .into_iter()
+        .filter(|c| matches_search(&c.id, &state.search))
+        .map(|c| RowData {
+            id: format!("conn:{}", c.uuid),
+            name: c.id.clone(),
+            meta: format!("Another profile for {}", String::from_utf8_lossy(c.wifi_ssid().unwrap_or_default())),
+            tone: "faint",
+            icon: "wifi",
+            ..RowData::default()
+        })
+        .collect();
+    vec![
+        ("Connected".into(), connected),
+        ("Available".into(), available),
+        ("Saved, not in range".into(), elsewhere),
+        ("Other profiles".into(), others),
+    ]
 }
 
 fn connection_kind_label(c: &SavedConnection) -> String {
@@ -2102,6 +2127,43 @@ pub(crate) mod tests {
         assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan-internal"));
         snap.devices[0].managed = false;
         assert_eq!(hidden_network_device(&snap).as_deref(), Some("/d/wlan"));
+    }
+
+    /// A second profile for "Lumen Home", which NetworkManager lists first.
+    fn with_an_old_profile() -> Snapshot {
+        let mut snap = home();
+        let mut old = snap.connections[0].clone();
+        old.path = "/c/0".into();
+        old.uuid = "u-old".into();
+        old.id = "Lumen Home (old)".into();
+        old.autoconnect = false;
+        snap.connections.insert(0, old);
+        snap
+    }
+
+    /// The connection in use (/a/1) is u-home: the network's buttons act on that one.
+    #[test]
+    fn the_connected_networks_buttons_act_on_the_profile_in_use() {
+        let snap = with_an_old_profile();
+        let view = build(Some(&snap), None, &UiState::default());
+        let id = view.row_ids[0].clone();
+        assert_eq!(saved_connection(&snap, &id).map(|c| c.uuid.as_str()), Some("u-home"));
+        assert_eq!(view.details.as_ref().unwrap().toggles.row_data(0).map(|t| t.on), Some(true));
+        match intent(&snap, &id, "forget") {
+            Some(Intent::Confirm { command: Command::Forget { connection }, .. }) => assert_eq!(connection, "/c/1"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The other profile of a network in range is still listed, to edit, use or forget.
+    #[test]
+    fn a_second_profile_of_a_network_in_range_can_be_reached() {
+        let snap = with_an_old_profile();
+        let view = build(Some(&snap), None, &UiState::default());
+        assert_eq!(rows(&view).last().unwrap(), &("OTHER PROFILES".to_owned(), vec!["Lumen Home (old)".to_owned()]));
+        let row = view.sections.last().unwrap().rows.row_data(0).unwrap();
+        assert_eq!((row.id.as_str(), row.meta.as_str()), ("conn:u-old", "Another profile for Lumen Home"));
+        assert_eq!(saved_connection(&snap, "conn:u-old").map(|c| c.path.as_str()), Some("/c/0"));
     }
 
     #[test]

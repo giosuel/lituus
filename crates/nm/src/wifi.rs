@@ -1,6 +1,7 @@
 //! Wi-Fi details derived from access point properties: security type, band and channel, signal
 //! bars, and the grouping of access points into the networks a user picks from.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use crate::model::{AccessPoint, SavedConnection, Snapshot};
@@ -134,7 +135,8 @@ pub struct Network {
     pub access_points: Vec<AccessPoint>,
     /// Every band any of the access points is on, ascending.
     pub bands: Vec<Band>,
-    /// A saved connection for this network, if there is one.
+    /// The saved connection for this network, if there is one: the one in use, else the one
+    /// NetworkManager would pick.
     pub saved: Option<String>,
     /// Whether the device is connected to it now.
     pub active: bool,
@@ -167,8 +169,19 @@ impl Network {
 /// connected one first, then saved ones, then by signal strength. Hidden networks (empty SSID)
 /// are left out; they're joined by name instead.
 pub fn networks(access_points: &[AccessPoint], active_ap: Option<&str>, saved: &[SavedConnection]) -> Vec<Network> {
+    group(access_points.iter(), active_ap, None, &saved.iter().collect::<Vec<_>>())
+}
+
+/// [`networks`], knowing which profile is in use (`active_uuid`), from the profiles that may be
+/// used on the device.
+fn group<'a>(
+    access_points: impl Iterator<Item = &'a AccessPoint>,
+    active_ap: Option<&str>,
+    active_uuid: Option<&str>,
+    saved: &[&SavedConnection],
+) -> Vec<Network> {
     let mut groups: BTreeMap<(Vec<u8>, Security), Vec<AccessPoint>> = BTreeMap::new();
-    for ap in access_points.iter().filter(|ap| !ap.ssid.is_empty()) {
+    for ap in access_points.filter(|ap| !ap.ssid.is_empty()) {
         groups.entry((ap.ssid.clone(), ap.security)).or_default().push(ap.clone());
     }
     let mut networks: Vec<Network> = groups
@@ -179,7 +192,16 @@ pub fn networks(access_points: &[AccessPoint], active_ap: Option<&str>, saved: &
             bands.sort();
             bands.dedup();
             let current = active_ap.and_then(|path| aps.iter().position(|ap| ap.path == path));
-            let saved = saved.iter().find(|c| c.wifi_ssid() == Some(&ssid[..])).map(|c| c.uuid.clone());
+            // With more than one profile for the name: the one in use, else the one
+            // NetworkManager would pick (highest priority, then used last). A hotspot's profile
+            // runs an access point; it isn't one to join a network with.
+            let saved = saved
+                .iter()
+                .filter(|c| !c.hotspot && c.wifi_ssid() == Some(&ssid[..]))
+                .min_by_key(|c| {
+                    (Some(c.uuid.as_str()) != active_uuid, Reverse(c.autoconnect_priority), Reverse(c.timestamp))
+                })
+                .map(|c| c.uuid.clone());
             let active = current.is_some();
             Network { ssid, security, access_points: aps, bands, saved, active, current: current.unwrap_or(0) }
         })
@@ -201,12 +223,17 @@ impl Snapshot {
             .iter()
             .filter_map(|d| {
                 let wifi = d.wifi.as_ref()?;
+                let active = d.active_connection.as_deref().and_then(|a| self.active_connection(a));
                 // The device's active access point, or else the one its active connection is on.
-                let active_ap = wifi.active_access_point.as_deref().or_else(|| {
-                    let active = self.active_connection(d.active_connection.as_deref()?)?;
-                    active.specific_object.as_deref()
-                });
-                Some((d.path.clone(), networks(&wifi.access_points, active_ap, &self.connections)))
+                let active_ap = wifi.active_access_point.as_deref().or_else(|| active?.specific_object.as_deref());
+                // A profile bound to another interface can't be used on this one.
+                let saved: Vec<&SavedConnection> = self
+                    .connections
+                    .iter()
+                    .filter(|c| c.interface.as_deref().is_none_or(|i| i == d.interface))
+                    .collect();
+                let active_uuid = active.map(|a| a.uuid.as_str());
+                Some((d.path.clone(), group(wifi.access_points.iter(), active_ap, active_uuid, &saved)))
             })
             .collect()
     }
@@ -305,6 +332,24 @@ mod tests {
         assert_eq!(home.bands, [Band::Ghz2_4, Band::Ghz5]);
         assert_eq!(nets[1].saved.as_deref(), Some("u-office"));
         assert_eq!(nets[2].saved, None);
+    }
+
+    /// Two profiles for one name: the one NetworkManager would pick (priority, then used last),
+    /// never the hotspot's.
+    #[test]
+    fn a_network_with_two_profiles_uses_the_one_networkmanager_picks() {
+        let aps = [ap("/ap/1", "Home", "AA", 2437, 40, Security::Wpa2)];
+        let mut old = saved_wifi("u-old", "Home");
+        old.timestamp = 100;
+        let mut new = saved_wifi("u-new", "Home");
+        new.timestamp = 200;
+        let mut hotspot = saved_wifi("u-hs", "Home");
+        (hotspot.hotspot, hotspot.autoconnect_priority) = (true, 10);
+        let picked = |saved: &[SavedConnection]| networks(&aps, None, saved)[0].saved.clone();
+        assert_eq!(picked(&[hotspot.clone(), old.clone(), new.clone()]).as_deref(), Some("u-new"));
+        old.autoconnect_priority = 1;
+        assert_eq!(picked(&[hotspot.clone(), old, new]).as_deref(), Some("u-old"));
+        assert_eq!(picked(&[hotspot]), None);
     }
 
     #[test]
