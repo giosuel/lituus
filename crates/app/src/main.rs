@@ -4723,4 +4723,60 @@ mod tests {
         mock_elapsed_time(Duration::from_millis(50));
         assert!(name_bottom() <= 18.0 + 136.0, "{}", name_bottom());
     }
+
+    /// A check box and a segmented control show the app's state, also after a click on them:
+    /// the page's Revert (or the Keep timeout) puts the old value back.
+    #[test]
+    fn a_clicked_check_box_and_segmented_still_follow_the_app() {
+        let window = window();
+        window.set_page("displays".into());
+        let shown =
+            || super::DisplaysView { state: "list".into(), sel_enabled: true, rotation: 0, ..Default::default() };
+        window.set_displays(shown());
+        let enabled = || control(&window, "Enabled", AccessibleRole::Checkbox);
+        let rotations = || {
+            control(&window, "Rotation", AccessibleRole::RadioGroup)
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::RadioButton)
+                .find_all()
+        };
+        let rotation = || rotations().iter().position(|e| e.accessible_checked() == Some(true));
+        assert_eq!((enabled().accessible_checked(), rotation()), (Some(true), Some(0)));
+        enabled().invoke_accessible_default_action();
+        rotations()[1].invoke_accessible_default_action();
+        // Revert: the app's state is as before, and it says so.
+        window.set_displays(super::DisplaysView { status: "No changes".into(), ..shown() });
+        assert_eq!(enabled().accessible_checked(), Some(true), "Enabled");
+        assert_eq!(rotation(), Some(0), "Rotation");
+    }
+
+    /// The same for a drop-down list, clicked with the mouse.
+    #[test]
+    fn a_clicked_select_still_follows_the_app() {
+        let window = window();
+        window.set_page("displays".into());
+        let strings = |v: &[&str]| super::model(v.iter().map(|&t| SharedString::from(t)).collect());
+        let shown = |scale| super::DisplaysView {
+            state: "list".into(),
+            scales: strings(&["100 %", "125 %", "150 %"]),
+            scale,
+            ..Default::default()
+        };
+        window.set_displays(shown(0));
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let seen = chosen.clone();
+        window.on_displays_act(move |verb, arg, _| seen.borrow_mut().push(format!("{verb} {arg}")));
+        let select = || control(&window, "Scale", AccessibleRole::Combobox);
+        assert_eq!(select().accessible_value().as_deref(), Some("100 %"));
+        let (at, size) = (select().absolute_position(), select().size());
+        click(&window, at.x + 20.0, at.y + size.height / 2.0);
+        mock_elapsed_time(Duration::from_millis(50));
+        // The list opens 4 px under the field, with 4 px of padding and 32 px per option: the second.
+        click(&window, at.x + 20.0, at.y + size.height + 4.0 + 4.0 + 32.0 + 16.0);
+        mock_elapsed_time(Duration::from_millis(50));
+        assert_eq!(*chosen.borrow(), ["scale 1"]);
+        // The 15 s ran out: Hyprland is back at 100 %, and the app says so.
+        window.set_displays(super::DisplaysView { status: "No changes".into(), ..shown(0) });
+        assert_eq!(select().accessible_value().as_deref(), Some("100 %"));
+    }
 }

@@ -639,7 +639,7 @@ export component MainWindow inherits Window {
                                         label: "Band";
                                         HorizontalLayout {
                                             alignment: start;
-                                            Segmented { options: ["Automatic", "2.4 GHz", "5 GHz"]; selected <=> root.hotspot-band; label: "Band"; height: 34px; }
+                                            Segmented { options: ["Automatic", "2.4 GHz", "5 GHz"]; selected: root.hotspot-band; label: "Band"; height: 34px; changed(i) => { root.hotspot-band = i; } }
                                         }
                                     }
                                     if root.hotspot-warning != "": Notice { tone: "warn"; text: root.hotspot-warning; dismissible: false; }

@@ -104,13 +104,16 @@ export component Segmented inherits Focusable {
     /// A second, smaller line under each option, if given (the Bluetooth audio choice).
     in property <[string]> details;
     in property <string> label;
-    in-out property <int> selected;
-    /// Also called when the user picks one (for a choice that isn't bound two-way).
+    /// The choice shown: the app's. A click doesn't change it, it calls `changed`, and the
+    /// caller sets what this is bound to, so the control always shows the app's state (as a
+    /// Switch does), also after a Revert or a choice the app turned down.
+    in property <int> selected;
+    /// The user picks one.
     callback changed(int);
     clickable: false;
     key(event) => {
-        if event.text == Key.LeftArrow && root.selected > 0 { root.selected -= 1; root.changed(root.selected); return accept; }
-        if event.text == Key.RightArrow && root.selected < root.options.length - 1 { root.selected += 1; root.changed(root.selected); return accept; }
+        if event.text == Key.LeftArrow && root.selected > 0 { root.changed(root.selected - 1); return accept; }
+        if event.text == Key.RightArrow && root.selected < root.options.length - 1 { root.changed(root.selected + 1); return accept; }
         // At either end, the arrow is used up all the same, rather than moving a list behind.
         if event.text == Key.LeftArrow || event.text == Key.RightArrow { return accept; }
         reject
@@ -135,7 +138,7 @@ export component Segmented inherits Focusable {
             accessible-label: option;
             accessible-checked: i == root.selected;
             accessible-enabled: root.enabled;
-            accessible-action-default => { if root.enabled { root.selected = i; root.changed(i); } }
+            accessible-action-default => { if root.enabled { root.changed(i); } }
             VerticalLayout {
                 alignment: center;
                 spacing: root.details.length > 0 ? 2px : 0;
@@ -158,7 +161,7 @@ export component Segmented inherits Focusable {
                 }
             }
             widest := Text { text: option; font-size: Type.body; font-weight: 500; visible: false; }
-            option-touch := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { root.selected = i; root.changed(i); } }
+            option-touch := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { root.changed(i); } }
         }
     }
 }
@@ -272,9 +275,10 @@ export component FormRow inherits HorizontalLayout {
 }
 
 /// A check box and its text; `label` names it for screen readers when it has no text (a column
-/// heading names it on the screen).
+/// heading names it on the screen). Like a Switch, it shows `checked` and a click only calls
+/// `toggled` with the new state: the caller sets what `checked` is bound to.
 export component CheckBox inherits Focusable {
-    in-out property <bool> checked;
+    in property <bool> checked;
     in property <string> text;
     in property <string> label: text;
     callback toggled(bool);
@@ -284,8 +288,8 @@ export component CheckBox inherits Focusable {
     accessible-label: label;
     accessible-checked: checked;
     accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { checked = !checked; toggled(checked); } }
-    activated => { root.checked = !root.checked; root.toggled(root.checked); }
+    accessible-action-default => { if root.enabled { root.toggled(!root.checked); } }
+    activated => { root.toggled(!root.checked); }
     HorizontalLayout {
         spacing: 10px;
         alignment: start;
@@ -313,7 +317,9 @@ export component Select inherits Focusable {
     /// A second, smaller line under each option, if given.
     in property <[string]> details;
     in property <string> label;
-    in-out property <int> selected;
+    /// The option shown: the app's. Picking one doesn't change it, it calls `chosen`, and the
+    /// caller sets what this is bound to (as with Segmented).
+    in property <int> selected;
     in property <length> select-height: Size.field-dialog;
     /// The user picked an option.
     callback chosen(int);
@@ -360,7 +366,6 @@ export component Select inherits Focusable {
                 if event.text == Key.DownArrow { root.highlighted = min(root.highlighted + 1, root.options.length - 1); return accept; }
                 if event.text == Key.UpArrow { root.highlighted = max(root.highlighted - 1, 0); return accept; }
                 if event.text == " " || event.text == Key.Return {
-                    root.selected = root.highlighted;
                     root.chosen(root.highlighted);
                     popup.close();
                     return accept;
@@ -393,7 +398,7 @@ export component Select inherits Focusable {
                         Text { text: option; color: Theme.text; font-size: Type.body; overflow: elide; }
                         if root.details.length > i: Text { text: root.details[i]; color: Theme.muted; font-size: Type.label; overflow: elide; }
                     }
-                    item := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; root.chosen(i); } }
+                    item := TouchArea { mouse-cursor: pointer; clicked => { root.chosen(i); } }
                 }
             }
         }
@@ -546,7 +551,7 @@ export component JoinDialog inherits Modal {
     if root.mode == "hidden": VerticalLayout {
         spacing: 6px;
         FieldLabel { text: "Security"; }
-        Select { options: root.securities; selected <=> root.security; label: "Security"; }
+        Select { options: root.securities; selected: root.security; label: "Security"; chosen(i) => { root.security = i; } }
     }
     if root.needs-password: VerticalLayout {
         spacing: 6px;
@@ -568,10 +573,10 @@ export component JoinDialog inherits Modal {
     if root.mode != "prompt" && root.needs-password: VerticalLayout {
         spacing: 8px;
         FieldLabel { text: "Remember the password"; }
-        Segmented { options: ["For me only", "All users", "Ask each time"]; selected <=> root.storage; label: "Remember the password"; }
+        Segmented { options: ["For me only", "All users", "Ask each time"]; selected: root.storage; label: "Remember the password"; changed(i) => { root.storage = i; } }
         Text { text: root.storage-hints[root.storage]; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
     }
-    if root.mode != "prompt": CheckBox { checked <=> root.autoconnect; text: "Connect automatically when in range"; }
+    if root.mode != "prompt": CheckBox { checked: root.autoconnect; text: "Connect automatically when in range"; toggled(on) => { root.autoconnect = on; } }
     DialogButtons {
         Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
         Button { label: "Connect"; kind: "primary"; button-height: Size.button-dialog; enabled: root.valid; clicked => { root.accepted(); } }
