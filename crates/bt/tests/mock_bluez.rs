@@ -316,3 +316,55 @@ async fn the_agent_passes_bluez_requests_on_and_answers_them() {
         "no request reached the app"
     );
 }
+
+/// A request with a burst of other messages right behind it (a scan's, say): the agent still
+/// gets it, and the connection still works. zbus queues 64 messages for the reader and then
+/// stops reading; the agent used to wait for BlueZ's owner there, and with 65 messages behind
+/// the request that answer never came (01-2). On one thread, so the whole burst is there before
+/// the agent reads the request.
+#[tokio::test]
+async fn a_request_in_a_burst_of_messages_is_still_answered() {
+    let Some(bus) = Bus::start(false).await else { return };
+    let bluez = zbus::connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .name(lituus_bt::BUS_NAME)
+        .unwrap()
+        .serve_at("/org/bluez", AgentManager::default())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let app = bus.connect().await;
+    let app_name = app.unique_name().unwrap().to_string();
+    let mut events = Client::new(app.clone()).register_agent().await.unwrap();
+
+    let device = OwnedObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_00_00_02").unwrap();
+    let request = zbus::Message::method_call(AGENT_PATH, "RequestConfirmation")
+        .unwrap()
+        .destination(app_name.as_str())
+        .unwrap()
+        .interface("org.bluez.Agent1")
+        .unwrap()
+        .build(&(device, 123_456u32))
+        .unwrap();
+    bluez.send(&request).await.unwrap();
+    for n in 0..200u32 {
+        let noise = zbus::Message::signal("/org/bluez/hci0", "org.bluez.Adapter1", "Noise")
+            .unwrap()
+            .destination(app_name.as_str())
+            .unwrap()
+            .build(&(n,))
+            .unwrap();
+        bluez.send(&noise).await.unwrap();
+    }
+    let asked = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
+    assert!(
+        matches!(asked, Ok(Some(AgentEvent::Ask(_)))),
+        "the request never reached the app: the agent's connection is stuck"
+    );
+    let answers = tokio::time::timeout(Duration::from_secs(5), async {
+        zbus::fdo::DBusProxy::new(&app).await.unwrap().get_id().await.unwrap()
+    })
+    .await;
+    assert!(answers.is_ok(), "calls on the agent's connection no longer return");
+}

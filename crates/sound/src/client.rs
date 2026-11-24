@@ -17,11 +17,22 @@ pub enum Error {
     #[error("PipeWire's PulseAudio service isn't running")]
     NotRunning,
     #[error("{0}")]
-    Protocol(#[from] protocol::ProtocolError),
+    Protocol(protocol::ProtocolError),
+    /// The connection broke (the server restarted, say), or the server didn't answer in time.
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("a name with a NUL in it")]
     Name,
+}
+
+impl From<protocol::ProtocolError> for Error {
+    /// The crate wraps the socket's errors in its own: they're a broken connection all the same.
+    fn from(error: protocol::ProtocolError) -> Self {
+        match error {
+            protocol::ProtocolError::Io(e) => Self::Io(e),
+            e => Self::Protocol(e),
+        }
+    }
 }
 
 /// One connection to the sound server.
@@ -55,6 +66,12 @@ impl Session {
         props.set(protocol::Prop::ApplicationName, c"Lituus");
         let _: protocol::SetClientNameReply = session.ask(Command::SetClientName(props))?;
         Ok(session)
+    }
+
+    /// A way to close this connection from another thread: a [`Self::watch`] waiting for events
+    /// on it then returns.
+    pub fn closer(&self) -> Result<Closer, Error> {
+        Ok(Closer(self.socket.get_ref().try_clone()?))
     }
 
     fn send(&mut self, command: Command) -> Result<(), Error> {
@@ -199,6 +216,15 @@ impl Session {
     }
 }
 
+/// Closes a [`Session`]'s connection; see [`Session::closer`].
+pub struct Closer(UnixStream);
+
+impl Closer {
+    pub fn close(&self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 fn cstring(s: &str) -> Result<CString, Error> {
     CString::new(s).map_err(|_| Error::Name)
 }
@@ -323,5 +349,82 @@ fn card(c: protocol::CardInfo) -> Card {
             })
             .collect(),
         active: c.active_profile.as_deref().map(lossy),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// pipewire-pulse on the other end of `server`: the handshake, then it goes (a restart).
+    fn handshake_then_gone(server: UnixStream) {
+        let v = protocol::MAX_VERSION;
+        let mut r = BufReader::new(server.try_clone().unwrap());
+        let mut w = server;
+        for _ in 0..2 {
+            let (seq, command) = protocol::read_command_message(&mut r, v).unwrap();
+            match command {
+                Command::Auth(_) => protocol::write_reply_message(
+                    &mut w,
+                    seq,
+                    &protocol::AuthReply { version: v, ..Default::default() },
+                    v,
+                )
+                .unwrap(),
+                _ => protocol::write_reply_message(&mut w, seq, &protocol::SetClientNameReply { client_id: 1 }, v)
+                    .unwrap(),
+            }
+        }
+    }
+
+    /// pipewire-pulse restarts: the next change finds the connection broken, and says so as an
+    /// I/O error, which makes the app connect again rather than drop the change as refused (04-7).
+    #[test]
+    fn a_dead_server_is_an_io_error() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let fake = std::thread::spawn(move || handshake_then_gone(server));
+        let mut s = Session::over(client, vec![0; 256]).unwrap();
+        fake.join().unwrap();
+        let e = s.set_sink_mute(0, true).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "a dead connection reads as {e:?}");
+    }
+
+    /// A watcher on a connection that's closed from elsewhere stops waiting (03-8).
+    #[test]
+    fn a_closed_watcher_returns() {
+        let (client, server) = UnixStream::pair().unwrap();
+        // The server stays: only the closer ends it.
+        let keep = server.try_clone().unwrap();
+        let fake = std::thread::spawn(move || {
+            let v = protocol::MAX_VERSION;
+            let mut r = BufReader::new(server.try_clone().unwrap());
+            let mut w = server;
+            while let Ok((seq, command)) = protocol::read_command_message(&mut r, v) {
+                let _ = match command {
+                    Command::Auth(_) => protocol::write_reply_message(
+                        &mut w,
+                        seq,
+                        &protocol::AuthReply { version: v, ..Default::default() },
+                        v,
+                    ),
+                    Command::SetClientName(_) => {
+                        protocol::write_reply_message(&mut w, seq, &protocol::SetClientNameReply { client_id: 1 }, v)
+                    }
+                    _ => protocol::write_ack_message(&mut w, seq),
+                };
+            }
+        });
+        let watcher = Session::over(client, vec![0; 256]).unwrap();
+        let closer = watcher.closer().unwrap();
+        let (done, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = watcher.watch(|| true);
+            let _ = done.send(());
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        closer.close();
+        assert!(returned.recv_timeout(Duration::from_secs(3)).is_ok(), "the watcher still waits");
+        drop(keep);
+        fake.join().unwrap();
     }
 }

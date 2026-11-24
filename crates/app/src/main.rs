@@ -274,6 +274,21 @@ fn main() -> Result<(), slint::PlatformError> {
         app.notifier = Some(notify::Notifier::spawn());
     });
     apply_settings(&window, settings);
+    // A bar started after Lituus (Hyprland starts both at once at login), or restarted: the tray
+    // icon it couldn't show at the start.
+    let weak = window.as_weak();
+    tray::watch_for_hosts(move || {
+        let _ = weak.upgrade_in_event_loop(|window| {
+            let (settings, missing) = APP.with(|app| {
+                let app = app.borrow();
+                (app.settings, app.tray.is_none())
+            });
+            if settings.tray && missing {
+                apply_settings(&window, settings);
+                render(&window);
+            }
+        });
+    });
     // Started from the bar for the popup: the window stays hidden, as in the background.
     let background = cli.background || cli.quick;
     window.window().on_close_requested(move || {
@@ -2091,6 +2106,15 @@ async fn tell_keyring(weak: slint::Weak<MainWindow>, keyrings: secrets::Keyrings
     });
 }
 
+/// Brings the window up for a question only the user can answer (a Wi-Fi password, pairing a
+/// device, a file a device sends). Started in the background, or closed to the tray, nobody would
+/// see it, and what's waiting for the answer gives up.
+fn show_for_question(window: &MainWindow) {
+    if !window.window().is_visible() {
+        let _ = window.show();
+    }
+}
+
 /// The secret agent's way to the password dialog.
 #[derive(Clone)]
 struct AgentUi(slint::Weak<MainWindow>);
@@ -2103,10 +2127,7 @@ impl secrets::Ui for AgentUi {
                 app.prompts.push_back(prompt);
                 next_prompt(&mut app);
             });
-            // Started in the background, or closed: the question needs the window.
-            if !window.window().is_visible() {
-                let _ = window.show();
-            }
+            show_for_question(&window);
             render(&window);
         });
     }
