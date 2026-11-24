@@ -272,14 +272,11 @@ component Field inherits VerticalLayout {
 }
 
 /// A field for a value from Rust: it shows `value` and follows it when it changes (after a
-/// drag, say), and hands what was typed to `commit` on Enter or when the focus leaves it.
-/// `pending` says it holds text not handed over yet.
+/// drag, say), as every TextField does, and hands what was typed to `commit` on Enter or when the
+/// focus leaves it. `pending` says it holds text not handed over yet.
 component Entry inherits TextField {
-    in property <string> value;
     out property <bool> pending: self.text != self.value;
     callback commit(string);
-    text: root.value;
-    changed value => { self.text = self.value; }
     height: 34px;
     mono: true;
     committed => { root.commit(self.text); }
@@ -564,6 +561,8 @@ export component DisplaysPage inherits VerticalLayout {
                                     min-width: 64px;
                                     changed pending => { scale-box.pending = self.pending; }
                                     value: root.view.scale-text;
+                                    // The selected monitor's: typing for one never reaches another.
+                                    item: root.view.sel-n;
                                     label: "Other scale";
                                     invalid: !root.view.scale-valid;
                                     commit(text) => { root.act("scale-text", text, 0); }
@@ -594,9 +593,9 @@ export component DisplaysPage inherits VerticalLayout {
                                 spacing: 8px;
                                 alignment: start;
                                 Text { text: "X"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
-                                x-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.x-text; label: "X"; invalid: root.view.x-bad; commit(text) => { root.act("x", text, 0); } }
+                                x-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.x-text; item: root.view.sel-n; label: "X"; invalid: root.view.x-bad; commit(text) => { root.act("x", text, 0); } }
                                 Text { text: "Y"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
-                                y-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.y-text; label: "Y"; invalid: root.view.y-bad; commit(text) => { root.act("y", text, 0); } }
+                                y-field := Entry { preferred-width: 96px; min-width: 64px; value: root.view.y-text; item: root.view.sel-n; label: "Y"; invalid: root.view.y-bad; commit(text) => { root.act("y", text, 0); } }
                             }
                         }
                         Field {

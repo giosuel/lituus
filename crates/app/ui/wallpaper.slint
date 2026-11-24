@@ -305,7 +305,7 @@ export component WallpaperPage inherits VerticalLayout {
                         width: parent.narrow ? 150px : 220px;
                         label: "Search pictures";
                         placeholder: "Search pictures";
-                        text: root.view.query;
+                        value: root.view.query;
                         edited => { root.act("query", self.text, 0); }
                     }
                     Select {
@@ -386,7 +386,7 @@ export component WallpaperPage inherits VerticalLayout {
                         mono: true;
                         label: "Bar colour";
                         enabled: root.view.bar-enabled;
-                        text: root.view.bar-colour;
+                        value: root.view.bar-colour;
                         committed => { root.act("bar", self.text, 0); }
                     }
                 }
@@ -478,7 +478,7 @@ export component WallpaperPage inherits VerticalLayout {
                         mono: true;
                         label: "Run after a change";
                         placeholder: "matugen image {file}";
-                        text: root.view.after;
+                        value: root.view.after;
                         committed => { root.act("after", self.text, 0); }
                     }
                     Text { text: root.view.after-note; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }

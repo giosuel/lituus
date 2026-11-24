@@ -4779,4 +4779,83 @@ mod tests {
         window.set_displays(super::DisplaysView { status: "No changes".into(), ..shown(0) });
         assert_eq!(select().accessible_value().as_deref(), Some("100 %"));
     }
+
+    fn text_field(window: &MainWindow, label: &str) -> ElementHandle {
+        control(window, label, AccessibleRole::TextInput)
+    }
+
+    /// The labels of an app's text fields in its details.
+    const APP_FIELDS: [&str; 5] = ["Name", "Description", "Command", "Search words", "Window class"];
+
+    fn an_app(id: &str, name: &str) -> super::AppsView {
+        super::AppsView {
+            state: "list".into(),
+            has_app: true,
+            id: id.into(),
+            title: name.into(),
+            name: name.into(),
+            comment: format!("{name}'s description").into(),
+            exec: format!("{id} %u").into(),
+            keywords: format!("{id}; words").into(),
+            wm_class: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn field_values(v: &super::AppsView) -> [SharedString; 5] {
+        [v.name.clone(), v.comment.clone(), v.exec.clone(), v.keywords.clone(), v.wm_class.clone()]
+    }
+
+    /// Each text field of an app's details shows the selected app's value, also after it was
+    /// typed in and saved.
+    #[test]
+    fn an_apps_field_follows_the_selected_app() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let mut stale = Vec::new();
+        for (i, label) in APP_FIELDS.into_iter().enumerate() {
+            window.set_apps(an_app("firefox", "Firefox"));
+            text_field(&window, label).mock_single_click(PointerEventButton::Left);
+            press(&window, "X");
+            press(&window, Key::Return);
+            let next = an_app("thunderbird", "Thunderbird");
+            window.set_apps(next.clone());
+            // The window's next turn.
+            mock_elapsed_time(Duration::ZERO);
+            let shown = text_field(&window, label).accessible_value().unwrap();
+            if shown != field_values(&next)[i] {
+                stale.push(format!("{label}: {shown:?}"));
+            }
+        }
+        assert!(stale.is_empty(), "fields still showing what was typed for Firefox: {stale:?}");
+    }
+
+    /// Text typed for one app and not yet saved isn't saved to the app selected next, even when
+    /// that app has the same text in the field (two apps without a window class, say).
+    #[test]
+    fn text_typed_for_one_app_isnt_saved_to_the_next() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        // As apps::act does: the change goes to the app selected at that moment.
+        window.on_apps_act(move |verb, arg| {
+            a.borrow_mut().push(format!("{verb} {arg:?} -> {}", w.unwrap().get_apps().id))
+        });
+        let twin = super::AppsView { id: "librewolf".into(), ..an_app("firefox", "Firefox") };
+        for next in [an_app("thunderbird", "Thunderbird"), twin] {
+            for label in APP_FIELDS {
+                window.set_apps(an_app("firefox", "Firefox"));
+                text_field(&window, label).mock_single_click(PointerEventButton::Left);
+                press(&window, "X");
+                // A click on the next app's row: the field keeps the focus. Then the focus leaves it.
+                window.set_apps(next.clone());
+                press(&window, Key::Tab);
+            }
+        }
+        let wrong: Vec<String> = acted.borrow().iter().filter(|a| !a.ends_with("-> firefox")).cloned().collect();
+        assert!(wrong.is_empty(), "saved to another app: {wrong:?}");
+    }
 }

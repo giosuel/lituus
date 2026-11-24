@@ -876,7 +876,7 @@ export component MainWindow inherits Window {
                                                 width: 300px;
                                                 mono: true;
                                                 label: c.name + " update command";
-                                                text: c.command;
+                                                value: c.command;
                                                 committed => { root.update-command(c.key, self.text); }
                                             }
                                             if c.default != "": VerticalLayout {
