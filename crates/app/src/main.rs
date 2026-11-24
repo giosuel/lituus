@@ -140,6 +140,8 @@ struct App {
     gradient: bool,
     /// Commands for the NetworkManager thread.
     commands: Option<tokio::sync::mpsc::UnboundedSender<view::Command>>,
+    /// For the NetworkManager thread too: the device whose "Received / sent" is on screen.
+    traffic: Option<tokio::sync::watch::Sender<Option<String>>>,
     /// The message above the list, and its tone ("danger", "warn", "info").
     message: Option<(String, &'static str)>,
     /// The confirmation dialog, while it's open.
@@ -305,8 +307,13 @@ fn main() -> Result<(), slint::PlatformError> {
     apply_theme(&window);
     render(&window);
     let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
-    APP.with(|app| app.borrow_mut().commands = Some(commands));
-    spawn_network_manager(window.as_weak(), receiver);
+    let (traffic, shown) = tokio::sync::watch::channel(None);
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.commands = Some(commands);
+        app.traffic = Some(traffic);
+    });
+    spawn_network_manager(window.as_weak(), receiver, shown);
     let (bt_commands, bt_receiver) = tokio::sync::mpsc::unbounded_channel();
     APP.with(|app| app.borrow_mut().bt.commands = Some(bt_commands));
     bluetooth::spawn(window.as_weak(), bt_receiver);
@@ -355,7 +362,9 @@ fn main() -> Result<(), slint::PlatformError> {
     } else if !background {
         window.show()?;
     }
-    slint::run_event_loop_until_quit()
+    let quit = slint::run_event_loop_until_quit();
+    stop_counting_traffic();
+    quit
 }
 
 /// What another start asked for (see instance.rs).
@@ -384,6 +393,64 @@ fn toggle_wifi_once() {
     if let Err(error) = result {
         eprintln!("lituus: couldn't switch Wi-Fi: {error}");
     }
+}
+
+/// The device whose traffic the details of row `id` show ("Received / sent"): the Wi-Fi device
+/// of the network it's connected to, or the device of a connection that's on.
+fn traffic_device(snap: &lituus_nm::Snapshot, id: &str) -> Option<String> {
+    if id.starts_with("wifi:") {
+        return snap.networks().into_iter().find_map(|(device, networks)| {
+            networks.iter().any(|n| n.active && view::network_id(n) == id).then_some(device)
+        });
+    }
+    let uuid = id.strip_prefix("conn:")?;
+    let active = snap.active.iter().find(|a| a.uuid == uuid && a.state == lituus_nm::ActiveState::Activated)?;
+    active.devices.first().cloned()
+}
+
+/// The device Lituus has NetworkManager count the traffic of, if any.
+static COUNTING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn counting() -> Option<String> {
+    COUNTING.lock().map(|c| c.clone()).unwrap_or_default()
+}
+
+fn set_counting(device: Option<String>) {
+    if let Ok(mut c) = COUNTING.lock() {
+        *c = device;
+    }
+}
+
+/// Has NetworkManager count the traffic of `wanted`, the device whose "Received / sent" is on
+/// screen, and stop counting the one before. Counted, a device's numbers change every 5 seconds,
+/// and each change is a whole new snapshot: only while someone looks at them. `snap`, a new
+/// snapshot, tells whether the device is still counted (NetworkManager may have started again).
+async fn follow_traffic(client: &lituus_nm::Client, wanted: Option<String>, snap: Option<&lituus_nm::Snapshot>) {
+    let before = counting();
+    let still = |d: &str| snap.is_none_or(|s| s.device(d).is_none_or(|d| d.traffic.is_some()));
+    if before == wanted && before.as_deref().is_none_or(still) {
+        return;
+    }
+    if let Some(device) = before.filter(|b| Some(b) != wanted.as_ref()) {
+        let _ = client.count_traffic(&device, 0).await;
+    }
+    let now = match wanted {
+        Some(device) => client.count_traffic(&device, 5000).await.ok().map(|()| device),
+        None => None,
+    };
+    set_counting(now);
+}
+
+/// Leaving: NetworkManager stops counting what Lituus had it count.
+fn stop_counting_traffic() {
+    let Some(device) = counting() else { return };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+    let _ = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            lituus_nm::Client::system().await?.count_traffic(&device, 0).await
+        })
+        .await
+    });
 }
 
 /// Starts or stops the tray as config.toml says.
@@ -1727,6 +1794,21 @@ fn render(window: &MainWindow) {
         window.set_wifi_available(v.wifi_available);
         let on_bluetooth = app.ui.page == view::Page::Bluetooth && window.window().is_visible();
         bluetooth::set_open(&mut app.bt, on_bluetooth);
+        // NetworkManager counts the traffic of the device whose details are on screen, and of no
+        // other (see `follow_traffic`).
+        let counted = app
+            .snapshot
+            .as_ref()
+            .zip(v.selected.as_deref())
+            .filter(|_| window.window().is_visible())
+            .and_then(|(snap, id)| traffic_device(snap, id));
+        if let Some(traffic) = &app.traffic {
+            traffic.send_if_modified(|device| {
+                let changed = *device != counted;
+                *device = counted;
+                changed
+            });
+        }
         // What files.rs has to tell goes in the Bluetooth page's message.
         if let Some(note) = app.files.note.take() {
             app.bt.message = Some(bluetooth::Message { title: String::new(), text: note, tone: "info", retry: None });
@@ -1970,10 +2052,12 @@ fn render_dialog(window: &MainWindow, app: &mut App) {
 }
 
 /// Watches NetworkManager on a tokio thread, hands every snapshot to the UI thread, runs the
-/// UI's commands (reporting their failures back), and answers the secret agent's requests.
+/// UI's commands (reporting their failures back), answers the secret agent's requests, and has
+/// the traffic of the device in `shown` counted.
 fn spawn_network_manager(
     weak: slint::Weak<MainWindow>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<view::Command>,
+    mut shown: tokio::sync::watch::Receiver<Option<String>>,
 ) {
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a tokio runtime");
@@ -1997,25 +2081,27 @@ fn spawn_network_manager(
                             None
                         }
                     };
-                    // Devices whose traffic is counted already.
-                    let mut counting = std::collections::HashSet::new();
                     loop {
                         tokio::select! {
                             snapshot = snapshots.next() => match snapshot {
                                 Some(snapshot) => {
-                                    // Count traffic on the devices in use, for "Received / sent".
-                                    if let Ok(snap) = &snapshot {
-                                        oc_paths = Arc::new(openconnect::paths(snap));
-                                        for d in snap.devices.iter().filter(|d| d.active_connection.is_some() && d.traffic.is_none()) {
-                                            if counting.insert(d.path.clone()) {
-                                                let _ = client.count_traffic(&d.path, 5000).await;
-                                            }
+                                    match &snapshot {
+                                        Ok(snap) => {
+                                            oc_paths = Arc::new(openconnect::paths(snap));
+                                            let wanted = shown.borrow().clone();
+                                            follow_traffic(&client, wanted, Some(snap)).await;
                                         }
+                                        // Its devices went with it.
+                                        Err(_) => set_counting(None),
                                     }
                                     deliver(&weak, snapshot)
                                 }
                                 None => break,
                             },
+                            Ok(()) = shown.changed() => {
+                                let wanted = shown.borrow_and_update().clone();
+                                follow_traffic(&client, wanted, None).await;
+                            }
                             Some(command) = commands.recv() => {
                                 let (client, weak, keyrings, sign_ins) = (client.clone(), weak.clone(), keyrings.clone(), sign_ins.clone());
                                 let vpns = Vpns { sign_ins, openconnect: oc_paths.clone() };
