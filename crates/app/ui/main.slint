@@ -705,14 +705,17 @@ export component MainWindow inherits Window {
                             width: self.preferred-width;
                             height: 34px;
                             spacing: 8px;
-                            if root.bt.state == "list": IconButton { icon: "rescan"; label: "Look for devices again"; size: 34px; clicked => { root.bt-act("rescan", ""); keys.focus(); } }
-                            if root.bt.state == "list": IconButton { icon: "gear"; label: "Adapter settings"; size: 34px; clicked => { root.bt-act("adapter", ""); } }
+                            // First: the time left makes it wider, and the row grows to the left,
+                            // so the buttons after it stay where they are.
                             if root.bt.state == "list": PillSwitch {
                                 label: "Visible";
                                 on: root.bt.visible;
                                 note: root.bt.visible-left;
                                 toggled => { root.bt-act("visible", ""); keys.focus(); }
                             }
+                            if root.bt.state == "list": IconButton { icon: "rescan"; label: "Look for devices again"; size: 34px; clicked => { root.bt-act("rescan", ""); keys.focus(); } }
+                            if root.bt.state == "list": IconButton { icon: "gear"; label: "Adapter settings"; size: 34px; clicked => { root.bt-act("adapter", ""); } }
+                            // Last, so it stays put when Bluetooth goes off and the rest go.
                             if root.bt.state == "list" || root.bt.state == "off": PillSwitch {
                                 label: "Bluetooth";
                                 on: root.bt.powered;
