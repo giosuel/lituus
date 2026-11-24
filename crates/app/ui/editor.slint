@@ -649,6 +649,7 @@ export component Editor inherits Rectangle {
         border-color: Theme.border;
         background: Theme.surface;
     keys := FocusScope {
+        focus-gained => { Focus.held = true; }
         key-pressed(event) => {
             if event.text == Key.Escape { root.back(); return accept; }
             reject
@@ -953,6 +954,7 @@ export component Editor inherits Rectangle {
                                     font-size: Type.body;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    changed has-focus => { if self.has-focus { Focus.held = true; } }
                                 }
                             }
                         }

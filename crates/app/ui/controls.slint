@@ -35,6 +35,21 @@ export global Focus {
         self.opener = 0;
         self.opener-key = "";
     }
+    /// Something has the keyboard focus: a control, a field, a dialog, a menu or the window's
+    /// keys. Slint drops the focus of a control that scrolls out of sight or is hidden without
+    /// giving it to anything; a control that loses it clears this, whatever takes it next sets it
+    /// again, and the window takes the focus back when nothing did (see MainWindow).
+    in-out property <bool> held: true;
+    /// The dialogs opened so far, and the request to the open one on top (the last opened) to
+    /// take the keyboard back: something in it went away with the focus, or the focus fell out
+    /// of it to the window.
+    in-out property <int> dialogs;
+    in-out property <int> dialog-requests;
+    in-out property <int> dialog-top;
+    public function to-dialog() {
+        self.dialog-top = 0;
+        self.dialog-requests += 1;
+    }
 }
 
 /// What every control the keyboard reaches is built on: Tab and Shift+Tab reach it, Space and
@@ -91,10 +106,13 @@ export component Focusable inherits Rectangle {
             Focus.back-key = "";
             Focus.on-control = true;
             Focus.answer = Focus.probe;
+            Focus.held = true;
         }
         focus-lost(reason) => {
             if reason != FocusReason.window-activation && Focus.key == root.focus-key { Focus.key = ""; }
             Focus.on-control = false;
+            // Away to another window it stays this control's.
+            if reason != FocusReason.window-activation { Focus.held = false; }
         }
         key-pressed(event) => {
             if root.key(event) == EventResult.accept { return accept; }
@@ -157,6 +175,7 @@ export component FocusTrap inherits Rectangle {
             focus-on-click: false;
             focus-on-tab-navigation: root.backward;
             focus-gained(reason) => {
+                Focus.held = true;
                 if reason == FocusReason.tab-navigation {
                     end.focus();
                     Focus.step(false);
@@ -170,6 +189,7 @@ export component FocusTrap inherits Rectangle {
             focus-on-click: false;
             focus-on-tab-navigation: !root.backward;
             focus-gained(reason) => {
+                Focus.held = true;
                 if reason == FocusReason.tab-navigation {
                     start.focus();
                     Focus.step(true);

@@ -5040,4 +5040,160 @@ mod tests {
         let last = *got.borrow().last().expect("the press moves it");
         assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
     }
+
+    /// The app picker of Default apps, open with Firefox in it; what it was asked to do. Like the
+    /// app, "Another app…" lists every app and leaves it open, Cancel closes it.
+    fn picker(window: &MainWindow) -> Rc<RefCell<Vec<String>>> {
+        window.set_page("default-apps".into());
+        let acted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (a, w) = (acted.clone(), window.as_weak());
+        window.on_default_apps_act(move |verb, _| {
+            a.borrow_mut().push(verb.to_string());
+            let w = w.unwrap();
+            let v = w.get_default_apps();
+            match verb.as_str() {
+                "picker-all" => w.set_default_apps(super::DefaultAppsView { picker_all: true, ..v }),
+                "picker-close" => w.set_default_apps(super::DefaultAppsView { picker_open: false, ..v }),
+                _ => {}
+            }
+        });
+        window.set_default_apps(picker_view());
+        mock_elapsed_time(Duration::ZERO);
+        acted
+    }
+
+    fn picker_view() -> super::DefaultAppsView {
+        let firefox = super::AppChoice { id: "firefox.desktop".into(), name: "Firefox".into(), ..Default::default() };
+        super::DefaultAppsView {
+            state: "list".into(),
+            picker_open: true,
+            picker_title: "Open web pages with".into(),
+            picker_apps: super::model(vec![firefox]),
+            ..Default::default()
+        }
+    }
+
+    /// Past the window's checks for a focus that went away (150 ms each).
+    fn wait_for_the_focus() {
+        for _ in 0..3 {
+            mock_elapsed_time(Duration::from_millis(200));
+        }
+    }
+
+    /// Esc closes the app picker as long as nothing was done in it.
+    #[test]
+    fn esc_closes_the_app_picker() {
+        let window = window();
+        let acted = picker(&window);
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// After "Another app…" (which goes away) the picker still has the keyboard: Esc closes it.
+    #[test]
+    fn the_app_picker_keeps_the_keyboard_after_another_app() {
+        let window = window();
+        let acted = picker(&window);
+        tab_to(&window, "Another app…");
+        press(&window, " ");
+        wait_for_the_focus();
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-all", "picker-close"]);
+    }
+
+    /// Nor does Tab leave it for the page behind then.
+    #[test]
+    fn tab_stays_in_the_app_picker_after_another_app() {
+        let window = window();
+        let _acted = picker(&window);
+        tab_to(&window, "Another app…");
+        press(&window, " ");
+        wait_for_the_focus();
+        for _ in 0..6 {
+            press(&window, Key::Tab);
+            assert!(ring_on(&window, "Firefox") || ring_on(&window, "Cancel"), "the focus is behind the dialog");
+        }
+    }
+
+    /// A render while a row of the picker has the focus (its rows are built again) leaves the
+    /// keyboard on that row.
+    #[test]
+    fn the_app_picker_keeps_the_keyboard_through_a_render() {
+        let window = window();
+        let acted = picker(&window);
+        tab_to(&window, "Firefox");
+        // default_apps::render builds the picker's apps afresh.
+        window.set_default_apps(picker_view());
+        wait_for_the_focus();
+        assert!(ring_on(&window, "Firefox"));
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// A dialog's button that a render takes away while it has the focus: the dialog keeps the
+    /// keyboard (Esc), and the page behind gets none of it.
+    #[test]
+    fn a_dialog_keeps_the_keyboard_when_its_focused_button_goes() {
+        let window = window();
+        let moved = Rc::new(RefCell::new(0));
+        let m = moved.clone();
+        window.on_move_selection(move |_| *m.borrow_mut() += 1);
+        let acted = picker(&window);
+        tab_to(&window, "Another app…");
+        // Gone with the next render, as after "Another app…".
+        window.set_default_apps(super::DefaultAppsView { picker_all: true, ..picker_view() });
+        wait_for_the_focus();
+        press(&window, Key::DownArrow);
+        assert_eq!(*moved.borrow(), 0, "↓ moved the list behind the dialog");
+        press(&window, Key::Escape);
+        assert_eq!(*acted.borrow(), ["picker-close"]);
+    }
+
+    /// When Slint drops the focus of a control that scrolls out of sight, the window takes it:
+    /// its keys (Ctrl K here) keep working.
+    #[test]
+    fn the_window_keeps_its_keys_when_the_focused_row_scrolls_away() {
+        let window = window();
+        window.set_page("wifi".into());
+        let section = super::Section { title: "AVAILABLE".into(), rows: super::model(wifi_rows(30, 0)) };
+        window.set_sections(super::model(vec![section]));
+        let opened = Rc::new(RefCell::new(0));
+        let o = opened.clone();
+        window.on_palette_open(move || *o.borrow_mut() += 1);
+        tab_to(&window, "Network 0, WPA2 · 5 GHz");
+        let row = ElementHandle::find_by_accessible_label(&window, "Network 3, WPA2 · 5 GHz").next().unwrap();
+        row.scroll(0.0, -3000.0);
+        // Slint drops the focus at the next pointer event.
+        window.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 400.0) });
+        assert!(!ring_on(&window, "Network 0, WPA2 · 5 GHz"), "the row didn't scroll away");
+        wait_for_the_focus();
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        press(&window, "k");
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        assert_eq!(*opened.borrow(), 1, "Ctrl K went nowhere");
+    }
+
+    /// Set up… (D-44) is a dialog like the others: Tab stays in it, and the focus goes back to
+    /// Set up… after it.
+    #[test]
+    fn the_setup_dialog_gives_the_focus_back_to_set_up() {
+        let window = window();
+        window.set_page("shortcuts".into());
+        window.set_shortcuts(super::ShortcutsView { state: "list".into(), not_loaded: true, ..Default::default() });
+        let w = window.as_weak();
+        window.global::<super::Setup>().on_open(move || w.unwrap().global::<super::Setup>().set_shown(true));
+        tab_to(&window, "Set up…");
+        press(&window, Key::Return);
+        assert!(window.global::<super::Setup>().get_shown());
+        tab_to(&window, "Not now");
+        for _ in 0..4 {
+            press(&window, Key::Tab);
+            assert!(ring_on(&window, "Not now") || ring_on(&window, "Add the line"), "the focus is behind the dialog");
+        }
+        tab_to(&window, "Not now");
+        press(&window, Key::Return);
+        assert!(!window.global::<super::Setup>().get_shown());
+        mock_elapsed_time(Duration::ZERO);
+        assert!(ring_on(&window, "Set up…"));
+    }
 }

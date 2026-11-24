@@ -4,7 +4,7 @@
 // comes from Rust (src/shortcuts.rs); everything done goes back through `act`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, Switch, SectionLabel, Notice, Scroll, Focusable } from "controls.slint";
+import { Button, Switch, SectionLabel, Notice, Scroll, Focusable, Focus } from "controls.slint";
 import { TextField, Select, CheckBox, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, EmptyState, LoadBanner } from "shell.slint";
 
@@ -349,6 +349,7 @@ component KeysBand inherits Rectangle {
                     // Every key goes here while it listens: Esc stops, Backspace clears.
                     capture := FocusScope {
                         init => { self.focus(); }
+                        focus-gained => { Focus.held = true; }
                         key-pressed(event) => {
                             if event.text == Key.Escape { root.act("d-stop", ""); return accept; }
                             if event.text == Key.Backspace && !event.modifiers.meta && !event.modifiers.control && !event.modifiers.alt { root.act("d-clear", ""); return accept; }

@@ -35,6 +35,7 @@ export component TextField inherits Rectangle {
     property <bool> typed;
     property <bool> focused: input.has-focus;
     changed focused => {
+        if self.focused { Focus.held = true; }
         if !self.focused && self.typed {
             self.typed = false;
             root.committed();
@@ -381,6 +382,7 @@ export component Select inherits Focusable {
         width: min(max(root.width, options-list.preferred-width), 480px);
         forward-focus: list-keys;
         list-keys := FocusScope {
+            focus-gained => { Focus.held = true; }
             key-pressed(event) => {
                 if event.text == Key.DownArrow { root.highlighted = min(root.highlighted + 1, root.options.length - 1); return accept; }
                 if event.text == Key.UpArrow { root.highlighted = max(root.highlighted - 1, 0); return accept; }
@@ -477,6 +479,16 @@ export component Modal inherits Rectangle {
     in property <length> card-padding: 24px;
     in property <string> label;
     callback dismissed();
+    // Its place among the dialogs opened: the window asks the one on top (the last opened) to take
+    // the keyboard back when the focus fell out of it (Focus.to-dialog).
+    property <int> order;
+    property <int> requests: Focus.dialog-requests;
+    changed requests => {
+        if root.order >= Focus.dialog-top {
+            Focus.dialog-top = root.order;
+            dialog-keys.focus();
+        }
+    }
     background: Theme.scrim;
     // The page underneath doesn't scroll with the wheel either.
     TouchArea {
@@ -501,10 +513,15 @@ export component Modal inherits Rectangle {
         // The dialog takes the keyboard (a field in it that asks for focus gets it after this),
         // so the page underneath gets no keys, and Esc from a field ends here: the window's own
         // keys never see it.
-        FocusScope {
-            init => { self.focus(); }
+        dialog-keys := FocusScope {
+            init => {
+                Focus.dialogs += 1;
+                root.order = Focus.dialogs;
+                self.focus();
+            }
             // Not a stop for Tab of its own: Shift+Tab from the first control goes round.
             focus-on-tab-navigation: false;
+            focus-gained => { Focus.held = true; }
             key-pressed(event) => {
                 if event.text == Key.Escape { root.dismissed(); return accept; }
                 reject

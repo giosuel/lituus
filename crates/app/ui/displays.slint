@@ -3,7 +3,7 @@
 // what's applied and saved. What it shows comes from Rust (src/displays.rs).
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, CardTitle, SectionLabel, FieldLabel, Scroll, Focusable } from "controls.slint";
+import { Button, IconButton, CardTitle, SectionLabel, FieldLabel, Scroll, Focusable, Focus } from "controls.slint";
 import { Segmented, ViewSwitcher, Tabs, Select, TextField, CheckBox, Modal , DialogTitle, DialogButtons} from "dialogs.slint";
 import { Hero, Card, ScrollCard, LoadBanner, EmptyState } from "shell.slint";
 import { Slider } from "sound.slint";
@@ -830,6 +830,7 @@ export component ConfigDialog inherits Modal {
                 font-size: Type.note;
                 font-family: "JetBrains Mono";
                 wrap: no-wrap;
+                changed has-focus => { if self.has-focus { Focus.held = true; } }
             }
         }
         ScrollBar {
