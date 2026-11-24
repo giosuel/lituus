@@ -103,6 +103,8 @@ jobs:
         run: desktop-file-validate packaging/linux/ch.giosuel.Lituus.desktop
       - name: appstreamcli validate
         run: appstreamcli validate --no-net packaging/linux/ch.giosuel.Lituus.metainfo.xml
+      - name: The release notes a tag message makes (scripts/set-version.sh)
+        run: scripts/set-version-test.sh
 
   nix:
     name: nix (flake)
