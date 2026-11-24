@@ -101,14 +101,18 @@ impl crate::Client {
 
         let (c, e) = (conn.clone(), events.clone());
         tokio::spawn(async move {
-            // BlueZ forgets its agents when it stops.
+            // BlueZ forgets its agents when it stops. The call goes on its own, so that this
+            // stream's queue is never left unread (see `serve`).
             while let Some(Ok(message)) = owners.next().await {
                 if e.is_closed() {
                     break;
                 }
                 let new_owner = message.body().deserialize::<(String, String, String)>().map(|(_, _, n)| n);
                 if new_owner.is_ok_and(|n| !n.is_empty()) {
-                    let _ = register(&c).await;
+                    let c = c.clone();
+                    tokio::spawn(async move {
+                        let _ = register(&c).await;
+                    });
                 }
             }
         });
@@ -172,6 +176,10 @@ const INTROSPECTION: &str = r#"<node>
   </interface>
 </node>"#;
 
+/// Reads every message the connection gets, and answers the agent's calls. It mustn't wait for
+/// another call's reply here: zbus queues 64 messages for this stream and then stops reading
+/// the connection, so with 65 behind a request, that reply would never come, and every call on
+/// the connection would wait for ever (01-2, found in `lituus-nm`'s agent).
 async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::UnboundedSender<AgentEvent>) {
     let dbus = DBusProxy::new(&conn).await.ok();
     while let Some(Ok(message)) = calls.next().await {
@@ -190,17 +198,17 @@ async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::Unbound
             let _ = conn.reply_error(&header, "org.freedesktop.DBus.Error.UnknownMethod", &("Unknown method",)).await;
             continue;
         }
-        let (conn, events) = (conn.clone(), events.clone());
-        // Only BlueZ may ask: anyone else could show a pairing dialog of their own making.
-        let from_bluez = match &dbus {
-            Some(dbus) => match dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await {
-                Ok(owner) => header.sender().is_some_and(|s| s.as_str() == owner.as_str()),
-                Err(_) => false,
-            },
-            None => false,
-        };
+        let (conn, events, dbus) = (conn.clone(), events.clone(), dbus.clone());
         tokio::spawn(async move {
             let header = message.header();
+            // Only BlueZ may ask: anyone else could show a pairing dialog of their own making.
+            let from_bluez = match &dbus {
+                Some(dbus) => match dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await {
+                    Ok(owner) => header.sender().is_some_and(|s| s.as_str() == owner.as_str()),
+                    Err(_) => false,
+                },
+                None => false,
+            };
             if !from_bluez {
                 let _ = conn.reply_error(&header, "org.bluez.Error.Rejected", &("Only BlueZ may ask",)).await;
                 return;
