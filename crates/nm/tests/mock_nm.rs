@@ -227,6 +227,21 @@ async fn watch_reports_changes() {
     assert!(after.networks()[0].1.iter().any(|n| n.name() == "Nachbar_5G"));
 }
 
+/// The mock announces every call it answers (`MethodCalled`). That isn't a change: a snapshot's
+/// own reads mustn't start the next one.
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_ignores_the_mocks_own_signals() {
+    let Some(bus) = Bus::start(true).await else { return };
+    home_setup(&bus).await;
+    let client = Client::new(bus.connect().await);
+    let mut snapshots = Box::pin(client.watch().await.unwrap());
+    snapshots.next().await.unwrap().unwrap();
+    // Reads, as another program would make them.
+    client.snapshot().await.unwrap();
+    let again = tokio::time::timeout(Duration::from_secs(1), snapshots.next()).await;
+    assert!(again.is_err(), "nothing changed, but the watch read everything again");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_network_manager_is_reported() {
     let Some(bus) = Bus::start(false).await else { return };

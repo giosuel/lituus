@@ -420,8 +420,7 @@ fn drive_of(root: &Path, dev: &str) -> String {
 pub fn drives(root: &Path, df: &str) -> Vec<Drive> {
     let mut drives: Vec<Drive> = Vec::new();
     for line in df.lines().skip(1) {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        let [source, kind, size, used, mount] = f[..] else { continue };
+        let Some([source, kind, size, used, mount]) = df_columns(line) else { continue };
         let Some(dev) = source.strip_prefix("/dev/") else { continue };
         // /dev/mapper/… (LUKS, LVM): its own name.
         let dev = dev.rsplit('/').next().unwrap_or(dev);
@@ -451,10 +450,26 @@ pub fn drives(root: &Path, df: &str) -> Vec<Drive> {
     drives
 }
 
-/// The file systems `drives` reads, from `df`.
+/// A line of `df`, in its five columns. The last, the mount point, may have spaces: udisks
+/// mounts a drive under its label ("/run/media/me/My Passport").
+fn df_columns(line: &str) -> Option<[&str; 5]> {
+    let mut columns = [""; 5];
+    let mut rest = line;
+    for column in &mut columns[..4] {
+        rest = rest.trim_start();
+        let end = rest.find(char::is_whitespace)?;
+        (*column, rest) = rest.split_at(end);
+    }
+    columns[4] = rest.trim_start();
+    (!columns[4].is_empty()).then_some(columns)
+}
+
+/// The file systems `drives` reads, from `df`. Only local ones (`-l`): `drives` has no use for
+/// the others, and asking a network share whose server is gone hangs.
 pub fn df() -> String {
     std::process::Command::new("df")
         .args([
+            "-l",
             "-B1",
             "--output=source,fstype,size,used,target",
             "-x",
@@ -666,6 +681,14 @@ mod tests {
         );
         assert_eq!(d[0].filesystems[0].mounts, ["/", "/home"]);
         assert_eq!(d[0].filesystems.len(), 2);
+        // A drive mounted under a label with spaces.
+        let df = "Filesystem Type 1B-blocks Used Mounted on\n\
+                  /dev/nvme0n1p2 btrfs 1999000000000 420000000000 /\n\
+                  /dev/sda1      exfat   64000000000           1000 /run/media/me/My  Passport\n";
+        let d = drives(&r, df);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert_eq!(d[1].filesystems[0].mounts, ["/run/media/me/My  Passport"]);
+        assert_eq!((d[1].filesystems[0].size, d[1].filesystems[0].used), (64000000000, 1000));
         assert_eq!(
             batteries(&r),
             [Battery {

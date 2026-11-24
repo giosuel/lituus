@@ -3,6 +3,8 @@
 //! System page's Update buttons run their commands in it.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::updates::Env;
 
@@ -180,6 +182,50 @@ pub fn script(commands: &[(String, String)]) -> String {
     s
 }
 
+/// [`script`], telling when it ends: it writes its process id to `marker` (made empty first, by
+/// [`new_marker`]) and removes the file at its end. Some terminals hand the command to a window
+/// that's open already and leave at once (xfce4-terminal, Ptyxis, a running wezterm), so the end
+/// of the terminal's process isn't the end of the update: [`wait_for`] waits for the script.
+pub fn marked_script(commands: &[(String, String)], marker: &Path) -> String {
+    format!(
+        "lituus_marker={}\necho $$ > \"$lituus_marker\"\ntrap 'rm -f \"$lituus_marker\"' EXIT\n{}",
+        quote(&marker.to_string_lossy()),
+        script(commands)
+    )
+}
+
+/// A new, empty marker file in `dir`, for [`marked_script`].
+pub fn new_marker(dir: &Path) -> std::io::Result<PathBuf> {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let path = dir.join(format!("lituus-update-{}-{}", std::process::id(), COUNT.fetch_add(1, Ordering::Relaxed)));
+    // Never one that's there already (another user's link, in /tmp).
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    Ok(path)
+}
+
+/// Waits for the script of `marker` (see [`marked_script`]) to end, then removes the marker: its
+/// last line removed it, or the process it names is gone (its window was closed under it). A
+/// script that hasn't started within `start` never will.
+pub fn wait_for(marker: &Path, start: Duration) {
+    let since = Instant::now();
+    loop {
+        match std::fs::read_to_string(marker) {
+            Ok(pid) if pid.trim().is_empty() => {
+                if since.elapsed() >= start {
+                    break;
+                }
+            }
+            Ok(pid) => match pid.trim().parse::<u32>() {
+                Ok(pid) if Path::new("/proc").join(pid.to_string()).exists() => {}
+                _ => break,
+            },
+            Err(_) => break,
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = std::fs::remove_file(marker);
+}
+
 /// A word for the shell, in single quotes.
 pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
@@ -249,5 +295,44 @@ mod tests {
         assert!(out.contains("ran") && !out.contains("no\n") && out.contains("Something went wrong"), "{out}");
         assert!(s.ends_with("read _\n"));
         assert_eq!(quote("it's"), r"'it'\''s'");
+    }
+
+    /// A terminal that hands the command to a window that's open already, and leaves at once:
+    /// the update ends with the script, not with the terminal's process.
+    #[test]
+    fn the_update_ends_with_its_script() {
+        let dir = std::env::temp_dir().join(format!("lituus-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let done = dir.join("done");
+        let marker = new_marker(&dir).unwrap();
+        let command = format!("sleep 0.6; touch {}", quote(&done.to_string_lossy()));
+        let script = marked_script(&[("test".into(), command)], &marker);
+        let start = Instant::now();
+        // The script on its own, in the background (with nothing to read, it doesn't wait for
+        // Enter); the "terminal" leaves at once.
+        let status = std::process::Command::new("sh")
+            .args(["-c", "sh -c \"$0\" </dev/null >/dev/null 2>&1 &", script.as_str()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        wait_for(&marker, Duration::from_secs(5));
+        assert!(done.exists(), "waited {:?}, but the update hadn't ended", start.elapsed());
+        assert!(!marker.exists());
+
+        // A script that's gone without its last line (its window closed), and one that never
+        // started.
+        let gone = new_marker(&dir).unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        std::fs::write(&gone, pid.to_string()).unwrap();
+        let start = Instant::now();
+        wait_for(&gone, Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_secs(2) && !gone.exists());
+        let never = new_marker(&dir).unwrap();
+        wait_for(&never, Duration::from_millis(300));
+        assert!(!never.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

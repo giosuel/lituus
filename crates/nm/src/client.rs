@@ -25,6 +25,8 @@ const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 /// How long the change signals have to go quiet before a new snapshot is taken. A scan or a
 /// connection attempt sends dozens of them in a burst.
 const QUIET: Duration = Duration::from_millis(120);
+/// The longest a burst of changes holds back the next snapshot.
+const BURST: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -127,6 +129,23 @@ impl Client {
     /// [`Error::NotRunning`], and continues once it's back.
     pub async fn watch(&self) -> Result<impl Stream<Item = Result<Snapshot, Error>> + Send + 'static, Error> {
         let from_nm = MatchRule::builder().msg_type(MessageType::Signal).sender(BUS_NAME)?.build();
+        // Only the signals that say something changed: NetworkManager's own, and the standard
+        // property and object-manager ones. Anything else under its name is left out:
+        // python-dbusmock sends `org.freedesktop.DBus.Mock.MethodCalled` for every call it
+        // answers, so each snapshot's reads would start the next one, for ever.
+        let changes = MessageStream::for_match_rule(from_nm, &self.conn, Some(1024)).await?.filter(|message| {
+            let change = match message {
+                Ok(m) => m.header().interface().is_some_and(|i| {
+                    let i = i.as_str();
+                    i == IFACE
+                        || i.starts_with("org.freedesktop.NetworkManager.")
+                        || i == "org.freedesktop.DBus.Properties"
+                        || i == "org.freedesktop.DBus.ObjectManager"
+                }),
+                Err(_) => true,
+            };
+            std::future::ready(change)
+        });
         let owner = MatchRule::builder()
             .msg_type(MessageType::Signal)
             .sender("org.freedesktop.DBus")?
@@ -134,18 +153,20 @@ impl Client {
             .member("NameOwnerChanged")?
             .arg(0, BUS_NAME)?
             .build();
-        let signals = stream::select(
-            MessageStream::for_match_rule(from_nm, &self.conn, Some(1024)).await?,
-            MessageStream::for_match_rule(owner, &self.conn, Some(16)).await?,
-        );
+        let signals = stream::select(changes, MessageStream::for_match_rule(owner, &self.conn, Some(16)).await?);
         let client = self.clone();
         Ok(stream::unfold((client, Box::pin(signals), true), |(client, mut signals, first)| async move {
             if !first {
-                // Wait for a change, then for the burst to end.
+                // Wait for a change, then for the burst to end, but no longer than BURST: changes
+                // that never pause (traffic counted on many devices) would hold back every
+                // snapshot.
                 // A message or a stream error alike means "look again"; the end means the
                 // connection is gone.
                 let _ = signals.next().await?;
-                while let Ok(Some(_)) = tokio::time::timeout(QUIET, signals.next()).await {}
+                let end = tokio::time::Instant::now() + BURST;
+                while tokio::time::Instant::now() < end
+                    && let Ok(Some(_)) = tokio::time::timeout(QUIET, signals.next()).await
+                {}
             }
             let snapshot = client.snapshot().await;
             Some((snapshot, (client, signals, false)))

@@ -494,7 +494,7 @@ pub fn view(state: &mut State) -> DefaultAppsView {
                 let k = kinds::kind(key).expect("a kind");
                 (
                     k.label.into(),
-                    format!("The apps that say they open {}.", k.label.to_lowercase()),
+                    picker_hint(k),
                     kinds::state(k, &d.files, &d.apps, &d.db).app,
                     kinds::offered(k, &d.apps),
                 )
@@ -531,6 +531,20 @@ pub fn render(window: &MainWindow, state: &mut State) {
     if window.get_page() == "default-apps" {
         window.set_default_apps(view(state));
     }
+}
+
+/// The line under a kind's app picker. A kind's label can name a role ("Web browser"), not what
+/// its apps open.
+fn picker_hint(kind: &Kind) -> String {
+    let what = match kind.key {
+        "browser" => "links and web pages".to_owned(),
+        "email" => "email links".to_owned(),
+        "files" => "folders".to_owned(),
+        "text" => "text files".to_owned(),
+        "documents" => "PDFs".to_owned(),
+        _ => kind.label.to_lowercase(),
+    };
+    format!("The apps that say they open {what}.")
 }
 
 #[cfg(test)]
@@ -608,5 +622,16 @@ mod tests {
         assert_eq!(v.media.row_data(0).unwrap().mixed, "");
         assert_eq!(v.types_title, "EXCEPTIONS · 0");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_picker_says_what_its_apps_open() {
+        let hint = |key| picker_hint(kinds::kind(key).unwrap());
+        assert_eq!(hint("browser"), "The apps that say they open links and web pages.");
+        assert_eq!(hint("text"), "The apps that say they open text files.");
+        assert_eq!(hint("documents"), "The apps that say they open PDFs.");
+        assert_eq!(hint("email"), "The apps that say they open email links.");
+        assert_eq!(hint("files"), "The apps that say they open folders.");
+        assert_eq!(hint("images"), "The apps that say they open images.");
     }
 }

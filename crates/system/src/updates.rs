@@ -256,20 +256,17 @@ pub fn count(env: &Env, found: &Found) -> Result<u32, String> {
                 }
             } else {
                 // Without pacman-contrib: as of the last sync.
-                let out = run("pacman", &["-Qu"])?;
-                if out.code == 0 || out.stdout.trim().is_empty() { Ok(lines(&out.stdout)) } else { Err(reason(&out)) }
+                query_count(&run("pacman", &["-Qu"])?)
             }
         }
-        Manager::Aur => {
-            let out = run(&found.program, &["-Qua"])?;
-            if out.code == 0 || out.stdout.trim().is_empty() { Ok(lines(&out.stdout)) } else { Err(reason(&out)) }
-        }
+        Manager::Aur => query_count(&run(&found.program, &["-Qua"])?),
         Manager::Dnf => {
             // 100: there are updates; 0: none.
             let out = run("dnf", &["check-update", "-q"])?;
             match out.code {
                 0 => Ok(0),
-                100 => Ok(dnf_count(&out.stdout)),
+                // At least one, though none could be read.
+                100 => Ok(dnf_count(&out.stdout).max(1)),
                 _ => Err(reason(&out)),
             }
         }
@@ -304,16 +301,33 @@ fn lines(text: &str) -> u32 {
     text.lines().filter(|l| !l.trim().is_empty()).count() as u32
 }
 
+/// `pacman -Qu` and `yay -Qua` / `paru -Qua`: a line per update. With nothing to update they end
+/// with 1 and say nothing, as when they failed, but then they say why on stderr ("error: …",
+/// "-> Error during AUR search: …" when the AUR can't be reached). Warnings alone aren't a failure.
+fn query_count(out: &Output) -> Result<u32, String> {
+    let failed = out.stderr.lines().any(|l| {
+        let l = l.to_lowercase();
+        l.contains("error") || l.contains("fail") || l.contains("unable")
+    });
+    if out.code == 0 || (out.stdout.trim().is_empty() && !failed) { Ok(lines(&out.stdout)) } else { Err(reason(out)) }
+}
+
 /// `dnf check-update`: a line per package ("name.arch  version  repo"), then perhaps
-/// "Obsoleting Packages" and what they replace, which aren't more updates.
+/// "Obsoleting Packages" and what they replace, which aren't more updates. dnf4 puts the version
+/// and repo of a name too long for its column on the next line.
 fn dnf_count(text: &str) -> u32 {
-    text.lines()
-        .take_while(|l| !l.starts_with("Obsoleting"))
-        .filter(|l| {
-            let words: Vec<&str> = l.split_whitespace().collect();
-            words.len() == 3 && words[0].contains('.')
-        })
-        .count() as u32
+    let mut count = 0;
+    let mut name_alone = false;
+    for line in text.lines().take_while(|l| !l.starts_with("Obsoleting")) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words[..] {
+            [name, _, _] if name.contains('.') => count += 1,
+            [_, _] if name_alone => count += 1,
+            _ => {}
+        }
+        name_alone = matches!(words[..], [name] if name.contains('.'));
+    }
+    count
 }
 
 /// `zypper list-updates`: a table whose rows start with "v |".
@@ -469,6 +483,10 @@ mod tests {
         let dnf = "\nfirefox.x86_64   146.0-1.fc43   updates\nkernel.x86_64  6.17.8-300.fc43  updates\n\
                    Obsoleting Packages\nfoo.noarch  1-1  updates\n    bar.noarch  0-1  @System\n";
         assert_eq!(dnf_count(dnf), 2);
+        // dnf4, with a name too long for its column.
+        let dnf = "\nfirefox.x86_64   146.0-1.fc43   updates\ngnome-shell-extension-appindicator.noarch\n\
+                   \x20                                         58-1.fc39   updates\n";
+        assert_eq!(dnf_count(dnf), 2);
         let zypper = "S | Repository | Name | Current Version | Available Version | Arch\n\
                       --+------------+------+-----------------+-------------------+-------\n\
                       v | repo-oss   | curl | 8.10            | 8.11              | x86_64\n\
@@ -485,5 +503,23 @@ mod tests {
         assert_eq!(apt_source(Some(now - day), now), "As of the package lists from yesterday");
         let out = Output { code: 1, stdout: String::new(), stderr: "==> ERROR: Cannot fetch updates\n".into() };
         assert_eq!(reason(&out), "Cannot fetch updates");
+    }
+
+    /// yay and paru end with 1 both when nothing is to be updated and when the AUR can't be
+    /// reached.
+    #[test]
+    fn an_aur_that_cant_be_reached_isnt_up_to_date() {
+        let out = |code, stdout: &str, stderr: &str| Output { code, stdout: stdout.into(), stderr: stderr.into() };
+        assert_eq!(query_count(&out(1, "", "")), Ok(0));
+        assert_eq!(query_count(&out(0, "foo 1-1 -> 1-2\nbar 2-1 -> 3-1\n", "")), Ok(2));
+        assert_eq!(
+            query_count(&out(1, "", "error: dial tcp: lookup aur.archlinux.org: no such host\n")),
+            Err("dial tcp: lookup aur.archlinux.org: no such host".into())
+        );
+        assert!(
+            query_count(&out(1, "", " -> Error during AUR search: Get \"https://aur.archlinux.org/rpc\"\n")).is_err()
+        );
+        // A warning isn't a failure.
+        assert_eq!(query_count(&out(1, "", "warning: foo: ignoring package upgrade (1-1 => 1-2)\n")), Ok(0));
     }
 }

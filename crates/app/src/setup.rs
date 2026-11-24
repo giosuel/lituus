@@ -28,7 +28,7 @@ fn open(weak: &slint::Weak<MainWindow>) {
             let setup = window.global::<Setup>();
             let main = file.main_path();
             let (comment, line) = file.load_lines();
-            setup.set_file(shorten_home(&main.display().to_string()).into());
+            setup.set_file(shorten_home(&main.display().to_string(), &home()).into());
             setup.set_comment(comment.into());
             setup.set_line(line.into());
             setup.set_backup(file.backup_path().file_name().unwrap_or_default().to_string_lossy().into_owned().into());
@@ -49,7 +49,7 @@ fn confirm(weak: &slint::Weak<MainWindow>) {
     let weak = weak.clone();
     std::thread::spawn(move || {
         let file = file();
-        let main = shorten_home(&file.main_path().display().to_string());
+        let main = shorten_home(&file.main_path().display().to_string(), &home());
         // Added once: after a reload that failed, Add the line only reloads again.
         let added = if file.loaded() { Ok(()) } else { file.add_load_line().map(|_| ()) };
         let done = added.map_err(|e| format!("Couldn't add it to {main}: {e}.")).and_then(|()| {
@@ -73,9 +73,35 @@ fn confirm(weak: &slint::Weak<MainWindow>) {
     });
 }
 
-fn shorten_home(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
+fn home() -> String {
+    std::env::var("HOME").unwrap_or_default()
+}
+
+/// "/home/me/.config/hypr/hyprland.lua" → "~/.config/hypr/hyprland.lua".
+fn shorten_home(path: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    match path.strip_prefix(home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => format!("~{rest}"),
         _ => path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_home_folder_is_a_tilde() {
+        assert_eq!(shorten_home("/home/me/.config/hypr/hyprland.lua", "/home/me"), "~/.config/hypr/hyprland.lua");
+        assert_eq!(shorten_home("/home/me/.config/hypr/hyprland.lua", "/home/me/"), "~/.config/hypr/hyprland.lua");
+        // Another folder whose name starts the same isn't in it.
+        assert_eq!(
+            shorten_home("/home/me2/.config/hypr/hyprland.lua", "/home/me"),
+            "/home/me2/.config/hypr/hyprland.lua"
+        );
+        assert_eq!(shorten_home("/etc/hypr/hyprland.conf", "/home/me"), "/etc/hypr/hyprland.conf");
+        // No home, or / as home: nothing to shorten.
+        assert_eq!(shorten_home("/home/me/x", ""), "/home/me/x");
+        assert_eq!(shorten_home("/home/me/x", "/"), "/home/me/x");
     }
 }

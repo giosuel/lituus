@@ -191,6 +191,21 @@ async fn power_and_discovery_show_up_in_the_watch() {
     until(&mut stream, |s| s.adapter().is_some_and(|a| a.alias == "work laptop")).await;
 }
 
+/// The mock announces every call it answers (`MethodCalled`). That isn't a change: a snapshot's
+/// own read mustn't start the next one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watch_ignores_the_mocks_own_signals() {
+    let Some(bus) = Bus::start(true).await else { return };
+    setup(&bus).await;
+    let client = Client::new(bus.connect().await);
+    let mut stream = Box::pin(client.watch().await.unwrap());
+    stream.next().await.unwrap().unwrap();
+    // A read, as another program would make it.
+    client.snapshot().await.unwrap();
+    let again = tokio::time::timeout(Duration::from_secs(1), stream.next()).await;
+    assert!(again.is_err(), "nothing changed, but the watch read everything again");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_is_paired_connected_trusted_renamed_and_forgotten() {
     let Some(bus) = Bus::start(true).await else { return };
