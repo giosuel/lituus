@@ -694,20 +694,16 @@ export component ShortcutsPage inherits VerticalLayout {
         title: "Shortcuts";
         sub: root.view.state == "list" ? root.view.sub : "";
         // Hyprland not running: only the title; the card says the rest.
-        hero-height: root.compact || root.view.state != "list" ? 136px : 206px;
+        hero-height: root.compact || (root.view.state != "list" && root.view.state != "loading") ? 136px : 206px;
         compact: root.compact;
-        aside: add.width;
+        aside: add.width + 18px;
         if root.view.state == "list": HeroSubject {
-            x: 24px;
-            y: parent.height - self.height - (root.compact ? 16px : 22px);
-            width: parent.width - 48px;
-            height: root.compact ? 56px : 96px;
             compact: root.compact;
             info: root.view.hero;
         }
         add := Button {
-            x: parent.width - self.width - 22px;
-            y: 22px;
+            x: parent.width - self.width - 18px;
+            y: 18px;
             width: root.view.state == "list" && root.view.editable ? self.preferred-width : 0;
             visible: root.view.state == "list" && root.view.editable;
             enabled: self.visible;

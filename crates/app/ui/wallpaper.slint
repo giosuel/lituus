@@ -241,7 +241,7 @@ export component WallpaperPage inherits VerticalLayout {
     Hero {
         title: "Wallpaper";
         sub: root.view.sub;
-        hero-height: root.compact || root.view.state != "list" ? 136px : 230px;
+        hero-height: root.compact || (root.view.state != "list" && root.view.state != "loading") ? 136px : 230px;
         compact: root.compact;
         picture-width: root.view.state == "list" ? layout.width + 24px : 0;
         // The monitors, where they are, each with its picture; a click sets which one a picture

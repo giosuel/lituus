@@ -3,7 +3,7 @@
 // the cards below it.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Logo, Spinner } from "icons.slint";
-import { Button, Switch, SectionLabel, Banner, Focusable, Scroll, Focus } from "controls.slint";
+import { Button, IconButton, Switch, SectionLabel, Banner, Focusable, Scroll, Focus } from "controls.slint";
 
 /// sub: a short status on the right ("Home", "2 on", "45%"), and `spoken`, the same as a screen
 /// reader says it ("2 connected"). open: an item showing its sub-items, on one of their pages.
@@ -342,29 +342,95 @@ export component Hero inherits Rectangle {
     @children
 }
 
-/// The subject of a hero, in its bottom left: a round icon, a name, and two lines.
-export component HeroSubject inherits HorizontalLayout {
+/// A grey bar where text will be, while a page reads (the One UI library's skeleton).
+export component SkeletonBar inherits Rectangle {
+    in property <length> bar-height: 10px;
+    height: bar-height;
+    border-radius: bar-height / 2;
+    background: Theme.text.transparentize(0.92);
+}
+
+/// Rows shaped like a list's, while a page reads: a tile and two lines each.
+export component Skeleton inherits VerticalLayout {
+    in property <int> rows: 6;
+    spacing: 0;
+    for i in root.rows: HorizontalLayout {
+        height: 52px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        Rectangle { width: 28px; height: 28px; y: (parent.height - self.height) / 2; border-radius: 8px; background: Theme.text.transparentize(0.92); }
+        VerticalLayout {
+            alignment: center;
+            spacing: 7px;
+            // Lengths that differ row by row, as names do.
+            HorizontalLayout { alignment: start; SkeletonBar { width: (150 + mod(i * 37, 110)) * 1px; bar-height: 11px; } }
+            HorizontalLayout { alignment: start; SkeletonBar { width: (90 + mod(i * 23, 80)) * 1px; bar-height: 9px; } }
+        }
+    }
+}
+
+/// The subject of a hero, in its bottom left, the same on every page (D-46): a round icon (or the
+/// page's logo, or a letter), the name (with a pencil after it when `editable`), a line and a
+/// monospaced line, and the page's own extra lines below them (its children). It places itself:
+/// 24 px from the left, its bottom 22 px above the hero's (16 px when compact), 96 px high (56).
+/// `aside`: room kept free on its right. `loading`: grey bars instead of the name and line.
+export component HeroSubject inherits Rectangle {
     in property <HeroInfo> info;
     /// A smaller circle, and no monospaced line.
     in property <bool> compact;
     in property <length> circle: compact ? 56px : 88px;
-    spacing: 20px;
-    alignment: start;
-    Rectangle {
-        width: root.circle;
-        height: root.circle;
-        y: parent.height - self.height;
-        border-radius: self.width / 2;
-        background: Theme.accent-soft-bg;
-        Icon { name: root.info.icon; tint: Theme.accent; size: root.circle * 0.48; stroke-width: 1.3px; }
-    }
-    VerticalLayout {
-        alignment: end;
-        spacing: 5px;
-        padding-bottom: 4px;
-        Text { text: root.info.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; }
-        if root.info.meta != "": Text { text: root.info.meta; color: Theme.tone(root.info.tone); font-size: Type.body; overflow: elide; }
-        if root.info.detail != "" && !root.compact: Text { text: root.info.detail; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
+    in property <image> logo;
+    in property <string> monogram;
+    in property <bool> loading;
+    in property <bool> editable;
+    in property <string> edit-label: "Rename";
+    in property <length> aside;
+    in property <length> subject-height: compact ? 56px : 96px;
+    callback edit();
+    // It fills the hero (an element outside a layout takes its parent's size) and places its
+    // row in it; it asks for no size itself, so the hero's size doesn't depend on its row.
+    min-width: 0px;
+    min-height: 0px;
+    preferred-width: 0px;
+    preferred-height: 0px;
+    HorizontalLayout {
+        x: 24px;
+        y: root.height - self.height - (root.compact ? 16px : 22px);
+        width: root.width - 48px - root.aside;
+        height: root.subject-height;
+        spacing: 20px;
+        alignment: start;
+        Rectangle {
+            width: root.circle;
+            height: root.circle;
+            y: parent.height - self.height;
+            border-radius: self.width / 2;
+            background: Theme.accent-soft-bg;
+            if root.logo.width == 0 && root.monogram == "": Icon { name: root.info.icon; tint: Theme.accent; size: root.circle * 0.48; stroke-width: 1.3px; }
+            if root.logo.width > 0: Image { width: parent.width * 0.55; height: self.width; source: root.logo; image-fit: contain; }
+            if root.logo.width == 0 && root.monogram != "": Text { text: root.monogram; color: Theme.accent; font-size: parent.width * 0.42; font-weight: 600; }
+        }
+        VerticalLayout {
+            alignment: end;
+            spacing: 5px;
+            padding-bottom: 4px;
+            horizontal-stretch: 1;
+            if root.loading: HorizontalLayout { alignment: start; SkeletonBar { width: 300px; bar-height: 18px; } }
+            if root.loading: HorizontalLayout { alignment: start; SkeletonBar { width: 220px; } }
+            if !root.loading: HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Text { text: root.info.name; color: Theme.text; font-size: Type.subject; font-weight: 600; overflow: elide; vertical-alignment: center; }
+                if root.editable: VerticalLayout {
+                    alignment: center;
+                    IconButton { icon: "pencil"; label: root.edit-label; size: 28px; icon-size: 15px; flat: true; clicked => { root.edit(); } }
+                }
+            }
+            if !root.loading && root.info.meta != "": Text { text: root.info.meta; color: Theme.tone(root.info.tone); font-size: Type.body; overflow: elide; }
+            if !root.loading && root.info.detail != "" && !root.compact: Text { text: root.info.detail; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; overflow: elide; }
+            @children
+        }
     }
 }
 
@@ -476,13 +542,21 @@ export component EmptyState inherits VerticalLayout {
     in property <string> action;
     callback copied();
     callback action-clicked();
-    alignment: center;
+    alignment: root.loading ? LayoutAlignment.stretch : LayoutAlignment.center;
     spacing: 14px;
     padding: 18px;
-    if root.loading: HorizontalLayout { alignment: center; Spinner { size: 20px; } }
+    // Reading: rows shaped like a list's, with what it reads as a label (D-46), rather than
+    // an empty card that looked stuck.
+    if root.loading: VerticalLayout {
+        vertical-stretch: 1;
+        spacing: 8px;
+        SectionLabel { text: root.title != "" ? root.title : "Reading…"; height: 26px; vertical-alignment: center; }
+        Skeleton { rows: 7; }
+        Rectangle { vertical-stretch: 1; }
+    }
     if !root.loading && root.icon != "": HorizontalLayout { alignment: center; Icon { name: root.icon; tint: Theme.faint; size: 44px; stroke-width: 1px; } }
-    Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
-    if root.text != "": HorizontalLayout {
+    if !root.loading: Text { text: root.title; color: Theme.text; font-size: Type.dialog-title; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+    if !root.loading && root.text != "": HorizontalLayout {
         alignment: center;
         Text { text: root.text; color: Theme.muted; font-size: Type.body; horizontal-alignment: center; wrap: word-wrap; max-width: 460px; }
     }

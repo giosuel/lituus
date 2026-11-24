@@ -450,10 +450,6 @@ export component MainWindow inherits Window {
                         compact: root.compact;
                         aside: net-tools.width + 18px;
                         if !network-hero.empty: HeroSubject {
-                            x: 24px;
-                            y: parent.height - self.height - (root.compact ? 16px : 22px);
-                            width: parent.width - 48px;
-                            height: root.compact ? 56px : 96px;
                             compact: root.compact;
                             info: root.net-hero;
                         }
@@ -699,10 +695,6 @@ export component MainWindow inherits Window {
                         compact: root.compact;
                         aside: bt-tools.width + 18px;
                         if root.bt.state == "list": HeroSubject {
-                            x: 24px;
-                            y: parent.height - self.height - (root.compact ? 16px : 22px);
-                            width: parent.width - 48px;
-                            height: root.compact ? 56px : 96px;
                             compact: root.compact;
                             info: root.bt.hero;
                         }
