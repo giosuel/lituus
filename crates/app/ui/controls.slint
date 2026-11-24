@@ -325,6 +325,12 @@ export component PillSwitch inherits Focusable {
     border-width: 1px;
     border-color: Theme.ctrl-border;
     background: self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
+    // The pill has the focus, so it's what a screen reader hears: the switch, with its state.
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checked: root.on;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
     activated => { root.toggled(); }
     pill := HorizontalLayout {
         padding-left: 12px;
@@ -332,16 +338,14 @@ export component PillSwitch inherits Focusable {
         spacing: 10px;
         Text { text: root.label; color: Theme.text; font-size: Type.body; vertical-alignment: center; }
         if root.note != "": Text { text: root.note; color: Theme.accent; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; }
-        // Only shows the state: the pill takes the clicks and the keyboard. A screen reader
-        // still switches it here.
+        // Only shows the state: the pill takes the clicks, the keyboard and the screen reader.
         Switch {
             on: root.on;
-            label: root.label;
             switch-width: 40px;
             enabled: false;
             shows-only: true;
+            accessible-role: none;
             y: (parent.height - self.height) / 2;
-            toggled => { root.toggled(); }
         }
     }
 }
@@ -601,6 +605,9 @@ export component Chip inherits Focusable {
     background: root.selected ? Theme.accent-soft-bg : self.has-hover ? Theme.hover : transparent;
     accessible-role: button;
     accessible-label: root.text;
+    // A filter (not a value to remove) is on or off, and says so to a screen reader too.
+    accessible-checkable: !root.removable;
+    accessible-checked: root.selected;
     accessible-action-default => { root.clicked(); }
     activated => { root.clicked(); }
     chip-row := HorizontalLayout {

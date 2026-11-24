@@ -3965,14 +3965,15 @@ mod tests {
         let bluetooth = switch("Bluetooth").expect("the Bluetooth switch");
         assert_eq!(visible.accessible_checked(), Some(true));
         assert!(visible.absolute_position().x < bluetooth.absolute_position().x);
+        // In the pill, after its label.
         let left = ElementHandle::find_by_accessible_label(&window, "2:41").next().expect("the time left");
-        assert!(left.absolute_position().x < visible.absolute_position().x);
+        let (at, size) = (visible.absolute_position(), visible.size());
+        assert!(at.x + 40.0 < left.absolute_position().x && left.absolute_position().x < at.x + size.width - 40.0);
         // The old card's chips are gone.
         assert_eq!(ElementHandle::find_by_accessible_label(&window, "Pairable").count(), 0);
 
-        // On the label, beside the switch itself.
-        let (at, size) = (visible.absolute_position(), visible.size());
-        let position = LogicalPosition::new(at.x - 60.0, at.y + size.height / 2.0);
+        // On the label, not the switch drawn in the pill.
+        let position = LogicalPosition::new(at.x + 20.0, at.y + size.height / 2.0);
         window.window().dispatch_event(WindowEvent::PointerMoved { position });
         window.window().dispatch_event(WindowEvent::PointerPressed { position, button: PointerEventButton::Left });
         window.window().dispatch_event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
@@ -4332,9 +4333,9 @@ mod tests {
             let switch = ElementHandle::find_by_accessible_label(&window, label)
                 .find(|e| e.accessible_role() == Some(AccessibleRole::Switch))
                 .expect(label);
-            // On the label, beside the switch itself.
+            // On the label, not the switch drawn in the pill.
             let (at, size) = (switch.absolute_position(), switch.size());
-            click(&window, at.x - 20.0, at.y + size.height / 2.0);
+            click(&window, at.x + 20.0, at.y + size.height / 2.0);
         }
         assert_eq!(*switched.borrow(), ["wifi", "hotspot"]);
 
@@ -5395,5 +5396,61 @@ mod tests {
         tab_to(&window, "firefox-esr");
         press(&window, Key::Return);
         assert_eq!(acted.borrow().last().unwrap(), "icon-pick firefox-esr");
+    }
+
+    /// The hero's pill switches are what a screen reader hears when they have the focus: a
+    /// switch with its name and state (the switch drawn in them is only a picture).
+    #[test]
+    fn a_pill_switch_is_announced_as_a_switch() {
+        let window = window();
+        let switched = Rc::new(RefCell::new(0));
+        let s = switched.clone();
+        window.on_wifi_switched(move || *s.borrow_mut() += 1);
+        window.set_wifi_available(true);
+        window.set_wifi_on(true);
+        let switches: Vec<ElementHandle> = ElementHandle::find_by_accessible_label(&window, "Wi-Fi")
+            .filter(|e| e.accessible_role() == Some(AccessibleRole::Switch))
+            .collect();
+        assert_eq!(switches.len(), 1, "one switch named Wi-Fi");
+        assert_eq!(switches[0].accessible_checked(), Some(true));
+        // Tab reaches that switch itself: the ring, 2 px around the control with the focus, is
+        // around it.
+        let (p, ps) = (switches[0].absolute_position(), switches[0].size());
+        let on_it = (0..60).any(|_| {
+            press(&window, Key::Tab);
+            ElementHandle::find_by_element_id(&window, "Focusable::ring").next().is_some_and(|ring| {
+                let (r, rs) = (ring.absolute_position(), ring.size());
+                (r.x + 4.0 - p.x).abs() < 0.5
+                    && (r.y + 4.0 - p.y).abs() < 0.5
+                    && (rs.width - ps.width - 8.0).abs() < 0.5
+            })
+        });
+        assert!(on_it, "the switch never had the focus");
+        switches[0].invoke_accessible_default_action();
+        assert_eq!(*switched.borrow(), 1);
+    }
+
+    /// Apps' filter chips say which one is on, to a screen reader too; a category is a value,
+    /// not a filter.
+    #[test]
+    fn a_filter_chip_says_whether_its_on() {
+        let window = window();
+        window.window().set_size(LogicalSize::new(2000.0, 1400.0));
+        window.set_page("apps".into());
+        let filter = |id: &str, label: &str, selected: bool| super::AppFilter {
+            id: id.into(),
+            label: label.into(),
+            selected,
+            ..Default::default()
+        };
+        window.set_apps(super::AppsView {
+            filters: super::model(vec![filter("all", "All", false), filter("changed", "Changed", true)]),
+            category_lines: super::model(vec![super::ChipLine { items: super::model(vec!["Graphics".into()]) }]),
+            ..an_app("blender", "Blender")
+        });
+        let chip = |label: &str| control(&window, label, AccessibleRole::Button);
+        assert_eq!((chip("All").accessible_checkable(), chip("All").accessible_checked()), (Some(true), Some(false)));
+        assert_eq!(chip("Changed").accessible_checked(), Some(true));
+        assert_eq!(chip("Graphics").accessible_checkable(), Some(false));
     }
 }
