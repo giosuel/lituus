@@ -228,6 +228,24 @@ impl Palette {
         palette.readable().then_some(palette)
     }
 
+    /// From the wallpaper's colours (matugen's roles): only the accent. The surfaces, text and
+    /// edges are the built-in neutral greys, Teal dark's or Mono light's (the owner, 2026-11-23,
+    /// D-45: "can we make it so the wallpaper only influences the accent colors, kinda like our
+    /// own themes do?"); the containers are the accent mixed into the surface, as the built-in
+    /// dark themes' are.
+    pub fn from_wallpaper(roles: &HashMap<String, String>) -> Option<Self> {
+        let role = |name: &str| roles.get(name).and_then(|hex| Rgb::parse(hex));
+        let dark = role("surface")?.luminance() < 0.2;
+        let mut p = Self::builtin(if dark { Builtin::Teal } else { Builtin::Mono }, dark);
+        let primary = role("primary")?;
+        p.accent = primary;
+        p.on_accent = role("on_primary")?;
+        p.accent_soft_border = mix(p.bg, primary, 0.3);
+        p.accent_soft_bg = mix(p.bg, primary, 0.12);
+        p.glow = mix(p.surface, p.accent_soft_border, if dark { 0.45 } else { 0.85 });
+        p.readable().then_some(p)
+    }
+
     fn readable(&self) -> bool {
         [self.bg, self.panel, self.surface].iter().all(|&bg| self.text.contrast(bg) >= 4.5)
             && self.on_accent.contrast(self.accent) >= 4.5
@@ -266,7 +284,7 @@ pub fn read_source(path: &Path) -> SourceStatus {
     };
     let roles: HashMap<String, String> =
         roles.into_iter().filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_owned()))).collect();
-    Palette::from_material(&roles).map_or(SourceStatus::Unusable, SourceStatus::Used)
+    Palette::from_wallpaper(&roles).map_or(SourceStatus::Unusable, SourceStatus::Used)
 }
 
 /// Each source's status, in order, and the palette of the first usable one; `None` (the
@@ -325,6 +343,27 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect()
+    }
+
+    /// A wallpaper with strongly tinted surfaces gives only its accent; the rest is neutral.
+    #[test]
+    fn the_wallpaper_gives_only_the_accent() {
+        let mut roles = blue();
+        roles.insert("surface".into(), "#1a1030".into());
+        roles.insert("surface_container".into(), "#2a1850".into());
+        roles.insert("on_surface".into(), "#efe6ff".into());
+        let p = Palette::from_wallpaper(&roles).unwrap();
+        let teal = Palette::builtin(Builtin::Teal, true);
+        assert_eq!((p.bg, p.surface, p.text, p.muted), (teal.bg, teal.surface, teal.text, teal.muted));
+        assert_eq!((p.accent, p.on_accent), (Rgb::parse("#9ecafc").unwrap(), Rgb::parse("#003256").unwrap()));
+        assert_ne!(p.accent_soft_bg, teal.accent_soft_bg);
+        // A light wallpaper scheme: Mono light's greys.
+        let mut light = roles.clone();
+        light.insert("surface".into(), "#fdf7ff".into());
+        light.insert("primary".into(), "#6b4fa0".into());
+        light.insert("on_primary".into(), "#ffffff".into());
+        let p = Palette::from_wallpaper(&light).unwrap();
+        assert_eq!(p.bg, Palette::builtin(Builtin::Mono, false).bg);
     }
 
     #[test]
