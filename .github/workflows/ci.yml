@@ -135,10 +135,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      # bash for pipefail: under sh a missing Hyprland would pass as head's success.
       - name: Hyprland version
+        shell: bash
         run: Hyprland --version | head -1
       - name: test lituus-hypr
         run: cargo test --locked -p lituus-hypr
+        env:
+          LITUUS_REQUIRE_HYPRLAND: 1
 
   ci-result:
     name: CI result
