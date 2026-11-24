@@ -797,6 +797,8 @@ pub fn render(window: &MainWindow, app: &mut App) {
             phase2: strings(editor::PHASE2.iter().map(|(_, l)| *l)),
             wg_public_key: "".into(),
             wg_shown_key: "".into(),
+            password_saved: false,
+            eap_password_saved: false,
             ovpn_auth: strings(crate::openvpn::AUTH.iter().map(|(_, l)| *l)),
             ovpn_tls_modes: strings(crate::openvpn::TLS_KEY_MODES.iter().map(|(_, l)| *l)),
             ovpn_compression: strings(crate::openvpn::COMPRESSION.iter().map(|(_, l)| *l)),
@@ -819,6 +821,9 @@ pub fn render(window: &MainWindow, app: &mut App) {
     let public = typed.or_else(|| state.wg_key.as_deref().and_then(crate::wireguard::public_key)).unwrap_or_default();
     options.wg_public_key = public.into();
     options.wg_shown_key = if state.wg_shown { state.wg_key.clone().unwrap_or_default().into() } else { "".into() };
+    // "Saved; type to change it" only when it is.
+    options.password_saved = editor::saved_password(state.initial.as_ref(), &state.form);
+    options.eap_password_saved = editor::saved_eap_password(state.kind, state.initial.as_ref(), &state.form);
     // The ports, and the devices the add-port dialog offers.
     let v = &state.form.virt;
     options.ports = model(

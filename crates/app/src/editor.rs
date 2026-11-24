@@ -838,10 +838,7 @@ fn check_eap(kind: Kind, initial: Option<&Form>, f: &Form, e: &mut Errors) {
     }
     let tls = EAP_METHODS[x.method].0 == "tls";
     // A password is needed unless one is saved already for the same way of signing in.
-    let had = initial.is_some_and(|i| {
-        let was_enterprise = if kind == Kind::Wifi { i.security >= 5 } else { i.eap.enabled };
-        was_enterprise && i.eap.method == x.method
-    });
+    let had = saved_eap_password(kind, initial, f);
     let secret = if tls { &x.key_password } else { &x.password };
     if secret.is_empty() && !had && x.storage != 2 && !tls {
         e.eap_secret = "Type the password.".into();
@@ -902,9 +899,23 @@ fn check_wg(initial: Option<&Form>, w: &WgForm, e: &mut Errors) {
     }
 }
 
+/// Whether the Wi-Fi password is saved already, so an empty field keeps it: the connection had
+/// the same kind of security when it was read, with its password kept (not asked each time).
+pub fn saved_password(initial: Option<&Form>, f: &Form) -> bool {
+    initial.is_some_and(|i| i.security == f.security && matches!(i.security, 2..=4) && i.storage != 2)
+}
+
+/// The same for the 802.1X password: saved for the same way of signing in.
+pub fn saved_eap_password(kind: Kind, initial: Option<&Form>, f: &Form) -> bool {
+    initial.is_some_and(|i| {
+        let was_enterprise = if kind == Kind::Wifi { i.security >= 5 } else { i.eap.enabled };
+        was_enterprise && i.eap.method == f.eap.method && i.eap.storage != 2
+    })
+}
+
 fn check_password(initial: Option<&Form>, f: &Form) -> String {
     let needs = matches!(f.security, 2..=4);
-    let had_one = initial.is_some_and(|i| i.security == f.security && matches!(i.security, 2..=4));
+    let had_one = saved_password(initial, f);
     if !needs || (f.password.is_empty() && (had_one || f.storage == 2)) {
         return String::new();
     }
@@ -1636,6 +1647,26 @@ mod tests {
         assert_eq!(read(&s).1.ip6, f.ip6);
         f.ip6.routes[0].prefix = "200".into();
         assert_eq!(check(kind, None, &f).ip6.routes, "The prefix of fd00:: is from 0 to 128.");
+    }
+
+    /// "Saved; type to change it" only where the check counts a password as saved.
+    #[test]
+    fn a_password_is_saved_only_for_the_same_security() {
+        let original = home();
+        let (kind, initial) = read(&original);
+        assert!(saved_password(Some(&initial), &initial));
+        assert!(!saved_password(None, &initial));
+        let open = Form { security: 0, ..initial.clone() };
+        assert!(!saved_password(Some(&open), &initial), "an open network had none");
+        let wpa3 = Form { security: 4, ..initial.clone() };
+        assert!(!saved_password(Some(&initial), &wpa3));
+        assert_eq!(check(kind, Some(&initial), &wpa3).password, "Type the network's password.");
+        let asked = Form { storage: 2, ..initial.clone() };
+        assert!(!saved_password(Some(&asked), &initial), "asked each time: nothing saved");
+        let eduroam = enterprise_settings(b"eduroam", false, "u-1");
+        let (kind, initial) = read(&eduroam);
+        assert!(saved_eap_password(kind, Some(&initial), &initial));
+        assert!(!saved_eap_password(kind, None, &initial));
     }
 
     /// A TTLS connection set up with an inner EAP method (by nm-connection-editor or an eduroam

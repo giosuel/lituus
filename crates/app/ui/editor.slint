@@ -207,6 +207,9 @@ export struct EditorOptions {
     /// pressed.
     wg-public-key: string,
     wg-shown-key: string,
+    /// A Wi-Fi or 802.1X password is saved already: an empty field keeps it.
+    password-saved: bool,
+    eap-password-saved: bool,
     ovpn-auth: [string],
     ovpn-tls-modes: [string],
     ovpn-compression: [string],
@@ -357,7 +360,7 @@ component EapPage inherits VerticalLayout {
     }
     if !root.tls: FormRow {
         label: "Password";
-        HorizontalLayout { alignment: start; TextField { text <=> root.eap.password; password: true; width: 360px; label: "Password"; placeholder: root.new ? "" : "Saved; type to change it"; invalid: root.errors.eap-secret != ""; } }
+        HorizontalLayout { alignment: start; TextField { text <=> root.eap.password; password: true; width: 360px; label: "Password"; placeholder: root.options.eap-password-saved ? "Saved; type to change it" : ""; invalid: root.errors.eap-secret != ""; } }
         if root.errors.eap-secret != "": Error { text: root.errors.eap-secret; }
         Storage { storage <=> root.eap.storage; keyring: root.options.keyring; }
     }
@@ -825,7 +828,7 @@ export component Editor inherits Rectangle {
                             password: true;
                             width: 360px;
                             label: "Password";
-                            placeholder: root.new ? "" : "Saved; type to change it";
+                            placeholder: root.options.password-saved ? "Saved; type to change it" : "";
                             invalid: root.errors.password != "";
                         } }
                         if root.errors.password != "": Error { text: root.errors.password; }
