@@ -538,3 +538,68 @@ async fn settings_round_trip() {
     client.save_hostname("thinkpad-x1").await.unwrap();
     assert_eq!(client.snapshot().await.unwrap().hostname, "thinkpad-x1");
 }
+
+/// A request with a burst of other messages right behind it, as during a snapshot: the agent's
+/// stream holds 64, and while it waited for a reply of its own behind them, the connection was
+/// stuck for good.
+#[tokio::test]
+async fn a_request_in_a_burst_of_messages_is_still_answered() {
+    use lituus_nm::AgentEvent;
+    let Some(bus) = Bus::start(true).await else { return };
+    let _: () = bus
+        .mock(
+            "AddObject",
+            &(
+                "/org/freedesktop/NetworkManager/AgentManager",
+                "org.freedesktop.NetworkManager.AgentManager",
+                std::collections::HashMap::<String, zbus::zvariant::Value>::new(),
+                vec![("RegisterWithCapabilities", "su", "", "")],
+            ),
+        )
+        .await;
+    // 200 ms after the call returns: GetSecrets (sent as NetworkManager does, without introspecting
+    // first), then 200 signals, straight to the agent.
+    let burst = r#"
+import dbus, dbus.lowlevel
+from gi.repository import GLib
+def burst(connection=self.connection, name=args[0], dbus=dbus):
+    call = dbus.lowlevel.MethodCallMessage(name, '/org/freedesktop/NetworkManager/SecretAgent',
+        'org.freedesktop.NetworkManager.SecretAgent', 'GetSecrets')
+    settings = {'connection': {'id': 'x', 'uuid': 'u', 'type': '802-11-wireless'}}
+    call.append(dbus.Dictionary(settings, signature='sa{sv}'),
+        dbus.ObjectPath('/org/freedesktop/NetworkManager/Settings/9'),
+        '802-11-wireless-security', dbus.Array([], signature='s'), dbus.UInt32(1), signature='a{sa{sv}}osasu')
+    connection.send_message(call)
+    for i in range(200):
+        signal = dbus.lowlevel.SignalMessage('/org/freedesktop/NetworkManager',
+            'org.freedesktop.NetworkManager', 'StateChanged')
+        signal.append(dbus.UInt32(i))
+        signal.set_destination(name)
+        connection.send_message(signal)
+    connection.flush()
+    return False
+GLib.timeout_add(200, burst)
+"#;
+    let _: () = bus.mock("AddMethod", &("org.freedesktop.DBus.Mock.Test", "Burst", "s", "", burst)).await;
+    let agent_conn = bus.connect().await;
+    let agent_name = agent_conn.unique_name().unwrap().to_string();
+    let client = Client::new(agent_conn);
+    let mut events = client.register_agent("ch.giosuel.Lituus").await.expect("registered");
+    let caller = bus.connect().await;
+    caller
+        .call_method(
+            Some(lituus_nm::BUS_NAME),
+            MANAGER,
+            Some("org.freedesktop.DBus.Mock.Test"),
+            "Burst",
+            &(agent_name,),
+        )
+        .await
+        .unwrap();
+    // The thread is busy (with a snapshot, say) while the burst arrives.
+    std::thread::sleep(Duration::from_millis(700));
+    let request = tokio::time::timeout(Duration::from_secs(3), events.recv()).await;
+    assert!(matches!(request, Ok(Some(AgentEvent::GetSecrets(_)))), "the agent's connection is stuck");
+    let snapshot = tokio::time::timeout(Duration::from_secs(3), client.snapshot()).await;
+    assert!(snapshot.is_ok_and(|s| s.is_ok()), "NetworkManager's answers no longer arrive");
+}

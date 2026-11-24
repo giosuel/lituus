@@ -7,6 +7,7 @@
 //! so that a request waiting for the user doesn't hold up `CancelGetSecrets` and the others.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
@@ -204,7 +205,6 @@ impl crate::Client {
     pub async fn register_agent(&self, identifier: &str) -> Result<mpsc::UnboundedReceiver<AgentEvent>, Error> {
         let conn = self.connection().clone();
         let (events, receiver) = mpsc::unbounded_channel();
-        let calls = MessageStream::from(&conn);
         let owner_rule = MatchRule::builder()
             .msg_type(MessageType::Signal)
             .sender("org.freedesktop.DBus")?
@@ -213,23 +213,31 @@ impl crate::Client {
             .arg(0, BUS_NAME)?
             .build();
         let mut owners = MessageStream::for_match_rule(owner_rule, &conn, Some(16)).await?;
+        // NetworkManager's unique name, the only caller the agent answers: read once, before the
+        // stream of calls exists, and then kept current from `owners` (see `serve`).
+        let dbus = DBusProxy::new(&conn).await?;
+        let owner = dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await.ok();
+        let owner = Arc::new(Mutex::new(owner.map(|o| o.to_string())));
+        // Read from now on, so no call is missed; and drained from now on, so the registration's
+        // own reply can't get stuck behind it.
+        tokio::spawn(serve(conn.clone(), MessageStream::from(&conn), events.clone(), owner.clone()));
         register(&conn, identifier).await?;
 
         let identifier = identifier.to_owned();
-        let (c, e) = (conn.clone(), events.clone());
+        let (c, e) = (conn, events);
         tokio::spawn(async move {
             // NetworkManager forgets its agents when it stops.
             while let Some(Ok(message)) = owners.next().await {
                 if e.is_closed() {
                     break;
                 }
-                let new_owner = message.body().deserialize::<(String, String, String)>().map(|(_, _, n)| n);
-                if new_owner.is_ok_and(|n| !n.is_empty()) {
+                let Ok((_, _, new_owner)) = message.body().deserialize::<(String, String, String)>() else { continue };
+                *owner.lock().expect("never poisoned") = Some(new_owner.clone()).filter(|n| !n.is_empty());
+                if !new_owner.is_empty() {
                     let _ = register(&c, &identifier).await;
                 }
             }
         });
-        tokio::spawn(serve(conn, calls, events));
         Ok(receiver)
     }
 }
@@ -273,8 +281,17 @@ const INTROSPECTION: &str = r#"<node>
   </interface>
 </node>"#;
 
-async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::UnboundedSender<AgentEvent>) {
-    let dbus = DBusProxy::new(&conn).await.ok();
+/// Answers the calls to the agent. It reads the connection's unfiltered stream, which gets every
+/// message (replies and signals too) and holds 64: while it's full, zbus reads nothing more off
+/// the connection. So this loop never waits for the reply to a call of its own, which could be
+/// stuck behind those 64 (a snapshot's answers, a burst of signals) with nothing left to drain
+/// them: the whole Network page would hang. It only sends replies, and hands the rest to tasks.
+async fn serve(
+    conn: Connection,
+    mut calls: MessageStream,
+    events: mpsc::UnboundedSender<AgentEvent>,
+    owner: Arc<Mutex<Option<String>>>,
+) {
     while let Some(Ok(message)) = calls.next().await {
         if events.is_closed() {
             break;
@@ -294,13 +311,8 @@ async fn serve(conn: Connection, mut calls: MessageStream, events: mpsc::Unbound
         let (conn, events) = (conn.clone(), events.clone());
         // Only NetworkManager may ask: anyone else could show a password dialog of their own
         // making, or read the keyring through the agent.
-        let from_nm = match &dbus {
-            Some(dbus) => match dbus.get_name_owner(BUS_NAME.try_into().expect("a valid name")).await {
-                Ok(owner) => header.sender().is_some_and(|s| s.as_str() == owner.as_str()),
-                Err(_) => false,
-            },
-            None => false,
-        };
+        let from_nm =
+            header.sender().is_some_and(|s| owner.lock().expect("never poisoned").as_deref() == Some(s.as_str()));
         tokio::spawn(async move {
             let header = message.header();
             if !from_nm {
