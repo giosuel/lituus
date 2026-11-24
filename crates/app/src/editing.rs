@@ -283,9 +283,10 @@ impl EditorState {
         }
     }
 
-    /// Switching to Manual with no addresses starts from what the device has now (or an empty
-    /// row to fill in).
-    fn start_manual(&mut self, ip4_before: usize, ip6_before: usize) {
+    /// The method changed. Switching to Manual with no addresses starts from what the device has
+    /// now (or an empty row to fill in); leaving Manual drops the rows still empty, which only it
+    /// asked for, and which would block saving.
+    fn follow_method(&mut self, ip4_before: usize, ip6_before: usize) {
         let ip4 = &mut self.form.ip4;
         if ip4_before != 1 && ip4.method == 1 && ip4.addresses.is_empty() {
             match &self.current_ip4 {
@@ -310,6 +311,12 @@ impl EditorState {
         if ip6_before != 2 && ip6.method == 2 && ip6.addresses.is_empty() {
             ip6.addresses.push(Address { address: String::new(), prefix: "64".into() });
             self.reset = true;
+        }
+        for (ip, before, manual) in [(&mut self.form.ip4, ip4_before, 1), (&mut self.form.ip6, ip6_before, 2)] {
+            if before == manual && ip.method != manual && ip.addresses.iter().any(|a| a.address.is_empty()) {
+                ip.addresses.retain(|a| !a.address.is_empty());
+                self.reset = true;
+            }
         }
     }
 
@@ -956,7 +963,7 @@ pub fn connect(window: &MainWindow) {
                 state.note = None;
                 state.failure = None;
                 state.dns_error = Default::default();
-                state.start_manual(before.ip4.method, before.ip6.method);
+                state.follow_method(before.ip4.method, before.ip6.method);
                 // A VLAN's interface is named after its parent and ID until it's given a name.
                 let (b, v) = (&before.virt, &mut state.form.virt);
                 if state.kind == Kind::Vlan
@@ -1420,6 +1427,20 @@ mod tests {
         let settings = crate::wireguard::settings(&conf, "office", "6c1f0b5e-0000-4000-8000-000000000001", None);
         let state = EditorState::new(None, settings, Vec::new(), None, None);
         assert_eq!(state.form.wg.private_key, conf.private_key);
+        assert_eq!(state.errors().total(state.kind), 0);
+    }
+
+    /// Manual adds an empty address row to fill in; going back to Automatic takes it away again,
+    /// rather than leave a row the user never added blocking the save.
+    #[test]
+    fn leaving_manual_drops_the_row_it_added() {
+        let mut state = EditorState::new(None, Settings::new(), Vec::new(), None, Some(Kind::Ethernet));
+        state.form.ip4.method = 1;
+        state.follow_method(0, 0);
+        assert_eq!(state.form.ip4.addresses.len(), 1);
+        state.form.ip4.method = 0;
+        state.follow_method(1, 0);
+        assert!(state.form.ip4.addresses.is_empty());
         assert_eq!(state.errors().total(state.kind), 0);
     }
 
