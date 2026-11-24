@@ -511,6 +511,10 @@ pub fn recorded(flags: &str, pressed: &[String]) -> Vec<String> {
     mods
 }
 
+/// The submap Lituus makes while it listens for keys (`PAUSE`): Hyprland keeps its Esc bind,
+/// which isn't a shortcut of the user's.
+pub const LISTENING: &str = "lituus-listening";
+
 /// Lua that pauses Hyprland's own shortcuts while Lituus listens for keys: a submap whose one bind,
 /// Esc, leaves it. The keys pressed reach Lituus and run nothing; Esc reaches Lituus too (the bind
 /// doesn't consume it), and brings Hyprland's shortcuts back even if Lituus went away meanwhile.
