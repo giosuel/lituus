@@ -191,14 +191,17 @@ pub fn find_program(program: &str, path: &str) -> Option<PathBuf> {
 /// An Electron app: the command names electron, its program is a script that runs electron, or
 /// Chromium's files lie beside it.
 pub fn is_electron(exec: &str, path: &str) -> bool {
+    use std::io::Read;
     if exec.contains("electron") {
         return true;
     }
     let Some(p) = find_program(&program(exec), path) else { return false };
     let real = p.canonicalize().unwrap_or(p);
-    if let Ok(bytes) = std::fs::read(&real)
-        && bytes.starts_with(b"#!")
-        && String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).contains("electron")
+    // Only a script's first lines matter; programs are often hundreds of MB (Chromium, AppImages).
+    let mut start = Vec::new();
+    if std::fs::File::open(&real).and_then(|f| f.take(4096).read_to_end(&mut start)).is_ok()
+        && start.starts_with(b"#!")
+        && String::from_utf8_lossy(&start).contains("electron")
     {
         return true;
     }
@@ -298,5 +301,29 @@ mod tests {
             "\"/Apps/Cursor 0.45.AppImage\" --no-sandbox %U"
         );
         assert_eq!(with_program("env A=1 /old/app %U", "/new/app"), "env A=1 /new/app %U");
+    }
+
+    #[test]
+    fn the_electron_check_reads_only_the_start_of_a_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = test_dir::with("electron-read", &[]);
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("bigapp");
+        // Sparse: 64 MiB of zeros that take no disk space.
+        std::fs::File::create(&bin).unwrap().set_len(64 << 20).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rchar = || {
+            std::fs::read_to_string("/proc/self/io")
+                .unwrap()
+                .lines()
+                .find_map(|l| l.strip_prefix("rchar: ")?.trim().parse::<u64>().ok())
+                .unwrap()
+        };
+        let before = rchar();
+        assert!(!is_electron("bigapp %U", d.to_str().unwrap()));
+        // The process's own count: other tests read too, so the limit is generous.
+        let read = rchar() - before;
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(read < 1 << 20, "is_electron read {read} bytes of a 64 MiB program to look at its first line");
     }
 }
