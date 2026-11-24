@@ -2745,6 +2745,12 @@ async fn save_connection(
             {
                 wireguard::keep_preshared_keys(&mut settings, &secrets);
             }
+            // The same for a new VPN password: the others go with it.
+            if settings.get("vpn").is_some_and(|v| v.contains_key("secrets"))
+                && let Ok(saved) = client.secrets_raw(path, "vpn").await
+            {
+                openvpn::keep_secrets(&mut settings, &saved);
+            }
             client.update(path, &settings).await.map_err(explain)?;
             path.to_owned()
         }
