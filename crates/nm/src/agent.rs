@@ -80,7 +80,7 @@ impl AgentConnection {
 
     /// The flags of a secret (its `<key>-flags`); for VPN secrets they're in `vpn.data`.
     pub fn secret_flags(&self, setting: &str, key: &str) -> u32 {
-        let flags = format!("{key}-flags");
+        let flags = flags_key(key);
         let group = self.settings.get(setting);
         if setting == "vpn" {
             let data =
@@ -105,15 +105,22 @@ impl AgentConnection {
             }
             for (key, value) in values {
                 let Ok(value) = <&str>::try_from(&**value) else { continue };
-                if values.contains_key(&format!("{key}-flags"))
-                    && self.secret_flags(setting, key) & secret::AGENT_OWNED != 0
-                {
+                if values.contains_key(&flags_key(key)) && self.secret_flags(setting, key) & secret::AGENT_OWNED != 0 {
                     found.push((setting.clone(), key.clone(), value.to_owned()));
                 }
             }
         }
         found.sort();
         found
+    }
+}
+
+/// Where a secret's flags are: `<key>-flags`, except that WEP's four keys share `wep-key-flags`.
+fn flags_key(key: &str) -> String {
+    if matches!(key, "wep-key0" | "wep-key1" | "wep-key2" | "wep-key3") {
+        "wep-key-flags".into()
+    } else {
+        format!("{key}-flags")
     }
 }
 
@@ -415,6 +422,19 @@ mod tests {
         assert_eq!(c.ssid, "Aster Café".as_bytes());
         assert_eq!(c.string("802-11-wireless-security", "key-mgmt"), Some("wpa-psk"));
         assert_eq!(c.agent_owned(), vec![("802-11-wireless-security".into(), "psk".into(), "secret!".into())]);
+    }
+
+    /// A new WEP key from the password dialog goes to the keyring like a WPA one: its flags are
+    /// WEP's shared `wep-key-flags`.
+    #[test]
+    fn wep_keys_share_one_flags_key() {
+        let s = settings(&[(
+            "802-11-wireless-security",
+            &[("key-mgmt", "none".into()), ("wep-key0", "abcde".into()), ("wep-key-flags", 1u32.into())],
+        )]);
+        let c = AgentConnection::new(s, "/c/3".into());
+        assert_eq!(c.secret_flags("802-11-wireless-security", "wep-key0"), 1);
+        assert_eq!(c.agent_owned(), vec![("802-11-wireless-security".into(), "wep-key0".into(), "abcde".into())]);
     }
 
     #[test]
