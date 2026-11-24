@@ -2,20 +2,32 @@
 //! starts. A change is saved at once to the user's own copy (lituus_xdg::edit), never to the
 //! system's file; Restore original deletes the copy. Hiding is NoDisplay=true. When the page
 //! opens, Lituus looks for problems: a command it can't find, an icon the theme doesn't have, a
-//! copy older than the package's file. The apps are read on a thread; icons are loaded here.
+//! copy older than the package's file. The apps are read on a thread, and their icons drawn there
+//! too, so opening the page never waits for them.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::SystemTime;
 
 use lituus_xdg::Dirs;
 use lituus_xdg::desktop::{self, App};
 use lituus_xdg::edit::{self, DesktopFile, ENTRY};
-use slint::{Image, ModelRc, SharedString, VecModel};
+use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::{
-    AppAction, AppChange, AppChoice, AppFilter, AppFix, AppProblem, AppRow, AppSection, AppsView, ChipLine, MainWindow,
-    update,
+    APP, AppAction, AppChange, AppChoice, AppFilter, AppFix, AppProblem, AppRow, AppSection, AppsView, ChipLine,
+    MainWindow, input, update,
 };
+
+/// An icon drawn for the lists, and its file's time, to draw it again when the file changes.
+type Drawn = (Option<SystemTime>, SharedPixelBuffer<Rgba8Pixel>);
+
+/// The lists' icons are drawn this big (in logical pixels, times the screen's scale): the rows
+/// show them at 28, the selection at 36, the hero at 20. The details' 56 px one is loaded from
+/// its file, for the one app selected.
+const LIST_ICON: f32 = 36.0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Problem {
@@ -34,6 +46,9 @@ pub struct Data {
     pub theme: String,
     pub problems: Vec<(String, Problem)>,
     pub electron: HashMap<String, bool>,
+    /// The icons' files drawn for the lists, at `scale`.
+    pub drawn: HashMap<PathBuf, Drawn>,
+    pub scale: f32,
 }
 
 #[derive(Default)]
@@ -217,7 +232,9 @@ fn icon_theme(dirs: &Dirs) -> String {
     String::new()
 }
 
-fn read(dirs: Dirs) -> Data {
+/// Reads the apps; their icons are drawn for the lists, those in `known` only when their file
+/// changed since.
+fn read(dirs: Dirs, scale: f32, known: &HashMap<PathBuf, Drawn>) -> Data {
     let apps = desktop::all(&dirs);
     let theme = icon_theme(&dirs);
     let path = std::env::var("PATH").unwrap_or_default();
@@ -226,7 +243,50 @@ fn read(dirs: Dirs) -> Data {
     let electron =
         apps.iter().map(|a| (a.id.clone(), a.flatpak.is_empty() && edit::is_electron(&a.exec, &path))).collect();
     let problems = problems(&apps, &icons, &path);
-    Data { dirs, apps, icons, theme, problems, electron }
+    let side = (LIST_ICON * scale).round().max(1.0) as u32;
+    let mut drawn = HashMap::new();
+    for file in icons.values() {
+        if drawn.contains_key(file) {
+            continue;
+        }
+        let modified = file.metadata().and_then(|m| m.modified()).ok();
+        let pixels = match known.get(file) {
+            Some((m, pixels)) if *m == modified => Some(pixels.clone()),
+            _ => draw_icon(file, side),
+        };
+        if let Some(pixels) = pixels {
+            drawn.insert(file.clone(), (modified, pixels));
+        }
+    }
+    Data { dirs, apps, icons, theme, problems, electron, drawn, scale }
+}
+
+/// An icon's pixels, at most `side` square: an SVG drawn at that size, a bigger picture made
+/// smaller. None for what can't be read here; the window's thread then tries its file.
+fn draw_icon(file: &Path, side: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+        let tree = resvg::usvg::Tree::from_data(&std::fs::read(file).ok()?, &resvg::usvg::Options::default()).ok()?;
+        let size = tree.size();
+        let scale = side as f32 / size.width().max(size.height());
+        let (w, h) = ((size.width() * scale).round().max(1.0) as u32, (size.height() * scale).round().max(1.0) as u32);
+        let mut canvas = resvg::tiny_skia::Pixmap::new(w, h)?;
+        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut canvas.as_mut());
+        // tiny-skia's pixels are premultiplied.
+        let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+        for (to, from) in pixels.make_mut_slice().iter_mut().zip(canvas.pixels()) {
+            let c = from.demultiply();
+            *to = Rgba8Pixel { r: c.red(), g: c.green(), b: c.blue(), a: c.alpha() };
+        }
+        return Some(pixels);
+    }
+    let picture = image::open(file).ok()?;
+    let picture = if picture.width().max(picture.height()) > side {
+        picture.resize(side, side, image::imageops::FilterType::CatmullRom)
+    } else {
+        picture
+    };
+    let rgba = picture.to_rgba8();
+    Some(SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
 }
 
 /// What's wrong with the apps, found by looking at their files.
@@ -278,13 +338,22 @@ fn newer_appimage(program: &str) -> Option<PathBuf> {
     found.pop()
 }
 
-/// Reads the apps, on a thread.
+/// Reads the apps and draws their icons, on a thread; icons drawn before are kept.
 pub fn open(weak: &slint::Weak<MainWindow>) {
+    let scale = weak.upgrade().map(|w| slint::ComponentHandle::window(&w).scale_factor()).unwrap_or(1.0);
+    let known = APP.with(|app| {
+        app.borrow().apps.data.as_ref().filter(|d| d.scale == scale).map(|d| d.drawn.clone()).unwrap_or_default()
+    });
     let weak = weak.clone();
     std::thread::spawn(move || {
-        let data = read(Dirs::from_env());
+        let data = read(Dirs::from_env(), scale, &known);
         let w = weak.clone();
-        let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| app.apps.data = Some(data)));
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, move |app| {
+                app.apps.data = Some(data);
+                app.apps.images.clear();
+            })
+        });
     });
 }
 
@@ -297,7 +366,7 @@ pub fn status(state: &State) -> String {
 fn reload(state: &mut State) {
     if let Some(d) = &mut state.data {
         let dirs = d.dirs.clone();
-        *d = read(dirs);
+        *d = read(dirs, d.scale, &d.drawn);
     }
     state.images.clear();
 }
@@ -864,15 +933,37 @@ fn rows(state: &State) -> Vec<(String, Vec<App>)> {
     vec![(String::new(), apps)]
 }
 
+/// An app with its icon as drawn for the lists (an image of the same pixels each time, so a row
+/// that didn't change compares equal and is left alone).
 fn choice(state: &mut State, app: &App) -> AppChoice {
-    let icon = match state.data.as_ref().and_then(|d| d.icons.get(&app.id)) {
-        Some(path) => state
-            .images
-            .entry(app.id.clone())
-            .or_insert_with(|| Image::load_from_path(path).unwrap_or_default())
-            .clone(),
-        None => Image::default(),
+    let d = state.data.as_ref();
+    let file = d.and_then(|d| d.icons.get(&app.id)).cloned();
+    let drawn = file.as_ref().and_then(|f| d?.drawn.get(f)).map(|(_, pixels)| pixels.clone());
+    let icon = match (drawn, file) {
+        (Some(pixels), _) => Image::from_rgba8(pixels),
+        (None, Some(f)) => loaded(state, &f),
+        (None, None) => Image::default(),
     };
+    app_choice(app, icon)
+}
+
+/// The app selected, with its icon from its file, for the details' bigger one.
+fn choice_large(state: &mut State, app: &App) -> AppChoice {
+    let file = state.data.as_ref().and_then(|d| d.icons.get(&app.id)).cloned();
+    let icon = file.map(|f| loaded(state, &f)).unwrap_or_default();
+    app_choice(app, icon)
+}
+
+/// A picture loaded from its file, once.
+fn loaded(state: &mut State, file: &Path) -> Image {
+    state
+        .images
+        .entry(format!("icon:{}", file.display()))
+        .or_insert_with(|| Image::load_from_path(file).unwrap_or_default())
+        .clone()
+}
+
+fn app_choice(app: &App, icon: Image) -> AppChoice {
     AppChoice {
         id: s(&app.id),
         name: s(&app.name),
@@ -1062,7 +1153,7 @@ pub fn view(state: &mut State) -> AppsView {
         });
         return v;
     };
-    v.app = choice(state, &a);
+    v.app = choice_large(state, &a);
     let d = state.data.as_ref().expect("loaded");
     v.has_app = true;
     v.id = s(&a.id);
@@ -1160,14 +1251,7 @@ pub fn view(state: &mut State) -> AppsView {
 }
 
 fn icon_choice(state: &mut State, key: &str, name: &str, file: Option<&Path>) -> AppChoice {
-    let icon = match file {
-        Some(p) => state
-            .images
-            .entry(format!("icon:{}", p.display()))
-            .or_insert_with(|| Image::load_from_path(p).unwrap_or_default())
-            .clone(),
-        None => Image::default(),
-    };
+    let icon = file.map(|p| loaded(state, p)).unwrap_or_default();
     AppChoice {
         id: s(key),
         name: s(name),
@@ -1260,9 +1344,33 @@ fn add_view(state: &mut State, v: &mut AppsView) {
     }
 }
 
+thread_local! {
+    /// The list's sections and each one's rows, kept as models from one render to the next: only
+    /// the rows that changed are replaced, instead of every row being built again at each render
+    /// (several a second while the page is open).
+    static LIST: Rc<VecModel<AppSection>> = Rc::new(VecModel::default());
+    static SECTION_ROWS: RefCell<Vec<Rc<VecModel<AppRow>>>> = RefCell::default();
+}
+
 pub fn render(window: &MainWindow, state: &mut State) {
     if window.get_page() == "apps" {
-        window.set_apps(view(state));
+        let mut v = view(state);
+        let sections: Vec<AppSection> = SECTION_ROWS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            v.sections
+                .iter()
+                .enumerate()
+                .map(|(i, mut section)| {
+                    if kept.len() <= i {
+                        kept.push(Rc::new(VecModel::default()));
+                    }
+                    section.rows = input::kept(&kept[i], &section.rows);
+                    section
+                })
+                .collect()
+        });
+        v.sections = LIST.with(|kept| input::kept(kept, &model(sections)));
+        window.set_apps(v);
     }
 }
 
@@ -1349,7 +1457,7 @@ mod tests {
             data_dirs: vec![root.join("usr/share")],
             desktops: vec![],
         };
-        let mut state = State { data: Some(read(dirs)), ..Default::default() };
+        let mut state = State { data: Some(read(dirs, 1.0, &HashMap::new())), ..Default::default() };
         let weak = slint::Weak::default();
         // bssh isn't there either: two that can't start.
         let v = view(&mut state);
@@ -1399,7 +1507,7 @@ mod tests {
             data_dirs: vec![root.join("usr/share")],
             ..Default::default()
         };
-        let mut state = State { data: Some(read(dirs)), ..Default::default() };
+        let mut state = State { data: Some(read(dirs, 1.0, &HashMap::new())), ..Default::default() };
         let weak = slint::Weak::default();
         act(&weak, &mut state, "add-open", "");
         act(&weak, &mut state, "add-mode", "1");
@@ -1420,6 +1528,41 @@ mod tests {
         );
         assert_eq!(state.selected.as_deref(), Some("lituus-web-app-todoist-com.desktop"));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn icons_are_drawn_on_the_reading_thread_once() {
+        let root = std::env::temp_dir().join(format!("lituus-apps-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let apps = "usr/share/applications";
+        write(&root, &format!("{apps}/a.desktop"), "[Desktop Entry]\nType=Application\nName=A\nExec=a\nIcon=a\n");
+        write(&root, &format!("{apps}/b.desktop"), "[Desktop Entry]\nType=Application\nName=B\nExec=b\nIcon=b\n");
+        write(
+            &root,
+            "usr/share/icons/hicolor/scalable/apps/a.svg",
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64"><rect width="128" height="64" fill="#e33"/></svg>"##,
+        );
+        let png = root.join("usr/share/icons/hicolor/256x256/apps/b.png");
+        std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(256, 256, image::Rgba([10, 20, 30, 255])).save(&png).unwrap();
+        let dirs = Dirs { data_dirs: vec![root.join("usr/share")], ..Default::default() };
+        let d = read(dirs.clone(), 2.0, &HashMap::new());
+        let size = |id: &str| {
+            let (_, p) = &d.drawn[&d.icons[id]];
+            (p.width(), p.height())
+        };
+        // 36 px at twice the scale: the SVG drawn to fit, the picture made smaller.
+        assert_eq!((size("a.desktop"), size("b.desktop")), ((72, 36), (72, 72)));
+        assert_eq!(d.drawn[&d.icons["a.desktop"]].1.as_slice()[0], Rgba8Pixel { r: 0xee, g: 0x33, b: 0x33, a: 255 });
+        // Read again: the icons drawn before are kept (the same pixels), not drawn again.
+        let again = read(dirs, 2.0, &d.drawn);
+        let a = &d.icons["a.desktop"];
+        assert_eq!(again.drawn[a].1.as_slice().as_ptr(), d.drawn[a].1.as_slice().as_ptr());
+        // An image of them is equal to the one before, so the rows are left alone.
+        let mut state = State { data: Some(again), ..Default::default() };
+        let app = state.data.as_ref().unwrap().apps[0].clone();
+        assert_eq!(choice(&mut state, &app), choice(&mut state, &app));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
