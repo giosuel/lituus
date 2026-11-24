@@ -52,6 +52,12 @@ pub fn network_name(name: &str) -> String {
     name
 }
 
+/// Whether the network name was chosen apart from the name: it isn't what the name suggests
+/// ("orbis" for "Giosuel's desk"). Rename then leaves it alone while the name is edited.
+pub fn chosen_apart(name: &str, network: &str) -> bool {
+    !name.is_empty() && !network.is_empty() && !network.eq_ignore_ascii_case(&network_name(name))
+}
+
 /// What's wrong with a network name, if anything: one label of a–z, 0–9 and hyphens, 1 to 63
 /// long, no hyphen at either end. Capitals are allowed (they're lowered when saved).
 pub fn network_name_problem(name: &str) -> Option<&'static str> {
@@ -135,5 +141,15 @@ mod tests {
         assert!(network_name_problem("-orbis").is_some());
         assert!(network_name_problem("a.b").is_some());
         assert!(network_name_problem("").is_some());
+    }
+
+    #[test]
+    fn a_network_name_chosen_apart_is_kept() {
+        assert!(chosen_apart("Giosuel's desk", "orbis"));
+        assert!(!chosen_apart("Giosuel's desk", "giosuels-desk"));
+        assert!(!chosen_apart("Giosuel's desk", "Giosuels-Desk"));
+        // No name of its own, or no network name known: the name suggests it.
+        assert!(!chosen_apart("", "orbis"));
+        assert!(!chosen_apart("Giosuel's desk", ""));
     }
 }

@@ -173,7 +173,8 @@ struct App {
     share: Option<(String, String, String)>,
     hostname_open: bool,
     hostname_error: String,
-    /// The network name was typed, not suggested by the name.
+    /// The network name was typed, or chosen apart from the name before: editing the name leaves
+    /// it alone.
     hostname_edited: bool,
     /// config.toml's `[tray]` and `[notifications]`.
     settings: Settings,
@@ -244,14 +245,22 @@ thread_local! {
 
 fn main() -> Result<(), slint::PlatformError> {
     let cli = Cli::parse();
+    // Switching Wi-Fi (from a key) is the running Lituus's job, or this process's, which then
+    // leaves. It never claims the name: a Lituus started meanwhile would hand its request to a
+    // process that's about to leave, and nothing would open.
+    if cli.toggle_wifi {
+        if !instance::pass(APP_ID, instance::Request::ToggleWifi) {
+            toggle_wifi_once();
+        }
+        return Ok(());
+    }
     let window = MainWindow::new()?;
     // Needs the platform, which creating the first window sets up; takes effect when it's shown.
     slint::set_xdg_app_id(APP_ID)?;
     let weak = window.as_weak();
-    let request = match (cli.background, cli.quick, cli.toggle_wifi) {
-        (true, ..) => None,
-        (_, true, _) => Some(instance::Request::Quick),
-        (_, _, true) => Some(instance::Request::ToggleWifi),
+    let request = match (cli.background, cli.quick) {
+        (true, _) => None,
+        (_, true) => Some(instance::Request::Quick),
         _ => Some(instance::Request::Show),
     };
     let claim = instance::claim(APP_ID, request, move |request| {
