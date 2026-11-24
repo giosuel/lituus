@@ -111,7 +111,7 @@ export component DetailsPane inherits Rectangle {
                         for t[i] in root.details.toggles: Rectangle {
                             // Taller when a narrow pane wraps the description.
                             height: max(t.sub == "" ? 42px : 52px, toggle-row.preferred-height);
-                            Rectangle { y: 0; height: 1px; background: i == 0 ? transparent : Theme.border2; }
+                            Rectangle { y: 0; height: 1px; background: i == 0 ? transparent : Theme.border; }
                             toggle-row := HorizontalLayout {
                                 padding-left: 14px;
                                 padding-right: 14px;
@@ -135,7 +135,7 @@ export component DetailsPane inherits Rectangle {
                         // room for it in a narrow pane.
                         if root.details.has-metered: Rectangle {
                             height: metered-row.preferred-height;
-                            Rectangle { y: 0; height: 1px; background: Theme.border2; }
+                            Rectangle { y: 0; height: 1px; background: Theme.border; }
                             metered-row := VerticalLayout {
                                 padding: 14px;
                                 padding-top: 10px;

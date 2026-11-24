@@ -178,7 +178,7 @@ component LayoutItem inherits Focusable {
     callback dragged(length);
     callback dropped(length);
     height: row-height;
-    border-radius: 10px;
+    border-radius: 9px;
     ring-gap: -2px;
     focus-key: "layout:" + entry.code;
     selected-key: entry.selected ? "layouts:selected" : "";
@@ -299,7 +299,7 @@ component LayoutsCard inherits ScrollCard {
             first: true;
             Select {
                 width: 190px;
-                select-height: 34px;
+                select-height: Size.field;
                 label: "Switch layouts with";
                 focus-key: "switch-keys";
                 options: root.view.switch-options;
@@ -369,7 +369,7 @@ component KeysCard inherits ScrollCard {
             first: true;
             Select {
                 width: 190px;
-                select-height: 34px;
+                select-height: Size.field;
                 label: "Caps Lock acts as";
                 focus-key: "caps";
                 options: root.view.caps-options;
@@ -382,7 +382,7 @@ component KeysCard inherits ScrollCard {
             description: root.view.compose-sub;
             Select {
                 width: 190px;
-                select-height: 34px;
+                select-height: Size.field;
                 label: "Compose key";
                 focus-key: "compose";
                 options: root.view.compose-options;
@@ -483,7 +483,7 @@ component PointerRow inherits Focusable {
     in property <InputRow> entry;
     callback chosen();
     height: 52px;
-    border-radius: 10px;
+    border-radius: 9px;
     ring-gap: -2px;
     focus-key: "pointer-row:" + entry.id;
     selected-key: entry.selected ? "pointers:selected" : "";
@@ -677,7 +677,7 @@ export component AddLayoutDialog inherits Modal {
     }
     HorizontalLayout {
         alignment: end;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.closed(); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }
 }
 
@@ -698,6 +698,6 @@ export component OwnSettingsDialog inherits Modal {
     }
     HorizontalLayout {
         alignment: end;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.closed(); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.closed(); } }
     }
 }

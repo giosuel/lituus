@@ -2,7 +2,7 @@
 // mockups (Password, Hidden network).
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, IconButton, FieldLabel, Focusable, Focus, FocusTrap } from "controls.slint";
+import { Button, IconButton, FieldLabel, Focusable, Focus, FocusTrap, Viewport } from "controls.slint";
 
 /// A one-line text field; with `password`, the text is hidden and an eye button shows it.
 /// `committed` is for a field whose value takes effect by itself (not one with a dialog's
@@ -16,6 +16,8 @@ export component TextField inherits Rectangle {
     in property <bool> mono;
     in property <bool> invalid;
     in property <bool> enabled: true;
+    /// A line icon before the text: "search" makes it a search field (D-46).
+    in property <string> icon;
     property <bool> shown;
     callback accepted();
     callback edited();
@@ -40,9 +42,12 @@ export component TextField inherits Rectangle {
     background: Theme.input-bg;
     forward-focus: input;
     HorizontalLayout {
-        padding-left: 12px;
+        // Without an icon its empty slot still takes the 6 px spacing: the text starts 12 px in.
+        padding-left: root.icon != "" ? 10px : 6px;
         padding-right: 6px;
         spacing: 6px;
+        // No `if`: TextField is used often, and one per field adds to the generated code.
+        Icon { name: root.icon; tint: Theme.faint; size: 14px; width: root.icon != "" ? 16px : 0px; visible: root.icon != ""; y: (parent.height - 14px) / 2; }
         Rectangle {
             horizontal-stretch: 1;
             // A long path scrolls inside the field instead of running past its edge, and doesn't
@@ -309,7 +314,7 @@ export component Select inherits Focusable {
     in property <[string]> details;
     in property <string> label;
     in-out property <int> selected;
-    in property <length> select-height: 38px;
+    in property <length> select-height: Size.field-dialog;
     /// The user picked an option.
     callback chosen(int);
     // The option the arrow keys are on in the open list.
@@ -339,13 +344,16 @@ export component Select inherits Focusable {
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 10px;
-        Text { text: root.options[root.selected]; color: Theme.text; font-size: root.select-height < 38px ? 13px : 14px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.options[root.selected]; color: Theme.text; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
         Icon { name: "chevron"; tint: Theme.icon-soft; y: (parent.height - 16px) / 2; }
     }
+    // The list is as wide as its longest option, up to 480 px, and never narrower than the
+    // button; it opens left-aligned under it (D-46, the owner on 2026-11-23: long names were cut).
     popup := PopupWindow {
-        x: 0;
+        // Moved left only as far as it must to end 8 px inside the window.
+        x: min(0px, Viewport.width - 8px - root.absolute-position.x - self.width);
         y: root.height + 4px;
-        width: root.width;
+        width: min(max(root.width, options-list.preferred-width), 480px);
         forward-focus: list-keys;
         list-keys := FocusScope {
             key-pressed(event) => {
@@ -369,7 +377,7 @@ export component Select inherits Focusable {
             background: Theme.surface;
             drop-shadow-blur: 16px;
             drop-shadow-color: Theme.shadow;
-            VerticalLayout {
+            options-list := VerticalLayout {
                 padding: 4px;
                 for option[i] in root.options: Rectangle {
                     height: root.details.length > i ? 44px : 32px;
@@ -380,14 +388,44 @@ export component Select inherits Focusable {
                     border-color: Theme.accent;
                     VerticalLayout {
                         padding-left: 10px;
+                        padding-right: 12px;
                         alignment: center;
-                        Text { text: option; color: Theme.text; font-size: Type.body; }
-                        if root.details.length > i: Text { text: root.details[i]; color: Theme.muted; font-size: Type.label; }
+                        Text { text: option; color: Theme.text; font-size: Type.body; overflow: elide; }
+                        if root.details.length > i: Text { text: root.details[i]; color: Theme.muted; font-size: Type.label; overflow: elide; }
                     }
                     item := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; root.chosen(i); } }
                 }
             }
         }
+    }
+}
+
+/// A button that looks like a Select (D-46), for a choice made somewhere else (a list of apps
+/// in a dialog): its children lead (an app's icon), then the value and the chevron.
+export component SelectButton inherits Focusable {
+    in property <string> text;
+    in property <string> label;
+    in property <length> select-height: Size.field;
+    /// A path or a command: in the monospace font.
+    in property <bool> mono;
+    callback clicked();
+    height: root.select-height;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.ctrl-border;
+    background: self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.text;
+    accessible-action-default => { root.clicked(); }
+    activated => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        @children
+        Text { text: root.text; color: Theme.text; font-size: Type.body; font-family: root.mono ? "JetBrains Mono" : "Inter"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { name: "chevron"; tint: Theme.icon-soft; y: (parent.height - 16px) / 2; }
     }
 }
 
@@ -522,7 +560,7 @@ export component JoinDialog inherits Modal {
         padding-top: 4px;
         spacing: 8px;
         alignment: end;
-        Button { label: "Cancel"; button-height: 36px; clicked => { root.cancelled(); } }
-        Button { label: "Connect"; kind: "primary"; button-height: 36px; enabled: root.valid; clicked => { root.accepted(); } }
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
+        Button { label: "Connect"; kind: "primary"; button-height: Size.button-dialog; enabled: root.valid; clicked => { root.accepted(); } }
     }
 }

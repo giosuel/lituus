@@ -63,8 +63,8 @@ export component SendFilesDialog inherits Modal {
         padding-top: 4px;
         spacing: 8px;
         alignment: end;
-        if !root.view.send-done: Button { label: "Cancel"; button-height: 36px; clicked => { root.cancel(); } }
-        Button { label: root.view.send-done ? "Close" : "Hide"; kind: root.view.send-done ? "primary" : "secondary"; button-height: 36px; clicked => { root.hide(); } }
+        if !root.view.send-done: Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancel(); } }
+        Button { label: root.view.send-done ? "Close" : "Hide"; kind: root.view.send-done ? "primary" : "secondary"; button-height: Size.button-dialog; clicked => { root.hide(); } }
     }
 }
 
@@ -106,7 +106,7 @@ export component IncomingFileDialog inherits Modal {
         padding-top: 4px;
         spacing: 8px;
         alignment: end;
-        Button { label: "Decline"; button-height: 36px; clicked => { root.decline(); } }
-        Button { label: "Accept"; kind: "primary"; button-height: 36px; clicked => { root.accept(); } }
+        Button { label: "Decline"; button-height: Size.button-dialog; clicked => { root.decline(); } }
+        Button { label: "Accept"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.accept(); } }
     }
 }
