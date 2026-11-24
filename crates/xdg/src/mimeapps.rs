@@ -147,7 +147,7 @@ pub fn set_defaults(path: &Path, mimes: &[String], app: &str) -> std::io::Result
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
 fn with_defaults(text: &str, mimes: &[String], app: &str) -> String {

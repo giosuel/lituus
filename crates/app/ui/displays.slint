@@ -90,6 +90,8 @@ export struct DisplaysView {
     workspaces: [WorkspaceRow],
     ws-monitors: [string],
     profiles: [ProfileRow],
+    /// Why displays.toml couldn't be read, which keeps the profiles from being saved.
+    store-error: string,
     /// The profile the monitors show now, if any.
     profile: string,
     /// As edited, like the profiles' "by itself" and command.
@@ -452,7 +454,8 @@ export component DisplaysPage inherits VerticalLayout {
                         }
                     }
                     Rectangle { height: 1px; background: Theme.border; }
-                    if root.view.profiles.length == 0: Text { text: "No profiles yet. Save the layout you have now as one."; color: Theme.faint; font-size: Type.body; height: 32px; vertical-alignment: center; }
+                    if root.view.store-error != "": Text { text: root.view.store-error; color: Theme.danger; font-size: Type.body; wrap: word-wrap; }
+                    if root.view.profiles.length == 0 && root.view.store-error == "": Text { text: "No profiles yet. Save the layout you have now as one."; color: Theme.faint; font-size: Type.body; height: 32px; vertical-alignment: center; }
                     for p[i] in root.view.profiles: Rectangle {
                         height: prow.preferred-height;
                         border-radius: 10px;
@@ -486,7 +489,7 @@ export component DisplaysPage inherits VerticalLayout {
                     HorizontalLayout {
                         spacing: 10px;
                         TextField { text <=> root.new-profile; placeholder: "Name, e.g. Desk + TV"; label: "New profile's name"; height: 34px; accepted => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
-                        Button { label: "Save the current layout as a profile"; button-height: Size.button; horizontal-stretch: 0; enabled: root.new-profile != ""; clicked => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
+                        Button { label: "Save the current layout as a profile"; button-height: Size.button; horizontal-stretch: 0; enabled: root.new-profile != "" && root.view.store-error == ""; clicked => { root.act("profile-save", root.new-profile, 0); root.new-profile = ""; } }
                     }
                 }
             }

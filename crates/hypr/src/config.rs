@@ -51,9 +51,19 @@ impl ConfigFile {
         self.dir.join(if self.lua { "hyprland.lua" } else { "hyprland.conf" })
     }
 
-    /// The line the user's config needs to load Lituus's file.
+    /// The line the user's config needs to load Lituus's file: for hyprlang the file where it is
+    /// (`XDG_CONFIG_HOME` may not be ~/.config), with `~` for the home folder.
     pub fn load_line(&self) -> String {
-        if self.lua { "require(\"lituus\")".to_owned() } else { "source = ~/.config/hypr/lituus.conf".to_owned() }
+        if self.lua {
+            "require(\"lituus\")".to_owned()
+        } else {
+            let path = self.path();
+            let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+            match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+                Some(rest) => format!("source = ~/{}", rest.display()),
+                None => format!("source = {}", path.display()),
+            }
+        }
     }
 
     /// The comment and the line Set up… adds at the end of the user's config (D-44).
@@ -81,6 +91,9 @@ impl ConfigFile {
         use std::io::Write;
         let main = self.main_path();
         let text = std::fs::read_to_string(&main)?;
+        // Opened first: a config that can't be written to (read-only, a link into the Nix store)
+        // gets no copy, so trying again doesn't leave one copy after another.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&main)?;
         if !self.path().exists() {
             let comment = if self.lua { "--" } else { "#" };
             self.write(&format!("{comment} Lituus's file: its pages add their settings here.\n"))?;
@@ -94,10 +107,7 @@ impl ConfigFile {
             _ if text.ends_with('\n') => "\n",
             _ => "\n\n",
         };
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&main)?
-            .write_all(format!("{gap}{comment}\n{line}\n").as_bytes())?;
+        file.write_all(format!("{gap}{comment}\n{line}\n").as_bytes())?;
         Ok(backup)
     }
 
@@ -125,6 +135,8 @@ impl ConfigFile {
                     .iter()
                     .any(|r| compact.contains(r))
             } else {
+                // A comment after it ("source = …/lituus.conf # Lituus") isn't part of the path.
+                let line = line.split('#').next().unwrap_or_default().trim_end();
                 line.starts_with("source") && line.ends_with("lituus.conf")
             }
         })
@@ -139,19 +151,31 @@ impl ConfigFile {
         section(&self.read()?, name)
     }
 
-    /// Writes the page's part of the file, keeping the other pages' parts.
+    /// Writes the page's part of the file, keeping the other pages' parts. A file that's there
+    /// but can't be read is an error, not an empty file: the other parts would be lost.
     pub fn write_section(&self, name: &str, part: &str) -> std::io::Result<()> {
-        self.write(&with_section(&self.read().unwrap_or_default(), name, part))
+        let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let text = lituus_fs::read_or_empty(&self.path())?;
+        self.write_unlocked(&with_section(&text, name, part))
     }
 
-    /// Writes the file whole, through a temporary file, so Hyprland never reads half of it.
+    /// Writes the file whole, through a temporary file, so Hyprland never reads half of it. A
+    /// file that's a link into the user's dotfiles stays a link.
     pub fn write(&self, text: &str) -> std::io::Result<()> {
+        let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_unlocked(text)
+    }
+
+    fn write_unlocked(&self, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join(format!(".{}.tmp", file_name(&self.path())));
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, self.path())
+        lituus_fs::write_atomic(&self.path(), text)
     }
 }
+
+/// Held while the file is read, changed and written: Displays (on the window's thread), Input
+/// (its worker) and Shortcuts (a thread per change) each write their part, and without it one
+/// could write back another's part as it was before that one's change.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The file's parts: (page, its lines). Text before the first part has no page.
 fn sections(text: &str) -> Vec<(Option<String>, String)> {
@@ -280,9 +304,38 @@ mod tests {
         file.add_load_line().unwrap();
         assert_eq!(
             std::fs::read_to_string(file.main_path()).unwrap(),
-            "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = ~/.config/hypr/lituus.conf\n"
+            format!(
+                "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = {}\n",
+                d.join("lituus.conf").display()
+            )
         );
         assert!(file.loaded());
+    }
+
+    #[test]
+    fn the_source_line_names_the_folder_the_file_is_in() {
+        let f = ConfigFile::new("/x/cfg/hypr", false);
+        assert_eq!(f.load_line(), "source = /x/cfg/hypr/lituus.conf");
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
+            let f = ConfigFile::new(home.join(".config/hypr"), false);
+            assert_eq!(f.load_line(), "source = ~/.config/hypr/lituus.conf");
+        }
+    }
+
+    #[test]
+    fn a_config_that_cant_be_written_gets_no_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("setup-readonly");
+        let file = ConfigFile::new(&d, true);
+        std::fs::write(file.main_path(), "-- mine\n").unwrap();
+        std::fs::set_permissions(file.main_path(), std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root may write to it anyway.
+        if std::fs::OpenOptions::new().append(true).open(file.main_path()).is_ok() {
+            return;
+        }
+        assert!(file.add_load_line().is_err());
+        assert!(!d.join("hyprland.lua.bak").exists(), "a copy was left behind");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -348,12 +401,66 @@ mod tests {
     }
 
     #[test]
+    fn lituus_file_thats_a_link_stays_a_link() {
+        let d = dir("own-link");
+        let dotfiles = dir("own-link-dotfiles").join("lituus.lua");
+        std::fs::write(&dotfiles, "").unwrap();
+        std::os::unix::fs::symlink(&dotfiles, d.join("lituus.lua")).unwrap();
+        let f = ConfigFile::new(&d, true);
+        f.write_section("Input", "-- Written by Lituus (Input).\n").unwrap();
+        assert!(std::fs::symlink_metadata(f.path()).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&dotfiles).unwrap().contains("Input"));
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(dotfiles.parent().unwrap()).unwrap();
+    }
+
+    /// A file that can't be read isn't taken as empty: writing one part would drop the others.
+    #[test]
+    fn a_file_that_cant_be_read_isnt_written_over() {
+        let d = dir("own-unreadable");
+        let f = ConfigFile::new(&d, true);
+        let text = b"-- Written by Lituus (Displays).\n-- caf\xe9\nhl.monitor({ output = \"DP-1\" })\n";
+        std::fs::write(f.path(), text).unwrap();
+        assert!(f.write_section("Input", "-- Written by Lituus (Input).\n").is_err());
+        assert_eq!(std::fs::read(f.path()).unwrap(), text);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Displays, Input and Shortcuts write their parts from their own threads: none is lost.
+    #[test]
+    fn pages_writing_at_once_keep_each_others_parts() {
+        let d = dir("own-threads");
+        let f = ConfigFile::new(&d, true);
+        let threads: Vec<_> = ["Displays", "Input", "Shortcuts"]
+            .into_iter()
+            .map(|page| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for i in 0..100 {
+                        f.write_section(page, &format!("-- Written by Lituus ({page}).\n-- {i}\n")).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        for page in ["Displays", "Input", "Shortcuts"] {
+            assert_eq!(f.read_section(page), Some(format!("-- Written by Lituus ({page}).\n-- 99\n")));
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
     fn finds_the_source_line() {
         let d = dir("conf");
         let f = ConfigFile::new(&d, false);
         std::fs::write(d.join("hyprland.conf"), "monitor = , preferred, auto, 1\n").unwrap();
         assert!(!f.loaded());
         std::fs::write(d.join("hyprland.conf"), "source = ~/.config/hypr/lituus.conf\n").unwrap();
+        assert!(f.loaded());
+        // With a comment after it.
+        std::fs::write(d.join("hyprland.conf"), "source = ~/.config/hypr/lituus.conf # Lituus\n").unwrap();
         assert!(f.loaded());
         assert_eq!(f.path(), d.join("lituus.conf"));
         std::fs::remove_dir_all(&d).unwrap();

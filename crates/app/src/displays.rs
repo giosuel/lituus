@@ -57,6 +57,9 @@ pub struct State {
     /// displays.toml, and the workspace bindings as edited.
     store: Store,
     store_read: bool,
+    /// Why displays.toml couldn't be read ("line 16: unknown field `transfrom`"): until it can,
+    /// the page says so and nothing is saved to it, which would replace every profile in it.
+    store_error: Option<String>,
     ws_edit: Vec<StoredWorkspace>,
     /// Workspace bindings before the last Apply, to go back to.
     ws_before: Option<Vec<StoredWorkspace>>,
@@ -301,6 +304,10 @@ fn profile_rules(state: &State, profile: &Profile) -> Vec<MonitorRule> {
 }
 
 fn save_store(state: &mut State) {
+    // The file Lituus couldn't read stays as it is (the page says why).
+    if state.store_error.is_some() {
+        return;
+    }
     let path = state.store_path.clone().unwrap_or_else(profiles::path);
     if let Err(e) = profiles::save(&path, &state.store) {
         state.error = Some(format!("Couldn't save the profiles: {e}"));
@@ -308,10 +315,25 @@ fn save_store(state: &mut State) {
 }
 
 fn loaded(state: &mut State, read: Result<(Hyprland, bool, Vec<Monitor>), lituus_hypr::Error>) {
-    if !state.store_read {
-        state.store = profiles::load(&state.store_path.clone().unwrap_or_else(profiles::path));
-        state.ws_edit = state.store.workspaces.clone();
-        state.ws_applied = state.store.workspaces.clone();
+    // Read once; one that couldn't be read is tried again, so a fixed file is taken (but not in
+    // the middle of an edit, which it would undo).
+    let retry = state.store_error.is_some() && state.keep.is_none() && !state.dirty();
+    if !state.store_read || retry {
+        let path = state.store_path.clone().unwrap_or_else(profiles::path);
+        match profiles::load(&path) {
+            Ok(store) => {
+                state.store = store;
+                state.ws_edit = state.store.workspaces.clone();
+                state.ws_applied = state.store.workspaces.clone();
+                state.store_error = None;
+            }
+            Err(e) => {
+                if state.store_error.is_none() {
+                    eprintln!("lituus: can't read {}: {e}", path.display());
+                }
+                state.store_error = Some(e);
+            }
+        }
         state.store_read = true;
     }
     match read {
@@ -581,7 +603,8 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, arg: &
             if let Some(index) = state.store.profiles.iter().position(|p| p.name == name) {
                 return ask(state, "profile-update", index);
             }
-            if !name.is_empty() {
+            // It couldn't be kept: displays.toml isn't written while it can't be read.
+            if !name.is_empty() && state.store_error.is_none() {
                 let profile = Profile {
                     name: name.to_owned(),
                     auto: true,
@@ -1388,6 +1411,8 @@ pub fn view(state: &State) -> DisplaysView {
         (e.clone(), "danger")
     } else if let Some(p) = &problem {
         (format!("{p}, so Apply is off"), "danger")
+    } else if let Some(e) = &state.store_error {
+        (format!("Couldn't read displays.toml ({e}), so it's left as it is"), "danger")
     } else if state.keep.is_some() {
         ("Applied; waiting for you to keep it".to_owned(), "accent")
     } else if changed == 1 {
@@ -1451,6 +1476,11 @@ pub fn view(state: &State) -> DisplaysView {
             .collect::<Vec<_>>(),
     ));
     // Profiles.
+    if let Some(e) = &state.store_error {
+        let path = shorten_home(&state.store_path.clone().unwrap_or_else(profiles::path).display().to_string());
+        v.store_error =
+            s(format!("Couldn't read {path} ({e}). Lituus leaves it as it is and saves no profiles until it's fixed."));
+    }
     let active = state.store.active(&state.live);
     v.switch_hotplug = options.hotplug;
     v.profiles = ModelRc::new(VecModel::from(
@@ -1575,6 +1605,58 @@ mod tests {
     /// Hyprland's monitors read again.
     fn reread(st: &mut State, monitors: &[Monitor]) {
         loaded(st, Ok((Hyprland::at("/nonexistent"), true, monitors.to_vec())));
+    }
+
+    /// A displays.toml Lituus can't read (a typo, or not UTF-8) isn't replaced by an empty one:
+    /// not by a profile save, nor by Keep. The page says why.
+    #[test]
+    fn a_displays_toml_it_cant_read_isnt_written_over() {
+        for (name, broken) in [
+            (
+                "broken-typo",
+                b"switch_on_hotplug = true\nswitch_on_hotplugg = true\n\n[[profile]]\nname = \"Desk\"\n".to_vec(),
+            ),
+            ("broken-utf8", b"# caf\xe9\n[[profile]]\nname = \"Desk\"\n".to_vec()),
+        ] {
+            let dir = std::env::temp_dir().join(format!("lituus-displays-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("hyprland.lua"), "require(\"lituus\")\n").unwrap();
+            std::fs::write(dir.join("displays.toml"), &broken).unwrap();
+            let mut st =
+                State { hypr_dir: Some(dir.clone()), store_path: Some(dir.join("displays.toml")), ..State::default() };
+            loaded(&mut st, Ok((Hyprland::at("/nonexistent"), true, fixture())));
+            let w = weak();
+            act(&w, &mut st, "profile-save", "Couch", 0.0);
+            act(&w, &mut st, "select", "3", 0.0);
+            act(&w, &mut st, "rate", "0", 0.0);
+            act(&w, &mut st, "apply", "", 0.0);
+            assert!(st.keep_pending());
+            act(&w, &mut st, "keep", "", 0.0);
+            assert_eq!(std::fs::read(dir.join("displays.toml")).unwrap(), broken, "{name}: the file was replaced");
+            // Lituus's own file is written all the same.
+            assert!(std::fs::read_to_string(dir.join("lituus.lua")).unwrap().contains("hl.monitor"));
+            let v = view(&st);
+            assert!(v.status.starts_with("Couldn't read displays.toml ("), "{name}: {}", v.status);
+            assert!(v.store_error.contains("saves no profiles until it's fixed"), "{name}: {}", v.store_error);
+            assert_eq!(v.profiles.row_count(), 0);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    /// Once the file is fixed, the next read of the monitors takes it.
+    #[test]
+    fn a_fixed_displays_toml_is_read_again() {
+        let (mut st, dir) = state_in("fixed");
+        std::fs::write(dir.join("displays.toml"), "[[profile]]\nname = \"Desk\"\ntransfrom = 1\n").unwrap();
+        st.store_read = false;
+        reread(&mut st, &fixture());
+        assert_eq!(st.store_error.as_deref(), Some("line 3: unknown field `transfrom`"));
+        std::fs::write(dir.join("displays.toml"), "[[profile]]\nname = \"Desk\"\n").unwrap();
+        reread(&mut st, &fixture());
+        assert_eq!((st.store_error.as_deref(), st.store.profiles.len()), (None, 1));
+        assert_eq!(view(&st).store_error, "");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2175,7 +2257,7 @@ mod tests {
         let connected: Vec<String> = st.monitors.iter().map(|m| m.selector(&st.monitors)).collect();
         assert_eq!(st.store.matching(&connected).map(|p| p.name.as_str()), Some("Desk"));
         assert_eq!(st.store.active(&st.live), Some(0));
-        assert!(!profiles::load(&dir.join("displays.toml")).name_by_description);
+        assert!(!profiles::load(&dir.join("displays.toml")).unwrap().name_by_description);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2199,7 +2281,7 @@ mod tests {
         assert_eq!(v.status, "2 changes not applied");
         assert!(v.can_apply && v.can_revert);
         // Nothing saved yet.
-        let saved = profiles::load(&dir.join("displays.toml"));
+        let saved = profiles::load(&dir.join("displays.toml")).unwrap();
         assert!(saved.switch_on_hotplug && saved.profiles[0].auto && saved.profiles[0].exec.is_empty());
         act(&w, &mut st, "revert", "", 0.0);
         assert!(view(&st).switch_hotplug);
@@ -2210,7 +2292,7 @@ mod tests {
         act(&w, &mut st, "profile-exec", "0:notify-send Desk", 0.0);
         act(&w, &mut st, "apply", "", 0.0);
         assert!(!st.keep_pending());
-        let saved = profiles::load(&dir.join("displays.toml"));
+        let saved = profiles::load(&dir.join("displays.toml")).unwrap();
         assert!(!saved.switch_on_hotplug);
         assert_eq!(saved.profiles[0].exec, "notify-send Desk");
         let v = view(&st);

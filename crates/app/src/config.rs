@@ -182,20 +182,88 @@ pub fn path() -> PathBuf {
     dir().join("config.toml")
 }
 
-/// Reads the config, or the defaults if there's none. A broken file is reported and ignored, so
-/// a typo never keeps the app from starting.
+/// Reads the config, or the defaults if there's none. What Lituus can't use is left out and the
+/// rest is used, so a typo never keeps the app from starting nor turns every setting back to its
+/// default; `load_noting` says what was left out.
 pub fn load(path: &Path) -> Config {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text).unwrap_or_else(|error| {
-            eprintln!("lituus: ignoring {}: {error}", path.display());
-            Config::default()
-        }),
-        Err(_) => Config::default(),
+    load_noting(path).0
+}
+
+/// The config, and what the Settings page says about the file when Lituus couldn't use all of
+/// it: a title and a line.
+pub fn load_noting(path: &Path) -> (Config, Option<(String, String)>) {
+    let not_used = || "config.toml isn't used".to_owned();
+    let text = match lituus_fs::read_or_empty(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return (Config::default(), Some((not_used(), "It isn't UTF-8 text, so Lituus uses its defaults.".into())));
+        }
+        Err(e) => {
+            return (
+                Config::default(),
+                Some((not_used(), format!("Lituus couldn't read it ({e}), so it uses its defaults."))),
+            );
+        }
+    };
+    match parse_leaving_out(&text) {
+        Ok((config, left_out)) if left_out.is_empty() => (config, None),
+        Ok((config, left_out)) => {
+            let text = format!(
+                "Unknown, or a value Lituus can't use: {}. The rest of the file is in use.",
+                left_out.join(", ")
+            );
+            (config, Some(("Part of config.toml isn't used".into(), text)))
+        }
+        Err(e) => {
+            let mut problem = describe(&text, &e);
+            if let Some(first) = problem.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            (Config::default(), Some((not_used(), format!("{problem}. Lituus uses its defaults until it's fixed."))))
+        }
     }
 }
 
-pub fn parse(text: &str) -> Result<Config, toml::de::Error> {
-    toml::from_str(text)
+/// The config, leaving out what can't be used: a table Lituus doesn't know whole, and in a table
+/// it knows, each key it doesn't know or whose value doesn't fit. Returns those left out
+/// ("appearance", "theme.mode"). Only a file that isn't TOML at all is an error.
+fn parse_leaving_out(text: &str) -> Result<(Config, Vec<String>), toml::de::Error> {
+    use toml::{Table, Value};
+    let fits = |table: Table| table.try_into::<Config>().is_ok();
+    let one = |key: &str, value: Value| Table::from_iter([(key.to_owned(), value)]);
+    let file: Table = text.parse()?;
+    let mut kept = Table::new();
+    let mut left_out = Vec::new();
+    for (name, value) in file {
+        if fits(one(&name, value.clone())) {
+            kept.insert(name, value);
+        } else if let Value::Table(table) = value
+            && fits(one(&name, Value::Table(Table::new())))
+        {
+            let mut part = Table::new();
+            for (key, value) in table {
+                if fits(one(&name, Value::Table(one(&key, value.clone())))) {
+                    part.insert(key, value);
+                } else {
+                    left_out.push(format!("{name}.{key}"));
+                }
+            }
+            kept.insert(name, Value::Table(part));
+        } else {
+            left_out.push(name);
+        }
+    }
+    Ok((kept.try_into()?, left_out))
+}
+
+/// A TOML error in a line: "line 16: unknown field `transfrom`". serde's list of the fields it
+/// expected instead is left out: it's long, and the file's own comments say what goes where.
+pub fn describe(text: &str, error: &toml::de::Error) -> String {
+    let message = error.message().split(", expected one of").next().unwrap_or_default().trim();
+    match error.span().and_then(|span| text.get(..span.start)) {
+        Some(before) => format!("line {}: {message}", before.matches('\n').count() + 1),
+        None => message.to_owned(),
+    }
 }
 
 impl Builtin {
@@ -243,24 +311,28 @@ impl Mode {
 }
 
 /// Sets one key, keeping the rest of the file as it is (comments and order included).
+/// A file that can't be read is an error, not an empty file to write the key to.
 pub fn set(path: &Path, table: &str, key: &str, value: impl Into<toml_edit::Value>) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = lituus_fs::read_or_empty(path)?;
     let text = with(&text, table, key, value).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    lituus_fs::write_atomic(path, text)
 }
 
 /// Removes one key, keeping the rest of the file (and the table, even when it's empty).
 pub fn unset(path: &Path, table: &str, key: &str) -> std::io::Result<()> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let text = match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        read => read?,
+    };
     let mut doc: toml_edit::DocumentMut =
         text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if let Some(t) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
         t.remove(key);
     }
-    std::fs::write(path, doc.to_string())
+    lituus_fs::write_atomic(path, doc.to_string())
 }
 
 /// Sets one key to a list of strings, keeping the rest of the file.
@@ -298,6 +370,11 @@ fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole file, strictly: every key known, every value usable.
+    fn parse(text: &str) -> Result<Config, toml::de::Error> {
+        toml::from_str(text)
+    }
 
     #[test]
     fn empty_config_has_the_default_sources() {
@@ -352,6 +429,58 @@ mod tests {
         let config = parse(&text).unwrap();
         assert_eq!(config.theme.mode, Mode::Light);
         assert!(config.tray.enabled && !config.tray.keep_running && config.notifications.enabled);
+    }
+
+    /// One key or table Lituus doesn't know (a typo, or a newer Lituus's) costs only that key, and
+    /// Settings says which.
+    #[test]
+    fn what_cant_be_used_is_left_out_and_said() {
+        let dir = std::env::temp_dir().join(format!("lituus-config-left-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let text = "[appearance]\nfont = \"Inter\"\n\n[theme]\nmode = \"light\"\nmood = \"calm\"\nbuiltin = \"purple\"\n\n[tray]\nenabled = false\n\n[updates]\npacman = \"sudo pacman -Syu\"\naur = 3\n";
+        std::fs::write(&path, text).unwrap();
+        let (config, note) = load_noting(&path);
+        assert_eq!((config.theme.mode, config.theme.builtin), (Mode::Light, Builtin::Teal));
+        assert!(!config.tray.enabled && config.tray.keep_running);
+        assert_eq!(config.updates.keys().collect::<Vec<_>>(), ["pacman"]);
+        let (title, text) = note.unwrap();
+        assert_eq!(title, "Part of config.toml isn't used");
+        for name in ["appearance", "theme.mood", "theme.builtin", "updates.aur"] {
+            assert!(text.contains(name), "{name} isn't named: {text}");
+        }
+        assert!(!text.contains("theme.mode") && !text.contains("tray"), "{text}");
+        // Setting a key keeps what was left out, in the file.
+        set(&path, "tray", "enabled", true).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("font = \"Inter\""));
+        // A file all Lituus's own has nothing to say.
+        std::fs::write(&path, "[theme]\nmode = \"dark\"\n").unwrap();
+        assert_eq!(load_noting(&path), (parse("[theme]\nmode = \"dark\"\n").unwrap(), None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file that isn't TOML, or can't be read, means the defaults, and Settings says why; and
+    /// a setting changed then isn't written over it.
+    #[test]
+    fn a_file_lituus_cant_read_is_said_and_kept() {
+        let dir = std::env::temp_dir().join(format!("lituus-config-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[theme]\nmode = \"dark\"\n[tray\n").unwrap();
+        let (config, note) = load_noting(&path);
+        assert_eq!(config, Config::default());
+        let (title, text) = note.unwrap();
+        assert_eq!(title, "config.toml isn't used");
+        assert!(text.starts_with("Line 3: "), "{text}");
+        let latin1 = b"# caf\xe9\n[theme]\nmode = \"dark\"\n";
+        std::fs::write(&path, latin1).unwrap();
+        assert_eq!(load_noting(&path).1.unwrap().1, "It isn't UTF-8 text, so Lituus uses its defaults.");
+        assert!(set(&path, "tray", "enabled", false).is_err());
+        assert!(unset(&path, "theme", "mode").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), latin1);
+        // No file: the defaults, and nothing to say.
+        assert_eq!(load_noting(&dir.join("none.toml")), (Config::default(), None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
