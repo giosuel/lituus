@@ -2897,9 +2897,14 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
         let path = config::path();
         let mut last: Option<Signature> = None;
         loop {
-            let config = config::load(&path);
+            let (config, note) = config::load_noting(&path);
             let now = signature(&path, &config);
             if last.as_ref() != Some(&now) {
+                // Once a change, not on every look.
+                if let Some((title, text)) = &note {
+                    eprintln!("lituus: {}: {title}. {text}", path.display());
+                }
+                let (note_title, note) = note.unwrap_or_default();
                 let follow = config.theme.follow_wallpaper;
                 let (statuses, palette) = theme::resolve(&config.theme.sources, follow);
                 let wallpaper = theme::resolve(&config.theme.sources, true).1;
@@ -2925,6 +2930,8 @@ fn spawn_theme_watcher(weak: slint::Weak<MainWindow>) {
                     apply_settings(&window, settings);
                     render(&window);
                     window.set_config_path(shorten_home(&config_path).into());
+                    window.set_config_note_title(note_title.into());
+                    window.set_config_note(note.into());
                     window.set_sources(model(rows.into_iter().map(SourceRow::from).collect()));
                 });
                 last = Some(now);
