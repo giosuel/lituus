@@ -443,8 +443,10 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
         }
         (lituus_wallpaper::hyprpaper_conf(&state.hypr_dir()), entries)
     });
-    let after = if after { state.settings.after.trim().to_owned() } else { String::new() };
+    let command = if after { state.settings.after.trim().to_owned() } else { String::new() };
+    let file = sets.last().map(|s| s.path.clone());
     let env = state.env();
+    let after_env = env.clone();
     let work = move || -> Result<(), String> {
         for set in &sets {
             lituus_wallpaper::set(&env, program, set, &monitors)
@@ -453,9 +455,9 @@ fn set_picture(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, mut se
         if let Some((path, entries)) = conf {
             write_conf(&path, &entries).map_err(|e| format!("Set, but hyprpaper.conf couldn't be saved: {e}."))?;
         }
-        run_after(&env, &after, sets.last().map(|s| s.path.as_path()))
+        Ok(())
     };
-    run(weak, state, work);
+    run(weak, state, work, Some(Box::new(move || run_after(&after_env, &command, file.as_deref()))));
 }
 
 /// The message for a path hyprpaper.conf can't hold (`hyprpaper_unwritable`).
@@ -474,25 +476,39 @@ fn run_after(env: &Env, after: &str, file: Option<&Path>) -> Result<(), String> 
     }
 }
 
-/// Does `work` on a thread, then shows its failure, if any, and reads what's shown again; in
-/// tests (no window), at once.
+/// The command after a change, once the picture is set.
+type After = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// Does `work` on a thread, then shows its failure, if any, and reads what's shown again; then
+/// runs `after`, if `work` went well, and shows its failure. The page doesn't wait for `after`,
+/// which may take long or never end. In tests (no window), all at once.
 fn run(
     weak: Option<&slint::Weak<MainWindow>>,
     state: &mut State,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    after: Option<After>,
 ) {
     match weak {
         Some(weak) => {
             let weak = weak.clone();
             std::thread::spawn(move || {
                 let done = work();
-                let w = weak.clone();
-                let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| app.wallpapers.message = done.err()));
+                let set = done.is_ok();
+                show(&weak, done.err());
                 refresh(&weak);
+                if set && let Some(Err(e)) = after.map(|after| after()) {
+                    show(&weak, Some(e));
+                }
             });
         }
-        None => state.message = work().err(),
+        None => state.message = work().and_then(|()| after.map_or(Ok(()), |after| after())).err(),
     }
+}
+
+/// The page's message, from a thread: a failure, or none.
+fn show(weak: &slint::Weak<MainWindow>, message: Option<String>) {
+    let w = weak.clone();
+    let _ = weak.upgrade_in_event_loop(move |_| update(&w, move |app| app.wallpapers.message = message));
 }
 
 // ---- the slideshow -----------------------------------------------------------------------------
@@ -529,35 +545,44 @@ pub fn next(weak: &slint::Weak<MainWindow>, state: &mut State) {
     std::thread::spawn(move || {
         let done = next_picture(&mut job);
         let w = weak.clone();
+        let failed = done.as_ref().err().cloned();
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&w, move |app| {
+                // Set: the slideshow goes on, whatever the command after it does (one that never
+                // ends stopped it for good).
                 app.wallpapers.changing = false;
-                if let Err(e) = done {
+                if let Some(e) = failed {
                     app.wallpapers.message = Some(e);
                 }
             })
         });
         refresh(&weak);
+        if let Ok(Some(file)) = done
+            && let Err(e) = run_after(&job.env(), job.settings.after.trim(), Some(&file))
+        {
+            show(&weak, Some(e));
+        }
     });
 }
 
-/// Reads what runs and is shown, and with awww sets the folder's next picture on every monitor.
-fn next_picture(job: &mut State) -> Result<(), String> {
+/// Reads what runs and is shown, and with awww sets the folder's next picture on every monitor:
+/// the picture set, if one was.
+fn next_picture(job: &mut State) -> Result<Option<PathBuf>, String> {
     let env = job.env();
     loaded(job, read(&env));
     if job.program() != Some(Program::Awww) {
-        return Ok(());
+        return Ok(None);
     }
     let pictures = sorted(&job.folder_path(), &job.settings)?;
     let now = job.current.first().map(|(_, p)| p.clone());
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     let Some(path) = following(&pictures, now.as_deref(), job.settings.order != "in-order", seed as usize) else {
-        return Ok(());
+        return Ok(None);
     };
     job.target = 0;
     let set = set_for(job, path);
     lituus_wallpaper::set(&env, Program::Awww, &set, &[]).map_err(|e| format!("Couldn't set the picture: {e}."))?;
-    run_after(&env, job.settings.after.trim(), Some(&set.path))
+    Ok(Some(set.path))
 }
 
 /// The folder's pictures in the grid's order.
@@ -623,7 +648,7 @@ fn hyprpaper_slideshow(weak: Option<&slint::Weak<MainWindow>>, state: &mut State
         }
         lituus_wallpaper::start(&env, Program::Hyprpaper).map_err(|e| format!("Couldn't start hyprpaper again: {e}."))
     };
-    run(weak, state, work);
+    run(weak, state, work, None);
 }
 
 /// hyprpaper's splash (Hyprland's text over the picture): written, and hyprpaper started again
@@ -656,7 +681,7 @@ fn hyprpaper_splash(weak: Option<&slint::Weak<MainWindow>>, state: &mut State, o
         }
         lituus_wallpaper::start(&env, Program::Hyprpaper).map_err(|e| format!("Couldn't start hyprpaper again: {e}."))
     };
-    run(weak, state, work);
+    run(weak, state, work, None);
 }
 
 /// A slideshow setting changed: hyprpaper's is written and started again; Lituus's own takes it
@@ -1607,17 +1632,14 @@ mod tests {
         let mut job = State { settings: state.settings.clone(), ..Default::default() };
         job.env = state.env.clone();
         job.home = state.home.clone();
-        next_picture(&mut job).unwrap();
         let fjord = state.folder_path().join("fjord.png");
+        // The command after it runs apart (`next`), so a slow one doesn't hold the slideshow up.
+        assert_eq!(next_picture(&mut job).unwrap(), Some(fjord.clone()));
         let c = calls(&d);
-        assert!(
-            c.contains(&format!(
-                "awww img {} --resize crop --transition-type fade --transition-duration 1.5",
-                fjord.display()
-            )),
-            "{c:?}"
+        assert_eq!(
+            c.last().unwrap(),
+            &format!("awww img {} --resize crop --transition-type fade --transition-duration 1.5", fjord.display())
         );
-        assert_eq!(c.last().unwrap(), &format!("matugen image {}", fjord.display()));
         // A click runs it with that picture.
         let alps = state.folder_path().join("alps.png");
         act_with(None, &mut state, "set", &alps.display().to_string(), 0.0);

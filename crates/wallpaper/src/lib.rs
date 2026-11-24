@@ -9,8 +9,12 @@
 mod hyprpaper;
 mod pictures;
 
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub use hyprpaper::{
     Entry as HyprpaperEntry, conf_text as hyprpaper_conf_text, entries as hyprpaper_entries,
@@ -349,9 +353,48 @@ pub fn after_command(template: &str, file: &Path) -> String {
     template.replace("{file}", &quoted)
 }
 
-/// Runs the command after a change through the shell, and waits for it.
+/// Runs the command after a change through the shell, and waits for the shell: not for what it
+/// leaves running (`waybar &`), which keeps the shell's output open for as long as it runs. If it
+/// fails, the error is what it wrote to stderr.
 pub fn run_after(env: &Env, template: &str, file: &Path) -> Result<(), Error> {
-    env.run("/bin/sh", &["-c", &after_command(template, file)]).map(|_| ())
+    let (mut reader, writer) = std::io::pipe()?;
+    let mut child = {
+        let mut shell = env.command("/bin/sh");
+        // A process group of its own, as `start`'s: what it leaves running isn't stopped by Ctrl+C
+        // in the terminal Lituus was started from.
+        shell.args(["-c", &after_command(template, file)]).stdout(Stdio::null()).stderr(writer).process_group(0);
+        busy_retry(|| shell.spawn())?
+        // `shell`, with this end of the pipe, goes here: only the shell and what it starts keep it.
+    };
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let (ended, end) = std::sync::mpsc::channel();
+    let kept = said.clone();
+    // Read to the end, however long what was left running writes: a full pipe would stop it, and
+    // a closed one end it.
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+                    let room = 4096usize.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = ended.send(());
+    });
+    if child.wait()?.success() {
+        return Ok(());
+    }
+    // What the shell wrote is read at once, unless something it left running holds the pipe: a
+    // moment for it then.
+    let _ = end.recv_timeout(Duration::from_millis(200));
+    let text = String::from_utf8_lossy(&said.lock().unwrap_or_else(|e| e.into_inner())).trim().to_owned();
+    Err(Error::Refused(text))
 }
 
 /// The line that starts it with Hyprland, in Lua or in hyprlang.
@@ -460,6 +503,23 @@ mod tests {
         let c = calls(&d);
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-3, /w/a.jpg, stretch".to_owned()), "{c:?}");
         assert!(c.contains(&"hyprctl hyprpaper wallpaper DP-5, /w/a.jpg, stretch".to_owned()), "{c:?}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_command_that_leaves_something_running_returns() {
+        let (env, d) = stand_ins("background", &[]);
+        let start = std::time::Instant::now();
+        run_after(&env, "/bin/sleep 12 & true", Path::new("/w/a.jpg")).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", start.elapsed());
+        // One that fails says what it wrote, though what it left running still writes.
+        let failed = run_after(
+            &env,
+            "(/bin/sleep 1; echo later >&2) & echo 'no such scheme' >&2; exit 1",
+            Path::new("/w/a.jpg"),
+        );
+        assert!(matches!(&failed, Err(Error::Refused(text)) if text == "no such scheme"), "{failed:?}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", start.elapsed());
         std::fs::remove_dir_all(&d).unwrap();
     }
 
