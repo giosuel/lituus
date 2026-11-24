@@ -5256,4 +5256,72 @@ mod tests {
             (vec!["down".to_owned(), "esc".into()], "d".to_owned())
         );
     }
+
+    /// Shortcuts with two of the user's own (Open Kitty, Close window); what was done to them.
+    fn shortcuts_with_two_rows(window: &MainWindow) -> Rc<RefCell<Vec<String>>> {
+        let acted = Rc::new(RefCell::new(Vec::new()));
+        let a = acted.clone();
+        window.on_shortcuts_act(move |verb, arg| a.borrow_mut().push(format!("{verb} {arg}")));
+        window.set_page("shortcuts".into());
+        let row = |id: &str, title: &str| super::ShortcutRow {
+            id: id.into(),
+            title: title.into(),
+            keys: super::model(vec![SharedString::from("Super"), "Q".into()]),
+            on: true,
+            can_delete: true,
+            ..Default::default()
+        };
+        window.set_shortcuts(super::ShortcutsView {
+            state: "list".into(),
+            editable: true,
+            rows: super::model(vec![
+                super::ShortcutRow { label: "APPS".into(), ..Default::default() },
+                row("c0", "Open Kitty"),
+                row("c1", "Close window"),
+            ]),
+            ..Default::default()
+        });
+        mock_elapsed_time(Duration::from_millis(50));
+        acted
+    }
+
+    /// A shortcut's ⋯ menu is worked from the keyboard: Enter opens it, ↓ and Enter choose from
+    /// it, and the focus is back on ⋯ after it.
+    #[test]
+    fn a_shortcuts_menu_is_worked_from_the_keyboard() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        tab_to(&window, "More for Open Kitty");
+        press(&window, Key::Return);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::DownArrow);
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["toggle c0"]);
+        assert!(ring_on(&window, "More for Open Kitty"));
+        // Esc closes it without a choice, Delete… is the last one.
+        press(&window, Key::Return);
+        press(&window, Key::Escape);
+        press(&window, Key::Return);
+        for _ in 0..5 {
+            press(&window, Key::DownArrow);
+        }
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["toggle c0", "delete c0"]);
+    }
+
+    /// While the menu is open the keys are its own: Tab and Enter don't reach the rows behind it.
+    #[test]
+    fn an_open_shortcuts_menu_keeps_the_keys_from_the_page() {
+        let window = window();
+        let acted = shortcuts_with_two_rows(&window);
+        tab_to(&window, "More for Open Kitty");
+        press(&window, Key::Return);
+        mock_elapsed_time(Duration::from_millis(50));
+        press(&window, Key::Tab);
+        // The menu keeps the focus too: the window doesn't take it back.
+        wait_for_the_focus();
+        press(&window, Key::Tab);
+        press(&window, Key::Return);
+        assert_eq!(*acted.borrow(), ["open c0"]);
+    }
 }
