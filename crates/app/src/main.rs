@@ -260,10 +260,6 @@ fn main() -> Result<(), slint::PlatformError> {
     if matches!(claim, instance::Claim::Passed) {
         return Ok(());
     }
-    if cli.toggle_wifi {
-        toggle_wifi_once();
-        return Ok(());
-    }
     let settings = Settings::from(&config::load(&config::path()));
     APP.with(|app| {
         let mut app = app.borrow_mut();
@@ -1140,13 +1136,14 @@ fn connect_callbacks(window: &MainWindow) {
             let pretty = info.map(|i| i.pretty.clone()).unwrap_or_default();
             (hostname, pretty)
         });
+        // A network name that isn't what the name suggests was chosen: it's kept.
+        let chosen = hostnamed::chosen_apart(&pretty, &hostname);
         window.set_hostname_name_input(if pretty.is_empty() { hostname.clone() } else { pretty }.into());
         window.set_hostname_input(hostname.into());
         update(&weak, |app| {
             app.hostname_open = true;
             app.hostname_error.clear();
-            // A network name that isn't what the name suggests was chosen: it's kept.
-            app.hostname_edited = false;
+            app.hostname_edited = chosen;
         });
     });
     let weak = window.as_weak();
