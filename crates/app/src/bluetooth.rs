@@ -1330,10 +1330,19 @@ pub fn counting_down(app: &App) -> bool {
 }
 
 fn deliver(weak: &slint::Weak<MainWindow>, event: Event) {
-    let _ = weak.upgrade_in_event_loop(move |window| {
-        APP.with(|app| handle(&mut app.borrow_mut(), event));
-        crate::render(&window);
-    });
+    let _ = weak.upgrade_in_event_loop(move |window| deliver_now(&window, event));
+}
+
+fn deliver_now(window: &MainWindow, event: Event) {
+    // In the background or the tray the window isn't shown, and BlueZ gives up waiting for an
+    // answer nobody sees: the device can't pair or connect. So it's brought up, as for a Wi-Fi
+    // password.
+    let question = matches!(event, Event::Agent(AgentEvent::Ask(_) | AgentEvent::Display { .. }));
+    APP.with(|app| handle(&mut app.borrow_mut(), event));
+    if question {
+        crate::show_for_question(window);
+    }
+    crate::render(window);
 }
 
 /// Watches BlueZ on a thread of its own, hands every snapshot to the page, runs the page's
@@ -1973,5 +1982,19 @@ mod tests {
             rx.try_recv().unwrap(),
             Command::Forget { adapter: "/org/bluez/hci0".into(), device: "/org/bluez/hci0/dev_2".into() }
         );
+    }
+
+    /// Started in the background, or closed to the tray: a pairing request brings the window up,
+    /// with the question, or BlueZ gives up waiting for an answer nobody sees (04-6).
+    #[test]
+    fn a_pairing_request_brings_up_a_hidden_window() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        assert!(!window.window().is_visible());
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let request = PairingRequest::for_tests("/org/bluez/hci0/dev_1", Ask::Confirm(482_913), reply);
+        deliver_now(&window, Event::Agent(AgentEvent::Ask(request)));
+        assert!(window.window().is_visible(), "the request waits in a hidden window");
+        assert!(window.get_bt_pair_open());
     }
 }

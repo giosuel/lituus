@@ -2054,6 +2054,15 @@ async fn tell_keyring(weak: &slint::Weak<MainWindow>, keyrings: &secrets::Keyrin
     });
 }
 
+/// Brings the window up for a question only the user can answer (a Wi-Fi password, pairing a
+/// device, a file a device sends). Started in the background, or closed to the tray, nobody would
+/// see it, and what's waiting for the answer gives up.
+fn show_for_question(window: &MainWindow) {
+    if !window.window().is_visible() {
+        let _ = window.show();
+    }
+}
+
 /// The secret agent's way to the password dialog.
 #[derive(Clone)]
 struct AgentUi(slint::Weak<MainWindow>);
@@ -2066,10 +2075,7 @@ impl secrets::Ui for AgentUi {
                 app.prompts.push_back(prompt);
                 next_prompt(&mut app);
             });
-            // Started in the background, or closed: the question needs the window.
-            if !window.window().is_visible() {
-                let _ = window.show();
-            }
+            show_for_question(&window);
             render(&window);
         });
     }
