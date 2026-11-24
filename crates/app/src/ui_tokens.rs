@@ -1,6 +1,9 @@
 //! The One UI library's check (D-46): sizes of type and colours come from theme.slint's tokens
 //! (`Type.*`, `Theme.*`), not from numbers written into a page. A raw `font-size: 14px` or a
 //! `#rrggbb` anywhere but in theme.slint (and the icon and logo paths) fails here, with where.
+//!
+//! A unit test, not one in tests/: an integration test makes cargo build the whole app a second
+//! time as a plain binary, next to the test one, and the two together don't fit in CI's memory.
 
 use std::path::Path;
 
