@@ -1,5 +1,5 @@
 {
-  description = "Lituus: Wi-Fi, wired and VPN connections for Hyprland and other Linux desktops";
+  description = "Lituus: settings app for Hyprland and other desktops without one";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

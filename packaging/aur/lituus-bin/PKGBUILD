@@ -3,7 +3,7 @@ pkgname=lituus-bin
 _pkgname=lituus
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Settings for Hyprland: network, Bluetooth, sound and displays (prebuilt binary)'
+pkgdesc='Settings app for Hyprland and other desktops without one (prebuilt binary)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/giosuel/lituus'
 license=('AGPL-3.0-or-later' 'OFL-1.1')
@@ -14,7 +14,12 @@ optdepends=('networkmanager-openvpn: OpenVPN connections'
             'networkmanager-openconnect: Cisco AnyConnect connections, with web sign-in'
             'bluez: Bluetooth, and files over Bluetooth (its obexd)'
             'pipewire-pulse: the Sound page and Bluetooth audio profiles'
-            'hyprland: the Displays page'
+            'hyprland: the Displays, Keyboard, Mouse & touchpad and Shortcuts pages'
+            'awww: the Wallpaper page (or hyprpaper)'
+            'hyprpaper: the Wallpaper page (or awww)'
+            'matugen: colours that follow the wallpaper'
+            'xdg-terminal-exec: the default terminal on Default apps'
+            'pacman-contrib: current update counts on System (checkupdates)'
             'xdg-desktop-portal: file dialogs (certificates, VPN files, files to send)'
             'gnome-keyring: passwords kept "for me only" (or KWallet)')
 provides=("$_pkgname=$pkgver")
@@ -36,5 +41,5 @@ package() {
   install -Dm644 packaging/linux/icons/ch.giosuel.Lituus.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$_pkgname"
   # The fonts built into the binary.
-  install -Dm644 crates/app/ui/fonts/*-LICENSE.txt -t "$pkgdir/usr/share/licenses/$_pkgname"
+  install -Dm644 crates/app/ui/fonts/*-LICENSE.txt -t "$pkgdir/usr/share/licenses/$pkgname"
 }

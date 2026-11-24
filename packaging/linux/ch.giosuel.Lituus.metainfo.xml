@@ -4,21 +4,27 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Lituus</name>
-  <summary>Network, Bluetooth, sound and displays for Hyprland</summary>
+  <summary>Settings for Hyprland and other desktops</summary>
   <description>
     <p>
-      The settings app for Linux desktops that don't come with one, such as Hyprland.
+      The settings app for Linux desktops that don't come with one, such as Hyprland. It drives the
+      services you already have, so their own tools keep working alongside it.
     </p>
     <ul>
       <li>Network, through NetworkManager: Wi-Fi, wired, WireGuard, OpenVPN and Cisco AnyConnect (with NetworkManager's OpenConnect plugin), a hotspot, and every connection setting</li>
       <li>Bluetooth, through BlueZ: pairing, devices, headset audio, files and a phone's internet</li>
       <li>Sound, through PipeWire: outputs, inputs, a volume per app, and sound cards' profiles</li>
       <li>Displays, through Hyprland: the layout, modes, scale, HDR, workspaces and profiles that switch on hotplug</li>
+      <li>Input, through Hyprland: keyboard layouts and key repeat, mice and touchpads, and your shortcuts</li>
+      <li>Wallpaper, through awww or hyprpaper: pictures from a folder on each monitor, transitions and a slideshow</li>
+      <li>Apps and default apps: what your launcher shows and how each app starts, and which app opens links, each kind of file and the terminal</li>
+      <li>System: hardware, storage, package updates and the computer's name</li>
       <li>Colours from your wallpaper (matugen), or built-in themes</li>
     </ul>
   </description>
   <launchable type="desktop-id">ch.giosuel.Lituus.desktop</launchable>
-  <url type="homepage">https://github.com/giosuel/lituus</url>
+  <url type="homepage">https://lituus.giosuel.io</url>
+  <url type="vcs-browser">https://github.com/giosuel/lituus</url>
   <url type="bugtracker">https://github.com/giosuel/lituus/issues</url>
   <developer id="ch.giosuel">
     <name>giosuel</name>

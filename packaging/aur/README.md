@@ -4,8 +4,10 @@
 - `lituus-bin`: installs the release tarball (`Lituus-<version>-linux-<x64|arm64>.tar.gz`).
 
 The release workflow pushes both for every stable tag (no `-` in it): it sets `pkgver` from the
-tag, refreshes the checksums, test-builds the package and pushes `PKGBUILD` and `.SRCINFO`. So the
-`pkgver` here can stay old, and the `.SRCINFO` files aren't kept in this repository.
+tag, refreshes the checksums, and builds, tests and installs the package in a clean Arch container.
+Only when both packages built does a second job, the only one with the AUR key, push each
+`PKGBUILD` and its `.SRCINFO`, unless the AUR already has a newer version. So the `pkgver` here can
+stay old, and the `.SRCINFO` files aren't kept in this repository.
 
 Before the first release, the owner:
 

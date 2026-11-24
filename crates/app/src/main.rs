@@ -56,7 +56,7 @@ const APP_ID: &str = "ch.giosuel.Lituus";
 const THEME_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
-#[command(name = "lituus", version = env!("APP_VERSION"), about = "Manage Wi-Fi, wired and VPN connections")]
+#[command(name = "lituus", version = env!("APP_VERSION"), about = "Settings app for Hyprland and other desktops without one")]
 struct Cli {
     /// Start without a window and keep running when it's closed, so NetworkManager can ask for
     /// passwords kept in the keyring (for example `exec-once = lituus --background` in
