@@ -46,6 +46,8 @@ pub struct State {
     pub(crate) written: Option<String>,
     /// Counts the temperature's moves: the screens go back to the schedule after the last.
     pub(crate) moves: u64,
+    /// A moved temperature shows (for `PREVIEW`): a waiting schedule waits for it too.
+    pub(crate) previewing: bool,
     /// What the screens show through hyprsunset, as far as Lituus knows: a temperature, or their
     /// own colours (`Some(None)`); `None` before Lituus told it anything.
     pub(crate) shown: Option<Option<u32>>,
@@ -303,6 +305,7 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, preview: bool) {
     show(Some(state.temperature));
     state.shown = Some(Some(state.temperature));
     state.pending = true;
+    state.previewing = true;
     state.moves += 1;
     let ticket = state.moves;
     let weak = weak.clone();
@@ -312,6 +315,7 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, preview: bool) {
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&w, |app| {
                 if app.night.moves == ticket {
+                    app.night.previewing = false;
                     show_schedule(&w, &mut app.night);
                 }
             })
@@ -362,7 +366,7 @@ fn show_schedule(weak: &slint::Weak<MainWindow>, state: &mut State) {
 /// what it shows, asked on another thread (None: it couldn't be asked).
 fn settle(weak: &slint::Weak<MainWindow>, state: &mut State, running: Option<Option<u32>>) {
     let wanted = is_on(state).then_some(state.temperature);
-    if state.pending && (wanted.is_none() || running != Some(wanted)) {
+    if state.pending && !state.previewing && (wanted.is_none() || running != Some(wanted)) {
         restart_hyprsunset(weak);
         state.pending = false;
         state.shown = Some(wanted);
