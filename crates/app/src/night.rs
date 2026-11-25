@@ -99,13 +99,7 @@ fn install_command(os_release: &str) -> String {
 /// At Lituus's start: with Night light on and its schedule in place, hyprsunset should run.
 pub fn ensure_running(state: &State) {
     if state.installed && state.enabled && state.written.is_some() && crate::power::pids("hyprsunset").is_empty() {
-        start_hyprsunset();
-    }
-}
-
-fn start_hyprsunset() {
-    if let Ok(hypr) = lituus_hypr::Hyprland::from_env() {
-        let _ = hypr.request("dispatch exec hyprsunset");
+        std::thread::spawn(|| crate::power::start("hyprsunset"));
     }
 }
 
@@ -283,7 +277,7 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, restart: bool, previ
             let _ = weak.upgrade_in_event_loop(move |_| {
                 update(&weak2, |app| {
                     if app.night.restarts == ticket {
-                        restart_hyprsunset();
+                        restart_hyprsunset(&weak2);
                     }
                 })
             });
@@ -291,9 +285,28 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, restart: bool, previ
     }
 }
 
-fn restart_hyprsunset() {
-    crate::power::restart("hyprsunset");
+/// Started again on a thread; if it doesn't keep running, the page says so.
+fn restart_hyprsunset(weak: &slint::Weak<MainWindow>) {
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        let running = crate::power::restart_now("hyprsunset");
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, |app| {
+                let error = &mut app.night.error;
+                if !running {
+                    *error = Some(NOT_RUNNING.into());
+                } else if error.as_deref() == Some(NOT_RUNNING) {
+                    *error = None;
+                }
+            });
+        });
+    });
 }
+
+/// When hyprsunset quits as soon as it's started.
+const NOT_RUNNING: &str =
+    "hyprsunset didn't keep running. Start it in a terminal (hyprsunset) to see why; the page tries again with your next change.";
 
 /// A choice on the page or in the popup: (verb, number, text).
 pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value: f32, text: &str) {

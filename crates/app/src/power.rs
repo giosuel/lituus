@@ -265,24 +265,71 @@ fn restart_hypridle() {
 /// Starts a daemon of Hyprland's again (hypridle, hyprsunset), so it reads its file: through its
 /// systemd unit when it runs as one, else stopped and started by Hyprland.
 pub(crate) fn restart(program: &'static str) {
-    std::thread::spawn(move || {
-        let unit = format!("{program}.service");
-        let active = std::process::Command::new("systemctl")
+    std::thread::spawn(move || restart_now(program));
+}
+
+/// `restart`, on this thread; whether the program runs afterwards.
+pub(crate) fn restart_now(program: &str) -> bool {
+    let unit = format!("{program}.service");
+    let active = std::process::Command::new("systemctl")
+        .args(["--user", "--quiet", "is-active", &unit])
+        .status()
+        .is_ok_and(|s| s.success());
+    if active {
+        let _ = std::process::Command::new("systemctl").args(["--user", "restart", &unit]).status();
+        return std::process::Command::new("systemctl")
             .args(["--user", "--quiet", "is-active", &unit])
             .status()
             .is_ok_and(|s| s.success());
-        if active {
-            let _ = std::process::Command::new("systemctl").args(["--user", "restart", &unit]).status();
-            return;
+    }
+    let old = pids(program);
+    for pid in &old {
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    }
+    // Started only once the old one is gone: a second hyprsunset quits at once while the first
+    // still holds the screens' colour control (hyprsunset 0.4, the CTM manager's `blocked`).
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while old.iter().any(|&p| alive(p)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    start(program);
+    running_after_start(program)
+}
+
+/// Starts a daemon as Hyprland's `exec` does (the way the config's Lua or hyprlang has it); when
+/// Hyprland doesn't, on its own session (`setsid -f`), so it outlives Lituus all the same.
+pub(crate) fn start(program: &str) {
+    let lua = crate::setup::file().lua;
+    if lituus_hypr::Hyprland::from_env().and_then(|h| h.exec(program, lua)).is_err() {
+        let _ = std::process::Command::new("setsid")
+            .args(["-f", program])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Whether `program`, just started, is still running a second later (it quits at once when it
+/// can't work: no Wayland, another copy, a broken config).
+pub(crate) fn running_after_start(program: &str) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while pids(program).is_empty() {
+        if std::time::Instant::now() >= deadline {
+            return false;
         }
-        for pid in pids(program) {
-            let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        if let Ok(hypr) = lituus_hypr::Hyprland::from_env() {
-            let _ = hypr.request(&format!("dispatch exec {program}"));
-        }
-    });
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    !pids(program).is_empty()
+}
+
+/// A process that hasn't ended (a zombie has: it's only waiting for its parent).
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().chars().next() != Some('Z')))
+        .unwrap_or(false)
 }
 
 /// This user's processes running `name`.
@@ -294,7 +341,7 @@ pub(crate) fn pids(name: &str) -> Vec<u32> {
             let pid: u32 = e.file_name().to_str()?.parse().ok()?;
             let comm = std::fs::read_to_string(e.path().join("comm")).ok()?;
             let uid = std::fs::metadata(e.path()).map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
-            (comm.trim() == name && uid == me).then_some(pid)
+            (comm.trim() == name && uid == me && alive(pid)).then_some(pid)
         })
         .collect()
 }
@@ -603,6 +650,20 @@ fn is_internal(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_process_is_not_running() {
+        assert!(alive(std::process::id()));
+        assert!(!alive(u32::MAX));
+        // Ended but not waited for: a zombie, which counts as gone (a restart waits for it).
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while alive(child.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(child.id()));
+        let _ = child.wait();
+    }
     use lituus_power::{Battery, ChargeLimit, DeviceBattery, Logind, Profiles};
     use slint::Model;
 
