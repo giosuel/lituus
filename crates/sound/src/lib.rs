@@ -2,6 +2,7 @@
 //! inputs, their volumes and ports, the apps playing and where, and the sound cards' profiles.
 
 mod client;
+mod lenient;
 mod model;
 
 pub use client::{Closer, Error, Session};

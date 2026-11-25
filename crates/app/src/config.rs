@@ -11,6 +11,7 @@ pub struct Config {
     pub tray: TrayConfig,
     pub notifications: NotificationsConfig,
     pub sound: SoundConfig,
+    pub power: PowerConfig,
     pub bluetooth: BluetoothConfig,
     pub wallpaper: WallpaperConfig,
     /// The System page's update commands the user changed, by package manager ("pacman").
@@ -68,6 +69,19 @@ impl Default for WallpaperConfig {
 pub struct BluetoothConfig {
     /// Devices (by address) whose files are saved without asking.
     pub accept_files_from: Vec<String>,
+}
+
+/// What the lid and the power button do (the Power page): "suspend", "lock" (the lid),
+/// "poweroff" (the button) or "nothing"; empty until chosen, when logind's own handling stands and
+/// Lituus writes no bind.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PowerConfig {
+    pub lid_battery: String,
+    pub lid_plugged: String,
+    /// With another screen connected.
+    pub lid_external: String,
+    pub power_key: String,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]

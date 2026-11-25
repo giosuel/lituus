@@ -15,7 +15,7 @@ pub fn connect(window: &MainWindow) {
 }
 
 /// Lua or hyprlang as the Hyprland running reads its config, as every page decides.
-fn file() -> ConfigFile {
+pub(crate) fn file() -> ConfigFile {
     let version = Hyprland::from_env().and_then(|h| h.version()).ok();
     ConfigFile::new(config_dir(), reads_lua(version.as_ref(), &config_dir()))
 }

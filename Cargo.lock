@@ -2682,6 +2682,7 @@ dependencies = [
  "lituus-hypr",
  "lituus-keyring",
  "lituus-nm",
+ "lituus-power",
  "lituus-sound",
  "lituus-system",
  "lituus-wallpaper",
@@ -2750,6 +2751,17 @@ dependencies = [
 
 [[package]]
 name = "lituus-nm"
+version = "0.0.0-dev"
+dependencies = [
+ "futures-util",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "lituus-power"
 version = "0.0.0-dev"
 dependencies = [
  "futures-util",
