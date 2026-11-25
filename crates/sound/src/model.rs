@@ -99,7 +99,12 @@ pub struct Stream {
     pub app: String,
     /// What it plays: "YouTube – Music".
     pub title: String,
+    /// The icon name the app gives, if any ("firefox").
     pub icon: String,
+    /// What else names it, for finding its icon when it gives none: its program ("spotify") and
+    /// its app id ("org.mozilla.firefox", a Flatpak's).
+    pub binary: String,
+    pub app_id: String,
     /// The output it plays through.
     pub sink: u32,
     pub volume: Volume,
