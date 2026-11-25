@@ -1,0 +1,331 @@
+// The Power page, as drawn in S-180 to S-182 (D-57): the battery or the mains in the hero with the
+// profile beside it; when idle and lock (hypridle) and the devices' batteries on the left; the
+// lid and the power button on the right, and on a laptop the battery first. What it shows comes
+// from Rust (src/power.rs); everything the user does goes back through `act(verb, value)`.
+import { Theme, Type, Size } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Button, Switch, CardTitle, CardFooter, Notice, Scroll } from "controls.slint";
+import { Select, Segmented, DialogTitle, DialogButtons, Modal } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+
+/// A device's battery: icon, name, how it's connected (or Charging), and the charge (0 to 1).
+export struct PowerDevice { icon: string, name: string, sub: string, percent: float }
+
+/// state: "loading" or "list".
+export struct PowerView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    /// power-profiles-daemon's profiles, and the active one (-1: none, or it isn't running).
+    profiles: [string],
+    profile: int,
+    degraded: string,
+    /// A laptop's battery.
+    has-battery: bool,
+    health: string,
+    cycles: string,
+    has-charge-limit: bool,
+    charge-limit: bool,
+    charge-limit-label: string,
+    /// When idle: each row's choices and the one in use; the texts for a file that isn't
+    /// Lituus's (read only).
+    idle-editable: bool,
+    hypridle: bool,
+    backlight: bool,
+    dim-choices: [string], dim: int, dim-text: string,
+    lock-choices: [string], lock: int, lock-text: string,
+    screens-off-choices: [string], screens-off: int, screens-off-text: string,
+    suspend-choices: [string], suspend: int, suspend-text: string,
+    lock-before-sleep: bool,
+    lockers: [string],
+    locker: int,
+    confirm-takeover: bool,
+    devices: [PowerDevice],
+    /// The lid (a laptop) and the power button: 0 suspend, 1 lock or power off, 2 nothing.
+    has-lid: bool,
+    lid-battery: int,
+    lid-plugged: int,
+    lid-external: int,
+    power-key: int,
+    lid-note: string,
+    key-note: string,
+}
+
+/// A row's value when it can't be changed here: the dotfiles' hypridle.conf.
+component ReadValue inherits Text {
+    color: Theme.muted;
+    font-size: Type.body;
+    vertical-alignment: center;
+}
+
+component IdleCard inherits Card {
+    in property <PowerView> page;
+    callback act(string, int);
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        HorizontalLayout {
+            height: 32px;
+            CardTitle { text: "When idle"; horizontal-stretch: 1; }
+            Text { text: "hypridle"; color: Theme.muted; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; }
+        }
+        if !root.page.hypridle: Notice {
+            tone: "info";
+            dismissible: false;
+            text: "hypridle isn't installed: these times take effect once it is (sudo pacman -S hypridle).";
+        }
+        if !root.page.idle-editable: Notice {
+            tone: "info";
+            text: "Your hypridle.conf isn't Lituus's. These are its times; let Lituus manage it to change them here (it keeps hypridle.conf.bak).";
+            action: "Let Lituus manage it…";
+            dismissible: false;
+            action-clicked => { root.act("takeover", 0); }
+        }
+        if root.page.backlight: SettingRow {
+            label: "Dim the screens";
+            first: true;
+            if root.page.idle-editable: Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; label: "Dim the screens"; options: root.page.dim-choices; selected: root.page.dim; chosen(i) => { root.act("dim", i); } }
+            if !root.page.idle-editable: ReadValue { text: root.page.dim-text; }
+        }
+        SettingRow {
+            label: "Lock";
+            description: root.page.lockers.length > 0 ? "With " + root.page.lockers[max(0, root.page.locker)] : "No lock screen installed";
+            first: !root.page.backlight;
+            if root.page.idle-editable: Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; label: "Lock"; options: root.page.lock-choices; selected: root.page.lock; chosen(i) => { root.act("lock", i); } }
+            if !root.page.idle-editable: ReadValue { text: root.page.lock-text; }
+        }
+        SettingRow {
+            label: "Turn the screens off";
+            if root.page.idle-editable: Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; label: "Turn the screens off"; options: root.page.screens-off-choices; selected: root.page.screens-off; chosen(i) => { root.act("screens-off", i); } }
+            if !root.page.idle-editable: ReadValue { text: root.page.screens-off-text; }
+        }
+        SettingRow {
+            label: "Suspend";
+            if root.page.idle-editable: Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; label: "Suspend"; options: root.page.suspend-choices; selected: root.page.suspend; chosen(i) => { root.act("suspend", i); } }
+            if !root.page.idle-editable: ReadValue { text: root.page.suspend-text; }
+        }
+    }
+}
+
+component LockCard inherits Card {
+    in property <PowerView> page;
+    callback act(string, int);
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        CardTitle { text: "Lock"; }
+        SettingRow {
+            label: "Lock before suspending";
+            first: true;
+            Switch { on: root.page.lock-before-sleep; enabled: root.page.idle-editable; label: "Lock before suspending"; toggled => { root.act("lock-before-sleep", 0); } }
+        }
+        if root.page.lockers.length > 0: SettingRow {
+            label: "Lock screen";
+            description: "The ones installed";
+            Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; enabled: root.page.idle-editable; label: "Lock screen"; options: root.page.lockers; selected: root.page.locker; chosen(i) => { root.act("locker", i); } }
+        }
+    }
+}
+
+component BatteriesCard inherits ScrollCard {
+    in property <PowerView> page;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        HorizontalLayout {
+            height: 32px;
+            CardTitle { text: "Batteries"; horizontal-stretch: 1; }
+            Text { text: "From UPower"; color: Theme.muted; font-size: Type.note; vertical-alignment: center; }
+        }
+        if root.page.devices.length == 0: Text { text: "No mouse, keyboard or headset reports its battery."; color: Theme.faint; font-size: Type.body; height: 44px; vertical-alignment: center; }
+        for d[i] in root.page.devices: SettingRow {
+            label: d.name;
+            description: d.sub;
+            first: i == 0;
+            HorizontalLayout {
+                spacing: 12px;
+                horizontal-stretch: 0;
+                Rectangle {
+                    width: 120px;
+                    height: 6px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 3px;
+                    background: Theme.off-track;
+                    Rectangle { x: 0; width: parent.width * d.percent; border-radius: 3px; background: Theme.accent; }
+                }
+                Text { text: round(d.percent * 100) + " %"; color: Theme.text; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; width: 44px; horizontal-alignment: right; }
+            }
+        }
+    }
+}
+
+component BatteryCard inherits Card {
+    in property <PowerView> page;
+    callback act(string, int);
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        CardTitle { text: "Battery"; }
+        if root.page.has-charge-limit: SettingRow {
+            label: root.page.charge-limit-label;
+            description: "Keeps a battery that's mostly plugged in healthier";
+            first: true;
+            Switch { on: root.page.charge-limit; label: root.page.charge-limit-label; toggled => { root.act("charge-limit", 0); } }
+        }
+        SettingRow {
+            label: "Health";
+            first: !root.page.has-charge-limit;
+            Text { text: root.page.health; color: Theme.text; font-size: Type.body; vertical-alignment: center; }
+        }
+        SettingRow {
+            label: "Charge cycles";
+            Text { text: root.page.cycles; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
+        }
+    }
+}
+
+component LidCard inherits Card {
+    in property <PowerView> page;
+    callback act(string, int);
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        CardTitle { text: "When the lid is closed"; }
+        SettingRow {
+            label: "On battery";
+            first: true;
+            Segmented { label: "On battery"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-battery; changed(i) => { root.act("lid-battery", i); } }
+        }
+        SettingRow {
+            label: "Plugged in";
+            Segmented { label: "Plugged in"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-plugged; changed(i) => { root.act("lid-plugged", i); } }
+        }
+        SettingRow {
+            label: "With an external screen";
+            Segmented { label: "With an external screen"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-external; changed(i) => { root.act("lid-external", i); } }
+        }
+        CardFooter { text: root.page.lid-note; }
+    }
+}
+
+component ButtonCard inherits ScrollCard {
+    in property <PowerView> page;
+    callback act(string, int);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "When the power button is pressed"; }
+        SettingRow {
+            label: "Power button";
+            first: true;
+            Segmented { label: "Power button"; options: ["Suspend", "Power off", "Nothing"]; selected: root.page.power-key; changed(i) => { root.act("power-key", i); } }
+        }
+        CardFooter { text: root.page.key-note; }
+    }
+}
+
+export component PowerPage inherits VerticalLayout {
+    in property <PowerView> page;
+    in property <bool> compact;
+    callback act(string, int);
+    spacing: 14px;
+    Hero {
+        title: "Power";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        if root.page.state == "list": HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+        // The profile, level with the subject's last line (bottom right).
+        if root.page.state == "list" && root.page.profiles.length > 0: Segmented {
+            x: parent.width - self.width - 24px;
+            y: parent.height - self.height - 26px;
+            width: self.preferred-width;
+            hero: true;
+            label: "Power profile";
+            options: root.page.profiles;
+            selected: root.page.profile;
+            changed(i) => { root.act("profile", i); }
+        }
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0); } }
+        if root.page.degraded != "": Notice { vertical-stretch: 0; tone: "warn"; text: root.page.degraded; }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 14px;
+                if root.page.has-battery: BatteryCard { page: root.page; act(v, x) => { root.act(v, x); } }
+                IdleCard { page: root.page; act(v, x) => { root.act(v, x); } }
+                BatteriesCard { page: root.page; }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 14px;
+                if root.page.has-lid: LidCard { page: root.page; act(v, x) => { root.act(v, x); } }
+                LockCard { page: root.page; act(v, x) => { root.act(v, x); } }
+                ButtonCard { page: root.page; act(v, x) => { root.act(v, x); } }
+            }
+        }
+        if root.page.state == "list" && !body.two-columns && root.page.has-battery: BatteryCard { page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: IdleCard { page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns && root.page.has-lid: LidCard { page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: LockCard { page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: ButtonCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: BatteriesCard { whole: true; page: root.page; }
+        if root.page.state != "list": Card {
+            vertical-stretch: 1;
+            EmptyState { loading: true; title: "Reading the power services…"; }
+        }
+    }
+}
+
+/// Taking over the dotfiles' hypridle.conf, after asking (D-57, as Set up… does for Hyprland's
+/// config, D-44).
+export component PowerTakeoverDialog inherits Modal {
+    callback confirmed();
+    callback cancelled();
+    card-width: 500px;
+    label: "Let Lituus manage hypridle.conf?";
+    dismissed => { root.cancelled(); }
+    DialogTitle { text: "Let Lituus manage hypridle.conf?"; }
+    Text {
+        text: "Lituus keeps your file as hypridle.conf.bak, then writes its own with the same times, which you can change here from then on. To go back, put the .bak back.";
+        color: Theme.muted;
+        font-size: Type.body;
+        wrap: word-wrap;
+    }
+    DialogButtons {
+        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
+        Button { label: "Let Lituus manage it"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.confirmed(); } }
+    }
+}

@@ -28,6 +28,7 @@ mod openconnect;
 mod openvpn;
 mod palette;
 mod portal;
+mod power;
 mod profiles;
 mod qr;
 mod quick;
@@ -69,6 +70,9 @@ struct Cli {
     /// Turn Wi-Fi on or off.
     #[arg(long, conflicts_with = "background")]
     toggle_wifi: bool,
+    /// The lid was closed: do what the Power page chose (Lituus's lid bind runs this).
+    #[arg(long, hide = true, conflicts_with_all = ["background", "quick", "toggle_wifi"])]
+    lid: bool,
 }
 
 /// The security choices of the hidden-network dialog, by index; the others use them too.
@@ -196,6 +200,7 @@ struct App {
     displays: displays::State,
     /// The Sound page.
     sound: sound::State,
+    power: power::State,
     /// The Input pages, and which of them was open last (for the Input item).
     input: input::State,
     input_page: Option<view::Page>,
@@ -250,6 +255,10 @@ thread_local! {
 
 fn main() -> Result<(), slint::PlatformError> {
     let cli = Cli::parse();
+    if cli.lid {
+        power::lid_closed();
+        return Ok(());
+    }
     // Switching Wi-Fi (from a key) is the running Lituus's job, or this process's, which then
     // leaves. It never claims the name: a Lituus started meanwhile would hand its request to a
     // process that's about to leave, and nothing would open.
@@ -345,6 +354,11 @@ fn main() -> Result<(), slint::PlatformError> {
     APP.with(|app| app.borrow_mut().bt.commands = Some(bt_commands));
     bluetooth::spawn(window.as_weak(), bt_receiver);
     sound::spawn(window.as_weak());
+    {
+        let config = config::load(&config::path());
+        APP.with(|app| power::read_files(&mut app.borrow_mut().power, &config));
+    }
+    power::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
     input::refresh(&window.as_weak());
@@ -1070,6 +1084,8 @@ fn connect_callbacks(window: &MainWindow) {
         update(&weak, |app| shortcuts::act(&w, &mut app.shortcuts, &verb, &arg))
     });
     let weak = window.as_weak();
+    window.on_power_act(move |verb, value| update(&weak, |app| power::act(&mut app.power, &verb, value)));
+    let weak = window.as_weak();
     window.on_sound_act(move |verb, id, value| {
         update(&weak, |app| {
             if let Some((table, key, on)) = sound::act(&mut app.sound, &verb, &id, value)
@@ -1341,6 +1357,7 @@ fn go(app: &mut App, id: &str) {
     match view::navigate(&mut app.ui, &mut app.net_page, id) {
         Some(view::Page::Hotspot) => open_hotspot(app),
         Some(page @ (view::Page::Keyboard | view::Page::Mouse | view::Page::Shortcuts)) => app.input_page = Some(page),
+        Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
         _ => {}
     }
 }
@@ -1767,6 +1784,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "power",
+            label: "Power",
+            icon: "power",
+            group: "DEVICES",
+            keywords: "power battery profile performance balanced power saver idle sleep suspend lock screen hypridle \
+                       hyprlock lid laptop power button charge limit upower",
+            status: power::status(&app.power),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "wallpaper",
             label: "Wallpaper",
             icon: "picture",
@@ -1977,6 +2005,7 @@ fn render(window: &MainWindow) {
         ]));
         render_appearance(window, &app);
         sound::render(window, &app.sound);
+        power::render(window, &app.power);
         displays::render(window, &app.displays);
         let state = &mut *app;
         input::render(window, &mut state.input, state.bt.snapshot.as_ref());
@@ -4198,6 +4227,61 @@ mod tests {
             (at("Output device", AccessibleRole::Combobox), at("Input device", AccessibleRole::Combobox));
         let firefox = at("Firefox volume", AccessibleRole::Slider);
         assert!(device.y < input.y && input.y < firefox.y, "stacked: {device:?} {input:?} {firefox:?}");
+    }
+
+    /// Power on a laptop (S-181): the profile in the hero, the battery's charge limit, the idle
+    /// times, the lid and the power button; a choice goes to Rust.
+    #[test]
+    fn the_power_page_shows_a_laptops_controls() {
+        let window = window();
+        window.set_page("power".into());
+        let mut state = super::power::State::default();
+        state.snapshot = Some(lituus_power::Snapshot {
+            profiles: Some(lituus_power::Profiles {
+                active: "balanced".into(),
+                available: vec!["power-saver".into(), "balanced".into(), "performance".into()],
+                degraded: String::new(),
+            }),
+            battery: Some(lituus_power::Battery {
+                percent: 64.0,
+                charge_limit: Some(lituus_power::ChargeLimit { enabled: true, end: 80 }),
+                ..Default::default()
+            }),
+            lid: true,
+            ..Default::default()
+        });
+        state.hypridle = true;
+        state.lockers = vec!["hyprlock".into()];
+        window.set_power(super::power::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_power_act(move |verb, value| a.borrow_mut().push(format!("{verb} {value}")));
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        let profile = control(&window, "Power profile", AccessibleRole::RadioGroup);
+        let options: Vec<String> = profile
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::RadioButton)
+            .find_all()
+            .iter()
+            .filter_map(|e| e.accessible_label().map(|l| l.to_string()))
+            .collect();
+        assert_eq!(options, ["Power saver", "Balanced", "Performance"]);
+        control(&window, "Limit charging to 80 %", AccessibleRole::Switch);
+        control(&window, "Lock", AccessibleRole::Combobox);
+        control(&window, "On battery", AccessibleRole::RadioGroup);
+        control(&window, "Power button", AccessibleRole::RadioGroup);
+        ElementHandle::find_by_accessible_label(&window, "Performance")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["profile 2"]);
+        // A desktop has no lid and no battery card.
+        state.snapshot.as_mut().unwrap().battery = None;
+        state.snapshot.as_mut().unwrap().lid = false;
+        window.set_power(super::power::view(&state));
+        assert!(ElementHandle::find_by_accessible_label(&window, "On battery").next().is_none());
+        assert!(ElementHandle::find_by_accessible_label(&window, "Limit charging to 80 %").next().is_none());
+        control(&window, "Power button", AccessibleRole::RadioGroup);
     }
 
     /// With Network's sub-items open, the sidebar's pages scroll in the smallest window instead
