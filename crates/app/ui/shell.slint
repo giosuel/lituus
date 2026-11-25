@@ -440,9 +440,6 @@ export component SettingRow inherits DividerRow {
     in property <string> label;
     in property <string> description;
     in property <string> differs;
-    /// False: its name greyed out, as the control in it (which is turned off by its own
-    /// `enabled`).
-    in property <bool> enabled: true;
     border-radius: 8px;
     background: Highlight.label != "" && Highlight.label == root.label ? Theme.accent-soft-bg : transparent;
     animate background { duration: 300ms; }
@@ -456,7 +453,7 @@ export component SettingRow inherits DividerRow {
             horizontal-stretch: 1;
             // The control gives way before the name does.
             min-width: 112px;
-            Text { text: root.label; color: root.enabled ? Theme.text : Theme.faint; font-size: Type.body; overflow: elide; }
+            Text { text: root.label; color: Theme.text; font-size: Type.body; overflow: elide; }
             if root.differs != "": Differs { text: root.differs; }
             if root.differs == "" && root.description != "": Text { text: root.description; color: Theme.faint; font-size: Type.note; wrap: word-wrap; }
         }

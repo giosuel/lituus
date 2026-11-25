@@ -44,7 +44,14 @@ pub struct State {
     /// hyprsunset.conf as Lituus last wrote it (none: someone else's, or none at all), to notice
     /// when the sun's times move.
     pub(crate) written: Option<String>,
-    pub(crate) restarts: u64,
+    /// Counts the temperature's moves: the screens go back to the schedule after the last.
+    pub(crate) moves: u64,
+    /// What the screens show through hyprsunset, as far as Lituus knows: a temperature, or their
+    /// own colours (`Some(None)`); `None` before Lituus told it anything.
+    pub(crate) shown: Option<Option<u32>>,
+    /// The running hyprsunset has an older schedule than the file: it's started again when that
+    /// can't be seen (see `reach`).
+    pub(crate) pending: bool,
 }
 
 pub fn path() -> PathBuf {
@@ -268,11 +275,10 @@ pub fn conf(state: &State) -> String {
     out
 }
 
-/// Writes the schedule (keeping someone else's file once, as .bak), and has hyprsunset show it:
-/// at once through its IPC, and started again `after` the last change so it reads the new times.
-/// `preview` shows the temperature even when it's off now (the slider being moved); the restart
-/// then goes back to what the schedule says.
-fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, after: Duration, preview: bool) {
+/// Writes the schedule (keeping someone else's file once, as .bak), and has the screens show it
+/// (`reach`). `preview`: the temperature shows at once, also by day or with Night light off (the
+/// slider being moved), and the screens go back to the schedule `PREVIEW` after the last move.
+fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, preview: bool) {
     if !state.installed {
         return;
     }
@@ -289,31 +295,110 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, after: Duration, pre
         return;
     }
     state.written = Some(text);
-    show((preview || is_on(state)).then_some(state.temperature));
-    {
-        state.restarts += 1;
-        let ticket = state.restarts;
-        let weak = weak.clone();
-        // A slider being dragged restarts it once, after the last move.
-        std::thread::spawn(move || {
-            std::thread::sleep(after);
-            let weak2 = weak.clone();
-            let _ = weak.upgrade_in_event_loop(move |_| {
-                update(&weak2, |app| {
-                    if app.night.restarts == ticket {
-                        restart_hyprsunset(&weak2);
-                    }
-                })
-            });
+    if !preview {
+        show_schedule(weak, state);
+        return;
+    }
+    // Through its IPC (started first if it isn't running); the schedule after the last move.
+    show(Some(state.temperature));
+    state.shown = Some(Some(state.temperature));
+    state.pending = true;
+    state.moves += 1;
+    let ticket = state.moves;
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PREVIEW);
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w, |app| {
+                if app.night.moves == ticket {
+                    show_schedule(&w, &mut app.night);
+                }
+            })
         });
+    });
+}
+
+/// How a change reaches the screens. hyprsunset reads its schedule only when it starts, and
+/// while it's started again the screens show their own colours for a moment (the owner on build
+/// #28: "after a few seconds it glitches a bit"). So it's started again at once only when that
+/// can't be seen: the screens show their own colours now, or are about to. Otherwise (warm before
+/// and after) the colour goes through its IPC, and the new schedule waits (`pending`).
+#[derive(Debug, PartialEq)]
+enum Reach {
+    Start,
+    Restart,
+    Tell,
+}
+
+fn reach(running: bool, shown: Option<Option<u32>>, wanted: Option<u32>) -> Reach {
+    match (running, shown, wanted) {
+        (false, _, _) => Reach::Start,
+        (true, Some(None), _) | (true, _, None) => Reach::Restart,
+        (true, _, Some(_)) => Reach::Tell,
     }
 }
 
-/// Started again on a thread; if it doesn't keep running, the page says so.
+/// The screens as the schedule has them now, and hyprsunset with the file's schedule when that
+/// can't be seen (`reach`).
+fn show_schedule(weak: &slint::Weak<MainWindow>, state: &mut State) {
+    let wanted = is_on(state).then_some(state.temperature);
+    let running = !crate::power::pids("hyprsunset").is_empty();
+    match reach(running, state.shown, wanted) {
+        Reach::Tell => {
+            show(wanted);
+            state.pending = true;
+        }
+        Reach::Start | Reach::Restart => {
+            restart_hyprsunset(weak);
+            state.pending = false;
+        }
+    }
+    state.shown = Some(wanted);
+}
+
+/// A schedule waiting (`pending`): hyprsunset is started again once the screens are without it,
+/// or once it shows something else than it should (its older schedule switched). `running`:
+/// what it shows, asked on another thread (None: it couldn't be asked).
+fn settle(weak: &slint::Weak<MainWindow>, state: &mut State, running: Option<Option<u32>>) {
+    let wanted = is_on(state).then_some(state.temperature);
+    if state.pending && (wanted.is_none() || running != Some(wanted)) {
+        restart_hyprsunset(weak);
+        state.pending = false;
+        state.shown = Some(wanted);
+    }
+}
+
+/// What the running hyprsunset shows: a temperature, or the screens' own colours; None when it
+/// can't be asked.
+fn asked() -> Option<Option<u32>> {
+    let ask = |args: &[&str]| {
+        let out = std::process::Command::new("hyprctl").arg("hyprsunset").args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    if ask(&["identity", "get"])? == "true" {
+        return Some(None);
+    }
+    ask(&["temperature"])?.parse().ok().map(Some)
+}
+
+/// When Lituus quits with a schedule waiting: hyprsunset is started again, so it follows the
+/// file from now on.
+pub fn quitting(state: &State) {
+    if state.pending {
+        let _ = crate::power::restart_now("hyprsunset");
+    }
+}
+
+/// Started again on a thread (one at a time); if it doesn't keep running, the page says so.
 fn restart_hyprsunset(weak: &slint::Weak<MainWindow>) {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let weak = weak.clone();
     std::thread::spawn(move || {
-        let running = crate::power::restart_now("hyprsunset");
+        let running = {
+            let _one = ONE_AT_A_TIME.lock();
+            crate::power::restart_now("hyprsunset")
+        };
         let w = weak.clone();
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&w, |app| {
@@ -328,8 +413,6 @@ fn restart_hyprsunset(weak: &slint::Weak<MainWindow>) {
     });
 }
 
-/// hyprsunset is started again this long after a change (after the last of several at once).
-const SOON: Duration = Duration::from_millis(800);
 /// How long a temperature moved to shows before the screens go back to the schedule.
 const PREVIEW: Duration = Duration::from_secs(3);
 
@@ -347,12 +430,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
         "switch" => {
             state.enabled = !state.enabled;
             save("enabled", state.enabled.into());
-            apply(weak, state, SOON, false);
-        }
-        "always" => {
-            state.always = !state.always;
-            save("always", state.always.into());
-            apply(weak, state, SOON, false);
+            apply(weak, state, false);
         }
         // Shown at once, also by day or with Night light off; back to the schedule a few
         // seconds after the last move (the owner, 2026-11-25: "just briefly show the night light
@@ -362,13 +440,20 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
             if t != state.temperature {
                 state.temperature = t;
                 save("temperature", i64::from(t).into());
-                apply(weak, state, PREVIEW, true);
+                apply(weak, state, true);
             }
         }
+        // Turn on: Sunset to sunrise, Fixed times, or All the time (the owner on build #28: "lets
+        // merge "all the time" into the "turn on" view switcher"). All the time keeps the
+        // schedule chosen before, for when it's chosen again.
         "schedule" => {
-            state.schedule = if value as i32 == 1 { "times".into() } else { "sun".into() };
-            save("schedule", state.schedule.as_str().into());
-            apply(weak, state, SOON, false);
+            state.always = value as i32 == 2;
+            save("always", state.always.into());
+            if !state.always {
+                state.schedule = if value as i32 == 1 { "times".into() } else { "sun".into() };
+                save("schedule", state.schedule.as_str().into());
+            }
+            apply(weak, state, false);
         }
         "from" | "to" => {
             if parse_time(text).is_none() {
@@ -383,7 +468,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
                 state.to = t.clone();
             }
             save(verb, t.as_str().into());
-            apply(weak, state, SOON, false);
+            apply(weak, state, false);
         }
         "location" => {
             if value as i32 == 1 {
@@ -393,7 +478,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
                 state.manual = None;
                 save("location", "zone".into());
             }
-            apply(weak, state, SOON, false);
+            apply(weak, state, false);
         }
         "latitude" | "longitude" => {
             let Ok(v) = text.trim().replace(',', ".").parse::<f64>() else {
@@ -405,7 +490,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
             state.manual =
                 Some(if verb == "latitude" { (v.clamp(-90.0, 90.0), lon) } else { (lat, v.clamp(-180.0, 180.0)) });
             save(verb, v.into());
-            apply(weak, state, SOON, false);
+            apply(weak, state, false);
         }
         _ => {}
     }
@@ -439,7 +524,18 @@ pub fn spawn(weak: slint::Weak<MainWindow>) {
                     }
                     // Lituus's file, with yesterday's sunset: today's.
                     if state.installed && state.written.as_ref().is_some_and(|text| *text != conf(state)) {
-                        apply(&w, state, SOON, false);
+                        apply(&w, state, false);
+                    }
+                    // A schedule waiting: what hyprsunset shows, asked on a thread, then settled.
+                    if state.pending {
+                        let w = w.clone();
+                        std::thread::spawn(move || {
+                            let running = asked();
+                            let w2 = w.clone();
+                            let _ = w.upgrade_in_event_loop(move |_| {
+                                update(&w2, |app| settle(&w2, &mut app.night, running));
+                            });
+                        });
                     }
                 })
             });
@@ -503,7 +599,6 @@ pub fn view(state: &State) -> NightView {
     }
     v.state = s("list");
     v.enabled = state.enabled;
-    v.always = state.always;
     let t = times(state);
     v.sub = s(match (state.schedule.as_str(), t) {
         _ if state.always => "All the time".to_owned(),
@@ -531,7 +626,8 @@ pub fn view(state: &State) -> NightView {
         detail: s("hyprsunset"),
     };
     v.temperature = state.temperature as f32;
-    v.schedule = i32::from(state.schedule == "times");
+    // Turn on's choice: Sunset to sunrise, Fixed times, All the time.
+    v.schedule = if state.always { 2 } else { i32::from(state.schedule == "times") };
     v.location = i32::from(state.manual.is_some());
     let (lat, lon) = state.manual.or(state.zone_place).unwrap_or((0.0, 0.0));
     let ns = if lat >= 0.0 { "N" } else { "S" };
@@ -642,6 +738,24 @@ mod tests {
         assert!(is_on(&always));
         assert_eq!(now_line(&always), "On");
         assert_eq!(quick(&always).2, "On · 4000 K");
+    }
+
+    /// hyprsunset is started again only when the moment without it can't be seen; warm before
+    /// and after, the colour goes through its IPC.
+    #[test]
+    fn a_change_restarts_hyprsunset_only_when_it_cant_be_seen() {
+        // Not running: started.
+        assert_eq!(reach(false, Some(Some(4000)), Some(4000)), Reach::Start);
+        // On at night: the screens are without it, and warm up once it's started again.
+        assert_eq!(reach(true, Some(None), Some(4000)), Reach::Restart);
+        // Off: they're about to be without it.
+        assert_eq!(reach(true, Some(Some(4000)), None), Reach::Restart);
+        assert_eq!(reach(true, None, None), Reach::Restart);
+        // Warm before and after (All the time at night, another temperature, unknown before):
+        // told, and started again later.
+        assert_eq!(reach(true, Some(Some(4000)), Some(4000)), Reach::Tell);
+        assert_eq!(reach(true, Some(Some(4000)), Some(3000)), Reach::Tell);
+        assert_eq!(reach(true, None, Some(4000)), Reach::Tell);
     }
 
     #[test]
