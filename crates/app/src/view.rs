@@ -19,10 +19,13 @@ pub enum Page {
     Bluetooth,
     Displays,
     Sound,
+    Power,
     Keyboard,
     Mouse,
     Shortcuts,
+    Appearance,
     Wallpaper,
+    NightLight,
     Apps,
     DefaultApps,
     System,
@@ -39,6 +42,7 @@ impl Page {
             "bluetooth" => Self::Bluetooth,
             "displays" => Self::Displays,
             "sound" => Self::Sound,
+            "power" => Self::Power,
             "keyboard" => Self::Keyboard,
             "mouse" => Self::Mouse,
             "shortcuts" => Self::Shortcuts,
@@ -47,7 +51,9 @@ impl Page {
             "default-apps" => Self::DefaultApps,
             "system" => Self::System,
             // Lituus's own look moved to Settings.
-            "settings" | "appearance" => Self::Settings,
+            "settings" => Self::Settings,
+            "appearance" => Self::Appearance,
+            "night-light" => Self::NightLight,
             _ => return None,
         })
     }
@@ -76,10 +82,13 @@ impl Page {
             Self::Bluetooth => "bluetooth",
             Self::Displays => "displays",
             Self::Sound => "sound",
+            Self::Power => "power",
             Self::Keyboard => "keyboard",
             Self::Mouse => "mouse",
             Self::Shortcuts => "shortcuts",
+            Self::Appearance => "appearance",
             Self::Wallpaper => "wallpaper",
+            Self::NightLight => "night-light",
             Self::Apps => "apps",
             Self::DefaultApps => "default-apps",
             Self::System => "system",
@@ -397,10 +406,13 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         Page::Bluetooth
         | Page::Displays
         | Page::Sound
+        | Page::Power
         | Page::Keyboard
         | Page::Mouse
         | Page::Shortcuts
+        | Page::Appearance
         | Page::Wallpaper
+        | Page::NightLight
         | Page::Apps
         | Page::DefaultApps
         | Page::System
@@ -503,10 +515,13 @@ fn page_title(page: Page) -> &'static str {
         Page::Bluetooth => "Bluetooth",
         Page::Displays => "Displays",
         Page::Sound => "Sound",
+        Page::Power => "Power",
         Page::Keyboard => "Keyboard",
         Page::Mouse => "Mouse & touchpad",
         Page::Shortcuts => "Shortcuts",
+        Page::Appearance => "Appearance",
         Page::Wallpaper => "Wallpaper",
+        Page::NightLight => "Night light",
         Page::Apps => "Apps",
         Page::DefaultApps => "Default apps",
         Page::System => "System",
@@ -2513,9 +2528,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn appearance_is_part_of_settings() {
-        // Lituus's own look moved to Settings; the old id still finds it.
-        assert_eq!(Page::from_id("appearance"), Some(Page::Settings));
+    fn appearance_is_the_apps_page() {
+        // Lituus's own look is Settings'; the "appearance" id, once that page's, is now the apps'
+        // Appearance page (0.5.0).
+        assert_eq!(Page::from_id("appearance"), Some(Page::Appearance));
         assert_eq!(Page::from_id("settings").map(Page::id), Some("settings"));
     }
 

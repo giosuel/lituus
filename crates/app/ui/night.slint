@@ -1,0 +1,206 @@
+// The Night light page, as drawn in S-177 and S-178 (D-57): the switch in the hero, the colour
+// temperature and the schedule; without hyprsunset, how to install it. What it shows comes from
+// Rust (src/night.rs); everything the user does goes back through `act(verb, number, text)`.
+import { Theme, Type } from "theme.slint";
+import { CardTitle, Notice, Scroll, PillSwitch, Switch } from "controls.slint";
+import { Segmented, TextField } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+import { Slider } from "sound.slint";
+
+/// state: "list", or "missing" (no hyprsunset).
+export struct NightView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    enabled: bool,
+    /// On all the time: the schedule's rows are greyed out.
+    always: bool,
+    /// Kelvin.
+    temperature: float,
+    /// 0 sunset to sunrise, 1 fixed times.
+    schedule: int,
+    /// 0 from the time zone, 1 typed in.
+    location: int,
+    location-text: string,
+    latitude: string,
+    longitude: string,
+    from: string,
+    to: string,
+    tonight: string,
+    /// The command that installs hyprsunset here, if Lituus knows it.
+    install: string,
+    /// Counts the entries refused: the fields show the values in use again.
+    refused: int,
+}
+
+component ColourCard inherits ScrollCard {
+    in property <NightView> page;
+    callback act(string, float, string);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Colour"; }
+        VerticalLayout {
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 6px;
+            HorizontalLayout {
+                Text { text: "Temperature"; color: Theme.text; font-size: Type.body; horizontal-stretch: 1; }
+                Text { text: round(root.page.temperature) + " K"; color: Theme.accent; font-size: Type.body; font-family: "JetBrains Mono"; }
+            }
+            Slider {
+                big: true;
+                label: "Temperature";
+                minimum: 2500;
+                maximum: 6500;
+                step: 100;
+                value: root.page.temperature;
+                value-text: round(root.page.temperature) + " K";
+                moved(v) => { root.act("temperature", v, ""); }
+            }
+            HorizontalLayout {
+                Text { text: "Warmer"; color: Theme.faint; font-size: Type.note; horizontal-stretch: 1; }
+                Text { text: "Daylight"; color: Theme.faint; font-size: Type.note; }
+            }
+            // The owner, 2026-11-25: "remove the preview button and just briefly show the night
+            // light for a few seconds everytime the slider is moved".
+            Text {
+                text: "Moving it shows the colour for a few seconds, also by day.";
+                color: Theme.muted;
+                font-size: Type.note;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+component ScheduleCard inherits ScrollCard {
+    in property <NightView> page;
+    callback act(string, float, string);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Schedule"; }
+        // All the time: the schedule below is kept, greyed out (the owner, 2026-11-25: "an
+        // option to have it on permanently and grey out the options below if it is selected").
+        SettingRow {
+            label: "All the time";
+            description: "Not only on the schedule below";
+            first: true;
+            Switch { label: "All the time"; on: root.page.always; toggled => { root.act("always", 0, ""); } }
+        }
+        SettingRow {
+            label: "Turn on";
+            enabled: !root.page.always;
+            Segmented {
+                label: "Turn on";
+                horizontal-stretch: 0;
+                height: 34px;
+                enabled: !root.page.always;
+                options: ["Sunset to sunrise", "Fixed times"];
+                selected: root.page.schedule;
+                changed(i) => { root.act("schedule", i, ""); }
+            }
+        }
+        if root.page.schedule == 0: SettingRow {
+            label: "Location";
+            description: root.page.location-text;
+            enabled: !root.page.always;
+            Segmented {
+                label: "Location";
+                horizontal-stretch: 0;
+                height: 34px;
+                enabled: !root.page.always;
+                options: ["From time zone", "Manual"];
+                selected: root.page.location;
+                changed(i) => { root.act("location", i, ""); }
+            }
+        }
+        if root.page.schedule == 0 && root.page.location == 1: SettingRow {
+            label: "Latitude and longitude";
+            description: "In degrees; south and west below zero";
+            enabled: !root.page.always;
+            HorizontalLayout {
+                spacing: 8px;
+                TextField { width: 96px; label: "Latitude"; mono: true; enabled: !root.page.always; item: "lat" + root.page.refused; value: root.page.latitude; committed => { root.act("latitude", 0, self.text); } }
+                TextField { width: 96px; label: "Longitude"; mono: true; enabled: !root.page.always; item: "lon" + root.page.refused; value: root.page.longitude; committed => { root.act("longitude", 0, self.text); } }
+            }
+        }
+        if root.page.schedule == 1: SettingRow {
+            label: "From";
+            enabled: !root.page.always;
+            TextField { width: 96px; label: "From"; mono: true; enabled: !root.page.always; placeholder: "21:00"; item: "from" + root.page.refused; value: root.page.from; committed => { root.act("from", 0, self.text); } }
+        }
+        if root.page.schedule == 1: SettingRow {
+            label: "To";
+            enabled: !root.page.always;
+            TextField { width: 96px; label: "To"; mono: true; enabled: !root.page.always; placeholder: "07:00"; item: "to" + root.page.refused; value: root.page.to; committed => { root.act("to", 0, self.text); } }
+        }
+        SettingRow {
+            label: "Tonight";
+            enabled: !root.page.always;
+            Text { text: root.page.tonight; color: root.page.always ? Theme.faint : Theme.text; font-size: Type.body; horizontal-alignment: right; }
+        }
+    }
+}
+
+export component NightPage inherits VerticalLayout {
+    in property <NightView> page;
+    in property <bool> compact;
+    callback act(string, float, string);
+    spacing: 14px;
+    Hero {
+        title: "Night light";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+        // The switch, level with the subject's last line (bottom right), as Power's profile.
+        PillSwitch {
+            x: parent.width - self.width - 24px;
+            y: parent.height - self.height - 26px;
+            height: 34px;
+            label: "Night light";
+            on: root.page.enabled;
+            enabled: root.page.state == "list";
+            toggled => { root.act("switch", 0, ""); }
+        }
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0, ""); } }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            ColourCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+            ScheduleCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        }
+        if root.page.state == "list" && !body.two-columns: ColourCard { vertical-stretch: 0; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "list" && !body.two-columns: ScheduleCard { page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "missing": Card {
+            vertical-stretch: 1;
+            EmptyState {
+                icon: "moon";
+                title: "hyprsunset isn't installed";
+                text: "Night light warms the screens through Hyprland's hyprsunset. Install it, and this page updates by itself; when it's installed but not running, Lituus starts it.";
+                command: root.page.install;
+                copied => { root.act("copied", 0, ""); }
+            }
+        }
+    }
+}
