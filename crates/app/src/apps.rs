@@ -274,7 +274,7 @@ fn find_icons(d: &Data, query: &str) -> Vec<(String, PathBuf)> {
     out
 }
 
-fn icon_theme(dirs: &Dirs) -> String {
+pub(crate) fn icon_theme(dirs: &Dirs) -> String {
     for f in ["gtk-4.0/settings.ini", "gtk-3.0/settings.ini"] {
         if let Ok(text) = std::fs::read_to_string(dirs.config_home.join(f))
             && let Some(v) = text.lines().find_map(|l| l.trim().strip_prefix("gtk-icon-theme-name"))
