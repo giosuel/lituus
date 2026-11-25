@@ -111,6 +111,8 @@ pub struct Stream {
     /// its app id ("org.mozilla.firefox", a Flatpak's).
     pub binary: String,
     pub app_id: String,
+    /// The app's process, for what its environment says (a Steam game's id).
+    pub pid: Option<u32>,
     /// The output it plays through; for a recording, the input (or monitor) it records from.
     pub device: u32,
     pub volume: Volume,

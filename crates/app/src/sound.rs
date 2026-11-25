@@ -82,13 +82,17 @@ struct Icons {
     dirs: Dirs,
     theme: String,
     done: HashSet<String>,
+    /// The installed apps, to find a stream's app by: read when an app is first looked up, and
+    /// again a minute later for apps installed meanwhile.
+    apps: Vec<desktop::App>,
+    read_at: Option<std::time::Instant>,
 }
 
 impl Icons {
     fn new() -> Icons {
         let dirs = Dirs::from_env();
         let theme = crate::apps::icon_theme(&dirs);
-        Icons { dirs, theme, done: HashSet::new() }
+        Icons { dirs, theme, done: HashSet::new(), apps: Vec::new(), read_at: None }
     }
 
     /// The icons of the apps not seen before.
@@ -96,25 +100,56 @@ impl Icons {
         let mut out = Vec::new();
         for st in streams {
             let key = icon_key(st);
-            if self.done.insert(key.clone()) {
-                let file = icon_names(st).iter().find_map(|n| desktop::icon_file(&self.dirs, &self.theme, n));
-                out.push((key, file.and_then(|f| crate::apps::draw_icon(&f, ICON_SIDE))));
+            if self.done.contains(&key) {
+                continue;
             }
+            if self.read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+                self.apps = desktop::all(&self.dirs);
+                self.read_at = Some(std::time::Instant::now());
+            }
+            self.done.insert(key.clone());
+            let steam = st.pid.and_then(steam_game);
+            let names = icon_names(st, &self.apps, steam.as_deref());
+            let file = names.iter().find_map(|n| desktop::icon_file(&self.dirs, &self.theme, n));
+            out.push((key, file.and_then(|f| crate::apps::draw_icon(&f, ICON_SIDE))));
         }
         out
     }
 }
 
-/// The names an app's icon may go by: the one it gives, then its app id, its program, and its
-/// name in lower case ("spotify"). Only the first may be a file's path; the others are names in
-/// the icon themes, never a way out of them.
-fn icon_names(st: &Stream) -> Vec<String> {
+/// The names an app's icon may go by, best first:
+/// - the one the stream gives;
+/// - its app's, from the desktop file found by its app id (a Flatpak's too), its program (by
+///   Exec, the file's name or StartupWMClass) or its name ("Spotify" is spotify.desktop's
+///   spotify-client);
+/// - a Steam game's (steam_icon_381210), by the game id its process was started with;
+/// - its app id, program and name in lower case, as icon names themselves.
+///
+/// Only icons from the stream and from desktop files may be a file's path; the others are names
+/// in the icon themes, never a way out of them.
+fn icon_names(st: &Stream, apps: &[desktop::App], steam: Option<&str>) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    let given = st.icon.trim();
-    if !given.is_empty() && (!given.contains('/') || given.starts_with('/')) && !given.contains("..") {
-        names.push(given.to_owned());
+    let add_path = |names: &mut Vec<String>, icon: &str| {
+        let icon = icon.trim();
+        if !icon.is_empty()
+            && (!icon.contains('/') || icon.starts_with('/'))
+            && !icon.contains("..")
+            && !names.iter().any(|n| n == icon)
+        {
+            names.push(icon.to_owned());
+        }
+    };
+    add_path(&mut names, &st.icon);
+    for app in desktop_apps(st, apps) {
+        add_path(&mut names, &app.icon);
     }
-    for n in [st.app_id.trim().to_owned(), st.binary.trim().to_owned(), st.app.trim().to_lowercase()] {
+    let steam = steam.map(|id| format!("steam_icon_{id}"));
+    for n in [
+        steam.unwrap_or_default(),
+        st.app_id.trim().to_owned(),
+        st.binary.trim().to_owned(),
+        st.app.trim().to_lowercase(),
+    ] {
         if !n.is_empty() && !n.contains('/') && n != "." && n != ".." && !names.contains(&n) {
             names.push(n);
         }
@@ -122,8 +157,64 @@ fn icon_names(st: &Stream) -> Vec<String> {
     names
 }
 
+/// The installed apps a stream may be, best match first: by app id, then by program, then by
+/// name. Apps without an icon don't count.
+fn desktop_apps<'a>(st: &Stream, apps: &'a [desktop::App]) -> Vec<&'a desktop::App> {
+    let lower = |s: &str| s.trim().to_lowercase();
+    let (app_id, binary, name) = (lower(&st.app_id), lower(&st.binary), lower(&st.app));
+    let stem = |a: &desktop::App| lower(a.id.strip_suffix(".desktop").unwrap_or(&a.id));
+    let with_icon = || apps.iter().filter(|a| !a.icon.trim().is_empty());
+    let mut found: Vec<&desktop::App> = Vec::new();
+    let add = |found: &mut Vec<&'a desktop::App>, a: &'a desktop::App| {
+        if !found.iter().any(|f| std::ptr::eq(*f, a)) {
+            found.push(a);
+        }
+    };
+    if !app_id.is_empty() {
+        for a in with_icon().filter(|a| stem(a) == app_id || lower(&a.flatpak) == app_id) {
+            add(&mut found, a);
+        }
+    }
+    if !binary.is_empty() {
+        for a in with_icon().filter(|a| program(&a.exec) == binary || stem(a) == binary || lower(&a.wm_class) == binary)
+        {
+            add(&mut found, a);
+        }
+    }
+    if !name.is_empty() {
+        for a in with_icon().filter(|a| lower(&a.name) == name) {
+            add(&mut found, a);
+        }
+    }
+    found
+}
+
+/// The program an Exec line runs, in lower case and without its folder: "spotify" for
+/// `env LD_PRELOAD=x /usr/bin/spotify --uri=%U`.
+fn program(exec: &str) -> String {
+    lituus_xdg::exec::words(exec)
+        .into_iter()
+        .map(|w| w.text)
+        .find(|w| w != "env" && !(w.contains('=') && !w.starts_with('/')))
+        .map(|w| w.rsplit('/').next().unwrap_or(&w).to_lowercase())
+        .unwrap_or_default()
+}
+
+/// The Steam game a process belongs to: Steam starts games with SteamAppId (or SteamGameId) in
+/// their environment, and Steam's shortcuts use its icon, steam_icon_<id>. Only that variable
+/// is read from the environment, and only digits are kept.
+fn steam_game(pid: u32) -> Option<String> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env.split(|&b| b == 0).find_map(|var| {
+        let value = var.strip_prefix(b"SteamAppId=").or_else(|| var.strip_prefix(b"SteamGameId="))?;
+        let id = std::str::from_utf8(value).ok()?;
+        (!id.is_empty() && id != "0" && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_owned())
+    })
+}
+
+/// What an app's icon is found by: the same for every stream of the app.
 fn icon_key(st: &Stream) -> String {
-    icon_names(st).join("\n")
+    [st.icon.as_str(), &st.app_id, &st.binary, &st.app].join("\n")
 }
 
 /// Starts the sound thread; it reconnects when the server restarts.
@@ -766,13 +857,85 @@ mod tests {
             app_id: "com.spotify.Client".into(),
             ..Stream::default()
         };
-        assert_eq!(icon_names(&st), ["com.spotify.Client", "spotify"]);
+        assert_eq!(icon_names(&st, &[], None), ["com.spotify.Client", "spotify"]);
         let st =
             Stream { app: "Firefox".into(), icon: "firefox".into(), binary: "firefox".into(), ..Stream::default() };
-        assert_eq!(icon_names(&st), ["firefox"]);
+        assert_eq!(icon_names(&st, &[], None), ["firefox"]);
         let st =
             Stream { app: "x".into(), icon: "/opt/x/icon.png".into(), binary: "bin/x".into(), ..Stream::default() };
-        assert_eq!(icon_names(&st), ["/opt/x/icon.png", "x"]);
+        assert_eq!(icon_names(&st, &[], None), ["/opt/x/icon.png", "x"]);
+    }
+
+    /// The stream's app is found among the installed apps by its app id, its program or its name,
+    /// and its icon comes first; a Steam game's goes by its game id.
+    #[test]
+    fn an_apps_icon_comes_from_its_desktop_file() {
+        let app = |id: &str, name: &str, icon: &str, exec: &str| lituus_xdg::desktop::App {
+            id: id.into(),
+            name: name.into(),
+            icon: icon.into(),
+            exec: exec.into(),
+            ..Default::default()
+        };
+        let apps = [
+            app(
+                "spotify.desktop",
+                "Spotify",
+                "spotify-client",
+                "env LD_PRELOAD=/usr/lib/x.so /usr/bin/spotify --uri=%U",
+            ),
+            app("zen.desktop", "Zen Browser", "zen-browser", "/opt/zen-browser-bin/zen-bin %u"),
+            app("Dead by Daylight.desktop", "Dead by Daylight", "steam_icon_381210", "steam steam://rungameid/381210"),
+            lituus_xdg::desktop::App {
+                flatpak: "org.gnome.Nautilus".into(),
+                ..app("files.desktop", "Files", "org.gnome.Nautilus", "nautilus")
+            },
+            app("noicon.desktop", "Spotify", "", "spotify"),
+        ];
+        let by = |app: &str, binary: &str, app_id: &str| {
+            let st = Stream { app: app.into(), binary: binary.into(), app_id: app_id.into(), ..Stream::default() };
+            icon_names(&st, &apps, None)
+        };
+        // By the program its Exec runs (past env and its variables).
+        assert_eq!(by("Spotify", "spotify", "")[0], "spotify-client");
+        assert_eq!(by("Zen", "zen-bin", "")[0], "zen-browser");
+        // By its Flatpak id.
+        assert_eq!(by("Files", "", "org.gnome.Nautilus")[0], "org.gnome.Nautilus");
+        // By its name, when its program is Wine's.
+        assert_eq!(by("Dead by Daylight", "wine64-preloader", "")[0], "steam_icon_381210");
+        // A Steam game without a shortcut: its game id.
+        let st = Stream { app: "Hades".into(), binary: "wine64-preloader".into(), ..Stream::default() };
+        assert_eq!(icon_names(&st, &apps, Some("1145360"))[0], "steam_icon_1145360");
+        // Nothing found: the names alone, as before.
+        assert_eq!(by("mpv", "mpv", ""), ["mpv"]);
+        assert_eq!(program("\"/opt/My App/run\" --x"), "run");
+    }
+
+    /// A process's Steam game id is read from its environment, and nothing else is.
+    #[test]
+    fn a_steam_game_is_known_by_its_environment() {
+        // This test's own process has none.
+        assert_eq!(steam_game(std::process::id()), None);
+        // A child's environment is readable a moment after it starts its program (even after
+        // its name changes), so this waits until the variable is there.
+        let started = |steam_app_id: &str| {
+            let child = std::process::Command::new("sleep").arg("5").env("SteamAppId", steam_app_id).spawn().unwrap();
+            let set = format!("SteamAppId={steam_app_id}");
+            for _ in 0..300 {
+                let env = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap_or_default();
+                if env.split(|&b| b == 0).any(|v| v == set.as_bytes()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child
+        };
+        for (value, read) in [("381210", Some("381210")), ("../x", None), ("0", None)] {
+            let mut child = started(value);
+            assert_eq!(steam_game(child.id()).as_deref(), read, "{value}");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     /// A drawn icon reaches the app's row; one that wasn't found leaves the line icon.
@@ -951,6 +1114,12 @@ mod tests {
                 }
                 Command::GetSinkInputInfoList => {
                     protocol::write_reply_message(w, seq, &protocol::SinkInputInfoList::new(), v)
+                }
+                Command::GetSourceOutputInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::SourceOutputInfoList::new(), v)
+                }
+                Command::GetClientInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::ClientInfoList::new(), v)
                 }
                 Command::GetCardInfoList => protocol::write_reply_message(w, seq, &protocol::CardInfoList::new(), v),
                 _ => protocol::write_ack_message(w, seq),

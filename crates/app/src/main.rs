@@ -4167,8 +4167,11 @@ mod tests {
         window.window().set_size(LogicalSize::new(2000.0, 1070.0));
         let (device, firefox) =
             (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
-        // Right of the output's list (240 px), which ends its card.
-        assert!(firefox.x > device.x + 240.0, "beside: {device:?} {firefox:?}");
+        // Right of the output's list, which ends its card.
+        let beside = |device: slint::LogicalPosition, firefox: slint::LogicalPosition| {
+            firefox.x > device.x + control(&window, "Output device", AccessibleRole::Combobox).size().width
+        };
+        assert!(beside(device, firefox), "beside: {device:?} {firefox:?}");
         assert!(firefox.y < at("Input device", AccessibleRole::Combobox).y, "the apps start at the top");
         // Recording, under the apps playing.
         let discord = at("Discord recording volume", AccessibleRole::Slider);
@@ -4182,8 +4185,15 @@ mod tests {
         control(&window, "Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
         assert_eq!(*acts.borrow(), ["rec-mute 90 0.00", "rec-volume 91 0.85", "app-mute 7 0.00"]);
 
-        // A narrower window: Output, Input, then the apps, one under the other.
+        // A 1200 px window still has the two columns (D-55); the device cards give way first.
         window.window().set_size(LogicalSize::new(1200.0, 760.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        assert!(beside(device, firefox), "beside at 1200 px: {device:?} {firefox:?}");
+        assert!(control(&window, "Output device", AccessibleRole::Combobox).size().width >= 140.0);
+
+        // The smallest window: Output, Input, then the apps, one under the other.
+        window.window().set_size(LogicalSize::new(1040.0, 760.0));
         let (device, input) =
             (at("Output device", AccessibleRole::Combobox), at("Input device", AccessibleRole::Combobox));
         let firefox = at("Firefox volume", AccessibleRole::Slider);

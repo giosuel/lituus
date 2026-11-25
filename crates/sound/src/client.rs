@@ -100,6 +100,13 @@ impl Session {
         let streams: protocol::SinkInputInfoList = self.ask(Command::GetSinkInputInfoList)?;
         let recordings: protocol::SourceOutputInfoList = self.ask(Command::GetSourceOutputInfoList)?;
         let cards: protocol::CardInfoList = self.ask(Command::GetCardInfoList)?;
+        // A stream made with PipeWire's own library (pw-play, a native game) doesn't say its
+        // process; its client does.
+        let clients: protocol::ClientInfoList = self.ask(Command::GetClientInfoList)?;
+        let client_pid = |client: Option<u32>| {
+            let c = clients.iter().find(|c| Some(c.index) == client)?;
+            ["application.process.id", "pipewire.sec.pid"].iter().find_map(|k| prop(&c.props, k).parse().ok())
+        };
         let (monitors, sources): (Vec<_>, Vec<_>) =
             sources.into_iter().partition(|s| s.monitor_of_sink_index.is_some());
         Ok(Snapshot {
@@ -113,8 +120,24 @@ impl Session {
             sinks: sinks.into_iter().map(sink).collect(),
             sources: sources.into_iter().map(source).collect(),
             monitors: monitors.into_iter().map(source).collect(),
-            streams: streams.into_iter().filter(|s| !from_a_mixer(&s.props)).map(stream).collect(),
-            recordings: recordings.into_iter().filter(|s| !from_a_mixer(&s.props)).map(recording).collect(),
+            streams: streams
+                .into_iter()
+                .filter(|s| !from_a_mixer(&s.props))
+                .map(|s| {
+                    let client = s.client_index;
+                    let st = stream(s);
+                    Stream { pid: st.pid.or_else(|| client_pid(client)), ..st }
+                })
+                .collect(),
+            recordings: recordings
+                .into_iter()
+                .filter(|s| !from_a_mixer(&s.props))
+                .map(|s| {
+                    let client = s.client_index;
+                    let st = recording(s);
+                    Stream { pid: st.pid.or_else(|| client_pid(client)), ..st }
+                })
+                .collect(),
             cards: cards.into_iter().map(card).collect(),
         })
     }
@@ -377,6 +400,7 @@ fn named(index: u32, name: &CStr, props: &protocol::Props) -> Stream {
             .into_iter()
             .find(|v| !v.is_empty())
             .unwrap_or_default(),
+        pid: prop(props, "application.process.id").parse().ok(),
         ..Stream::default()
     }
 }

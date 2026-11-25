@@ -6,7 +6,7 @@
 // (src/sound.rs); everything the user does goes back through `act(verb, id, value)`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, CardTitle, CardFooter, SectionLabel, Notice, Scroll, Focusable, Focus, AppIcon } from "controls.slint";
+import { Button, IconButton, Switch, CardTitle, SectionLabel, Notice, Scroll, Focusable, Focus, AppIcon } from "controls.slint";
 import { ViewSwitcher, Select } from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, DividerRow, SettingRow, EmptyState } from "shell.slint";
 
@@ -174,6 +174,9 @@ component OutputCard inherits ScrollCard {
         VerticalLayout {
             padding: 18px;
             padding-top: 14px;
+            // The last row's own space is below it: the card's full padding under that left
+            // more room below the row than above it.
+            padding-bottom: 8px;
             spacing: 0;
             alignment: start;
             preferred-width: 756px;
@@ -183,7 +186,6 @@ component OutputCard inherits ScrollCard {
             if root.page.outputs-names.length == 0: Text { text: "No speakers, headphones or other output."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
             if root.page.outputs-names.length > 0: SettingRow {
                 label: "Output device";
-                description: "Where sound plays";
                 first: true;
                 Select {
                     min-width: 140px;
@@ -234,7 +236,7 @@ component OutputCard inherits ScrollCard {
             // sits with the devices rather than under Cards.
             SettingRow {
                 label: "Louder than 100 %";
-                description: "Lets the volume sliders go to 150 %; sound may distort";
+                description: "Sound may distort";
                 first: root.page.outputs-names.length == 0;
                 Switch { on: root.page.overamplify; label: "Louder than 100 %"; toggled => { root.act("overamplify", "", 0); } }
             }
@@ -251,6 +253,9 @@ component InputCard inherits ScrollCard {
         VerticalLayout {
             padding: 18px;
             padding-top: 14px;
+            // The last row's own space is below it: the card's full padding under that left
+            // more room below the row than above it.
+            padding-bottom: 8px;
             spacing: 0;
             alignment: start;
             preferred-width: 756px;
@@ -355,7 +360,9 @@ component StreamRow inherits DividerRow {
         }
         Percent { value: root.app.volume; muted: root.app.muted; }
         Select {
-            width: 190px;
+            min-width: 130px;
+            preferred-width: 190px;
+            horizontal-stretch: 0;
             select-height: Size.field;
             label: (root.recording ? "Input for " : "Output for ") + root.app.name;
             focus-key: (root.recording ? "rec-input:" : "app-output:") + root.app.id;
@@ -372,12 +379,12 @@ component StreamRow inherits DividerRow {
 component AppsCard inherits ScrollCard {
     in property <SoundView> page;
     callback act(string, string, float);
-    // The note stays at the bottom of a tall card.
-    fill: true;
     VerticalLayout {
         padding: 18px;
         padding-top: 14px;
+        padding-bottom: 8px;
         spacing: 0;
+        alignment: start;
         CardTitle { text: "Apps"; }
         GroupLine { text: "PLAYING"; line: root.page.apps-line; }
         if root.page.apps.length == 0: Text { text: "No app is playing sound."; color: Theme.faint; font-size: Type.body; height: 48px; vertical-alignment: center; }
@@ -402,8 +409,6 @@ component AppsCard inherits ScrollCard {
             details: root.page.record-from-details;
             act(v, id, x) => { root.act(v, id, x); }
         }
-        Rectangle { vertical-stretch: 1; min-height: 14px; }
-        CardFooter { text: "Each row is one stream: an app on a call plays and records, so it has a row in each. Moving one moves only that app; the output and input in use stay as they are."; }
     }
 }
 
@@ -469,7 +474,9 @@ export component SoundPage inherits VerticalLayout {
     body := Scroll {
         // Two columns when the apps' rows fit beside Output and Input, as in the mockup; in one
         // column the cards keep their height and the page scrolls.
-        property <bool> two-columns: self.width >= 1240px;
+        // The device cards give way first, down to their least width (D-55: "so we can use the
+        // two-column layout for more narrow windows").
+        property <bool> two-columns: self.width >= 880px;
         // The columns follow its width, so its least width can't follow them.
         min-width: 0;
         vertical-stretch: 1;
@@ -487,15 +494,16 @@ export component SoundPage inherits VerticalLayout {
         if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && body.two-columns: HorizontalLayout {
             spacing: 14px;
             vertical-stretch: 1;
-            // The same preferred width, so they share the row evenly.
+            // The apps take two thirds of the room beyond their preferred widths, as their rows
+            // have more in them; short of it, the device cards shrink first.
             VerticalLayout {
-                preferred-width: 420px;
+                preferred-width: 360px;
                 horizontal-stretch: 1;
                 spacing: 14px;
                 OutputCard { whole: true; vertical-stretch: 0; page: root.page; act(v, id, x) => { root.act(v, id, x); } }
                 InputCard { page: root.page; act(v, id, x) => { root.act(v, id, x); } }
             }
-            AppsCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, id, x) => { root.act(v, id, x); } }
+            AppsCard { preferred-width: 600px; horizontal-stretch: 2; page: root.page; act(v, id, x) => { root.act(v, id, x); } }
         }
         if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && !body.two-columns: OutputCard {
             whole: true;

@@ -89,6 +89,7 @@ fn reads_and_changes_a_recording() {
         eprintln!("no pw-record: skipped");
         return;
     };
+    let recorder_pid = recorder.id();
     let mut session = Session::connect().unwrap();
     let find = |session: &mut Session| {
         session.snapshot().unwrap().recordings.into_iter().find(|r| r.app == "Lituus test recorder")
@@ -106,6 +107,7 @@ fn reads_and_changes_a_recording() {
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let rec = found.expect("the recording is listed");
+        assert_eq!(rec.pid, Some(recorder_pid), "its process, from its client");
         let snap = session.snapshot().unwrap();
         assert!(
             snap.sources.iter().chain(&snap.monitors).any(|d| d.index == rec.device),
