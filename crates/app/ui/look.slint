@@ -4,7 +4,7 @@
 import { Theme, Type, Size } from "theme.slint";
 import { CardTitle, Notice, Scroll } from "controls.slint";
 import { Select, Segmented } from "dialogs.slint";
-import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, LoadBanner } from "shell.slint";
 
 /// state: "loading" or "list". Each list with the choice in use (-1: none).
 export struct AppearanceView {
@@ -13,6 +13,8 @@ export struct AppearanceView {
     hero: HeroInfo,
     error: string,
     gsettings: bool,
+    /// Hyprland runs and doesn't load Lituus's file (the cursor's part).
+    not-loaded: bool,
     /// 0 Default, 1 Dark, 2 Light.
     scheme: int,
     gtk-themes: [string], gtk: int,
@@ -125,6 +127,9 @@ export component AppearancePage inherits VerticalLayout {
             selected: root.page.scheme;
             changed(i) => { root.act("scheme", i); }
         }
+    }
+    if root.page.not-loaded && root.page.state == "list": LoadBanner {
+        text: "The cursor goes back to Hyprland's own when Hyprland restarts.";
     }
     body := Scroll {
         property <bool> two-columns: self.width >= 880px;

@@ -4,9 +4,9 @@
 // from Rust (src/power.rs); everything the user does goes back through `act(verb, value)`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon } from "icons.slint";
-import { Button, Switch, CardTitle, CardFooter, Notice, Scroll } from "controls.slint";
-import { Select, Segmented, DialogTitle, DialogButtons, Modal } from "dialogs.slint";
-import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+import { Switch, CardTitle, CardFooter, Notice, Scroll } from "controls.slint";
+import { Select, Segmented } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, LoadBanner, SetupButton } from "shell.slint";
 
 /// A device's battery: icon, name, how it's connected (or Charging), and the charge (0 to 1).
 export struct PowerDevice { icon: string, name: string, sub: string, percent: float }
@@ -40,7 +40,8 @@ export struct PowerView {
     lock-before-sleep: bool,
     lockers: [string],
     locker: int,
-    confirm-takeover: bool,
+    /// Hyprland runs and doesn't load Lituus's file (the lid's and the power button's binds).
+    not-loaded: bool,
     devices: [PowerDevice],
     /// The lid (a laptop) and the power button: 0 suspend, 1 lock or power off, 2 nothing.
     has-lid: bool,
@@ -78,12 +79,13 @@ component IdleCard inherits Card {
             dismissible: false;
             text: "hypridle isn't installed: these times take effect once it is (sudo pacman -S hypridle).";
         }
+        // Taken over in Set up… with the rest of the setup (the owner, 2026-11-25: "lets also put
+        // that into the setup").
         if !root.page.idle-editable: Notice {
             tone: "info";
-            text: "Your hypridle.conf isn't Lituus's. These are its times; let Lituus manage it to change them here (it keeps hypridle.conf.bak).";
-            action: "Let Lituus manage it…";
+            text: "Your hypridle.conf isn't Lituus's: these are its times. Set up Lituus to change them here.";
             dismissible: false;
-            action-clicked => { root.act("takeover", 0); }
+            SetupButton { }
         }
         if root.page.backlight: SettingRow {
             label: "Dim the screens";
@@ -270,6 +272,9 @@ export component PowerPage inherits VerticalLayout {
             changed(i) => { root.act("profile", i); }
         }
     }
+    if root.page.not-loaded && root.page.state == "list": LoadBanner {
+        text: "The lid and the power button you choose here are lost when Hyprland restarts.";
+    }
     body := Scroll {
         property <bool> two-columns: self.width >= 880px;
         min-width: 0;
@@ -310,26 +315,5 @@ export component PowerPage inherits VerticalLayout {
             vertical-stretch: 1;
             EmptyState { loading: true; title: "Reading the power services…"; }
         }
-    }
-}
-
-/// Taking over the dotfiles' hypridle.conf, after asking (D-57, as Set up… does for Hyprland's
-/// config, D-44).
-export component PowerTakeoverDialog inherits Modal {
-    callback confirmed();
-    callback cancelled();
-    card-width: 500px;
-    label: "Let Lituus manage hypridle.conf?";
-    dismissed => { root.cancelled(); }
-    DialogTitle { text: "Let Lituus manage hypridle.conf?"; }
-    Text {
-        text: "Lituus keeps your file as hypridle.conf.bak, then writes its own with the same times, which you can change here from then on. To go back, put the .bak back.";
-        color: Theme.muted;
-        font-size: Type.body;
-        wrap: word-wrap;
-    }
-    DialogButtons {
-        Button { label: "Cancel"; button-height: Size.button-dialog; clicked => { root.cancelled(); } }
-        Button { label: "Let Lituus manage it"; kind: "primary"; button-height: Size.button-dialog; clicked => { root.confirmed(); } }
     }
 }

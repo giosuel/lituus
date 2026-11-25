@@ -4346,6 +4346,17 @@ mod tests {
             .unwrap()
             .invoke_accessible_default_action();
         assert_eq!(*acts.borrow(), ["profile 2"]);
+        // The dotfiles' hypridle.conf, and Hyprland not loading Lituus's file: the same Set up…
+        // in the idle card and above the page.
+        state.idle_file = true;
+        state.not_loaded = true;
+        window.set_power(super::power::view(&state));
+        let setups = ElementHandle::find_by_accessible_label(&window, "Set up…")
+            .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
+            .count();
+        assert_eq!(setups, 2);
+        state.idle_file = false;
+        state.not_loaded = false;
         // A desktop has no lid and no battery card.
         state.snapshot.as_mut().unwrap().battery = None;
         state.snapshot.as_mut().unwrap().lid = false;
@@ -5835,14 +5846,30 @@ mod tests {
         window.set_page("shortcuts".into());
         window.set_shortcuts(super::ShortcutsView { state: "list".into(), not_loaded: true, ..Default::default() });
         let w = window.as_weak();
-        window.global::<super::Setup>().on_open(move || w.unwrap().global::<super::Setup>().set_shown(true));
+        window.global::<super::Setup>().on_open(move || {
+            let window = w.unwrap();
+            let setup = window.global::<super::Setup>();
+            setup.set_steps(super::model(vec![super::SetupStep {
+                id: "hyprland".into(),
+                title: "Hyprland loads Lituus's settings".into(),
+                chosen: true,
+                ..Default::default()
+            }]));
+            setup.set_ready(true);
+            setup.set_shown(true);
+        });
         tab_to(&window, "Set up…");
         press(&window, Key::Return);
         assert!(window.global::<super::Setup>().get_shown());
         tab_to(&window, "Not now");
         for _ in 0..4 {
             press(&window, Key::Tab);
-            assert!(ring_on(&window, "Not now") || ring_on(&window, "Add the line"), "the focus is behind the dialog");
+            assert!(
+                ring_on(&window, "Not now")
+                    || ring_on(&window, "Set up")
+                    || ring_on(&window, "Hyprland loads Lituus's settings"),
+                "the focus is behind the dialog"
+            );
         }
         tab_to(&window, "Not now");
         press(&window, Key::Return);

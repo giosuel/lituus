@@ -35,8 +35,8 @@ pub struct State {
     pub backlight: bool,
     /// The lock screens installed, of those Lituus knows.
     pub lockers: Vec<String>,
-    /// The confirmation before Lituus takes over hypridle.conf is shown.
-    pub confirm_takeover: bool,
+    /// Hyprland runs and its config doesn't load Lituus's file, where the binds go.
+    pub not_loaded: bool,
     /// The lid and the power button, as chosen here (config.toml's [power]); empty: not chosen,
     /// so logind's own handling is shown and no bind is written.
     pub lid_battery: String,
@@ -72,6 +72,7 @@ pub fn read_files(state: &mut State, config: &crate::config::Config) {
     state.lid_plugged = config.power.lid_plugged.clone();
     state.lid_external = config.power.lid_external.clone();
     state.power_key = config.power.power_key.clone();
+    state.not_loaded = crate::setup::not_loaded();
 }
 
 pub(crate) fn installed(program: &str) -> bool {
@@ -182,20 +183,6 @@ pub fn act(state: &mut State, verb: &str, value: i32) {
                 write_idle(state, idle);
             }
         }
-        "takeover" => state.confirm_takeover = true,
-        "takeover-cancel" => state.confirm_takeover = false,
-        "takeover-confirm" => {
-            state.confirm_takeover = false;
-            let path = idle_path();
-            let backup = path.with_extension("conf.bak");
-            match std::fs::copy(&path, &backup) {
-                Ok(_) => {
-                    let idle = Idle { ours: true, ..state.idle.clone() };
-                    write_idle(state, idle);
-                }
-                Err(e) => state.error = Some(format!("Couldn't keep a copy of hypridle.conf: {e}")),
-            }
-        }
         "lid-battery" | "lid-plugged" | "lid-external" | "power-key" => {
             let (choices, field): (&[&str], &mut String) = match verb {
                 "lid-battery" => (&LID, &mut state.lid_battery),
@@ -233,6 +220,41 @@ pub fn act(state: &mut State, verb: &str, value: i32) {
             }
         }
         _ => {}
+    }
+}
+
+/// Set up…'s step for hypridle.conf: someone else's file, to be taken over.
+pub fn idle_needs_takeover() -> Option<bool> {
+    let text = std::fs::read_to_string(idle_path()).ok()?;
+    Some(!hypridle::parse(&text).ours)
+}
+
+/// Where the user's hypridle.conf is kept when Lituus takes it over: hypridle.conf.bak, or .bak.1
+/// and on when that's taken (as Set up… does with Hyprland's config).
+pub fn idle_backup() -> PathBuf {
+    let path = idle_path();
+    (0u32..)
+        .map(|n| path.with_extension(if n == 0 { "conf.bak".to_owned() } else { format!("conf.bak.{n}") }))
+        .find(|p| !p.exists())
+        .expect("a free name")
+}
+
+/// Takes over the user's hypridle.conf (Set up…): kept as `idle_backup`, then written as
+/// Lituus's with the same times, and hypridle started again.
+pub fn take_over_idle(state: &mut State) -> Result<(), String> {
+    let path = idle_path();
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read hypridle.conf: {e}."))?;
+    let backup = idle_backup();
+    std::fs::copy(&path, &backup).map_err(|e| {
+        format!("Couldn't keep hypridle.conf as {}: {e}.", backup.file_name().unwrap_or_default().display())
+    })?;
+    state.idle = hypridle::parse(&text);
+    state.idle_file = true;
+    let before = state.error.take();
+    write_idle(state, Idle { ours: true, ..state.idle.clone() });
+    match std::mem::replace(&mut state.error, before) {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }
 
@@ -561,7 +583,7 @@ pub fn view(state: &State) -> PowerView {
     v.lock_before_sleep = idle.lock_before_sleep;
     v.lockers = model(state.lockers.iter().map(s).collect());
     v.locker = state.lockers.iter().position(|l| *l == idle.locker).map_or(-1, |i| i as i32);
-    v.confirm_takeover = state.confirm_takeover;
+    v.not_loaded = state.not_loaded;
     // Batteries of the devices.
     v.devices = model(
         snap.devices

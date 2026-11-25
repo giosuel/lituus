@@ -64,6 +64,8 @@ pub struct State {
     pub installed: Installed,
     /// gsettings is there (it's how GTK 4 and libadwaita apps, Firefox and others read the style).
     pub gsettings: bool,
+    /// Hyprland runs and its config doesn't load Lituus's file, where the cursor goes.
+    pub not_loaded: bool,
     pub error: Option<String>,
     /// The page was opened: read the look and what's installed again (a theme installed while
     /// Lituus runs in the background shows up).
@@ -75,12 +77,14 @@ pub fn spawn(weak: slint::Weak<MainWindow>) {
     std::thread::spawn(move || {
         let (look, gsettings) = read_look();
         let installed = read_installed(&Dirs::from_env(), &home());
+        let not_loaded = crate::setup::not_loaded();
         let weak2 = weak.clone();
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&weak2, |app| {
                 app.appearance.look = Some(look);
                 app.appearance.installed = installed;
                 app.appearance.gsettings = gsettings;
+                app.appearance.not_loaded = not_loaded;
             })
         });
     });
@@ -441,6 +445,7 @@ pub fn view(state: &State) -> AppearanceView {
         return v;
     };
     v.state = s("list");
+    v.not_loaded = state.not_loaded;
     v.gsettings = state.gsettings;
     v.sub = s("How your apps look · Lituus's own colours are in Settings");
     v.hero = HeroInfo {
@@ -569,6 +574,7 @@ mod tests {
             look: Some(Look { scheme: "prefer-dark".into(), gtk: "Custom".into(), ..Look::default() }),
             installed: Installed { gtk: vec!["Adwaita".into(), "adw-gtk3-dark".into()], ..Installed::default() },
             gsettings: true,
+            not_loaded: false,
             error: None,
             reread: false,
         };
