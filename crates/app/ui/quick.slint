@@ -1,11 +1,11 @@
 // The quick popup: a small window from the tray icon (left-click), `lituus --quick` or a
-// keybind, with the nearest networks, the VPNs, the Bluetooth devices, the volume and airplane
-// mode, each under its heading. Its rows come from Rust (src/quick.rs, and main.rs for the rest).
+// keybind, with the nearest networks, the VPNs, the Bluetooth devices, the volume (with the apps
+// playing) and airplane mode, each under its heading. Its rows come from Rust (src/quick.rs, and main.rs for the rest).
 // Wayland doesn't let apps place windows, so a window rule floats it (see extras/hyprland.lua).
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, SignalBars } from "icons.slint";
-import { Button, IconButton, Switch, CardTitle, Scroll, Focus } from "controls.slint";
-import { Slider } from "sound.slint";
+import { Button, IconButton, Switch, CardTitle, Scroll, Focus, AppButton, Link } from "controls.slint";
+import { Slider, SoundApp } from "sound.slint";
 
 /// A network, a VPN or a Bluetooth device. icon: "bars" (signal bars), or an icon name. active:
 /// connected or connecting, which its meta line says first. button: "Connect", "Disconnect" or
@@ -89,6 +89,9 @@ export component QuickWindow inherits Window {
     in property <float> volume;
     in property <bool> muted;
     in property <float> volume-max: 1;
+    /// The apps playing, three at most (playing first, newest first), and how many more there are.
+    in property <[SoundApp]> apps;
+    in property <int> apps-more;
     in property <bool> airplane;
     callback wifi-switched();
     callback rescan();
@@ -99,6 +102,10 @@ export component QuickWindow inherits Window {
     callback bt-switched();
     callback volume-moved(float);
     callback mute-clicked();
+    callback app-volume-moved(string, float);
+    callback app-mute-clicked(string);
+    /// "N more on the Sound page": Lituus opens on the apps.
+    callback apps-more-clicked();
     callback airplane-switched();
     callback open-main();
     callback open-settings();
@@ -189,6 +196,7 @@ export component QuickWindow inherits Window {
                     Slider {
                         label: "Volume";
                         value: root.volume;
+                        faded: root.muted;
                         maximum: root.volume-max;
                         mark: root.volume-max > 1 ? 1 : -1;
                         y: (parent.height - self.height) / 2;
@@ -203,6 +211,64 @@ export component QuickWindow inherits Window {
                         horizontal-alignment: right;
                         vertical-alignment: center;
                         width: 48px;
+                    }
+                }
+                // Each app under the output, as pavucontrol lists them: its icon mutes it, and its
+                // slider and number line up with the output's. Moving an app to another output is
+                // left to the Sound page.
+                for a in root.apps: HorizontalLayout {
+                    padding-left: 2px;
+                    padding-right: 4px;
+                    spacing: 10px;
+                    height: 44px;
+                    AppButton {
+                        picture: a.icon;
+                        has-picture: a.has-icon;
+                        crossed: a.muted;
+                        label: (a.muted ? "Unmute " : "Mute ") + a.name;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.app-mute-clicked(a.id); }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            Text { text: a.name; color: Theme.muted; font-size: Type.note; horizontal-stretch: 0; }
+                            Text { text: a.sub == "" ? "" : " · " + a.sub; color: Theme.faint; font-size: Type.note; overflow: elide; horizontal-stretch: 1; }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Slider {
+                                label: a.name + " volume";
+                                value: a.volume;
+                                faded: a.muted;
+                                maximum: root.volume-max;
+                                mark: root.volume-max > 1 ? 1 : -1;
+                                horizontal-stretch: 1;
+                                moved(v) => { root.app-volume-moved(a.id, v); }
+                            }
+                            Text {
+                                text: a.muted ? "Muted" : round(a.volume * 100) + " %";
+                                color: Theme.muted;
+                                font-size: Type.note;
+                                font-family: "JetBrains Mono";
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                width: 48px;
+                            }
+                        }
+                    }
+                }
+                if root.apps-more > 0: HorizontalLayout {
+                    alignment: start;
+                    padding-left: 44px;
+                    height: 26px;
+                    Link {
+                        text: root.apps-more == 1 ? "1 more on the Sound page" : root.apps-more + " more on the Sound page";
+                        font-size: Type.note;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.apps-more-clicked(); }
                     }
                 }
             }

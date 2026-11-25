@@ -97,7 +97,10 @@ impl Session {
         let sinks: protocol::SinkInfoList = self.ask(Command::GetSinkInfoList)?;
         let sources: protocol::SourceInfoList = self.ask(Command::GetSourceInfoList)?;
         let streams: protocol::SinkInputInfoList = self.ask(Command::GetSinkInputInfoList)?;
+        let recordings: protocol::SourceOutputInfoList = self.ask(Command::GetSourceOutputInfoList)?;
         let cards: protocol::CardInfoList = self.ask(Command::GetCardInfoList)?;
+        let (monitors, sources): (Vec<_>, Vec<_>) =
+            sources.into_iter().partition(|s| s.monitor_of_sink_index.is_some());
         Ok(Snapshot {
             server: match (server.server_name.as_deref(), server.server_version.as_deref()) {
                 (Some(n), Some(v)) => format!("{} {}", lossy(n), lossy(v)),
@@ -107,8 +110,10 @@ impl Session {
             default_sink: server.default_sink_name.as_deref().map(lossy),
             default_source: server.default_source_name.as_deref().map(lossy),
             sinks: sinks.into_iter().map(sink).collect(),
-            sources: sources.into_iter().filter(|s| s.monitor_of_sink_index.is_none()).map(source).collect(),
-            streams: streams.into_iter().map(stream).collect(),
+            sources: sources.into_iter().map(source).collect(),
+            monitors: monitors.into_iter().map(source).collect(),
+            streams: streams.into_iter().filter(|s| !from_a_mixer(&s.props)).map(stream).collect(),
+            recordings: recordings.into_iter().filter(|s| !from_a_mixer(&s.props)).map(recording).collect(),
             cards: cards.into_iter().map(card).collect(),
         })
     }
@@ -170,6 +175,26 @@ impl Session {
         }))
     }
 
+    pub fn set_recording_volume(&mut self, index: u32, volume: &Volume) -> Result<(), Error> {
+        self.run(Command::SetSourceOutputVolume(protocol::SetStreamVolumeParams {
+            index,
+            volume: channel_volume(volume),
+        }))
+    }
+
+    pub fn set_recording_mute(&mut self, index: u32, mute: bool) -> Result<(), Error> {
+        self.run(Command::SetSourceOutputMute(protocol::SetStreamMuteParams { index, mute }))
+    }
+
+    /// Records an app from another input (or an output's monitor).
+    pub fn move_recording(&mut self, index: u32, source: u32) -> Result<(), Error> {
+        self.run(Command::MoveSourceOutput(protocol::MoveStreamParams {
+            index: Some(index),
+            device_index: Some(source),
+            device_name: None,
+        }))
+    }
+
     pub fn set_sink_port(&mut self, index: u32, port: &str) -> Result<(), Error> {
         self.run(Command::SetSinkPort(protocol::SetPortParams {
             index: Some(index),
@@ -195,11 +220,11 @@ impl Session {
     }
 
     /// Turns this connection into a watcher: `changed` is called after every change to the
-    /// outputs, inputs, apps, cards or defaults, until the server goes away or `changed` says
-    /// to stop.
+    /// outputs, inputs, apps playing or recording, cards or defaults, until the server goes away
+    /// or `changed` says to stop.
     pub fn watch(mut self, mut changed: impl FnMut() -> bool) -> Result<(), Error> {
         use protocol::SubscriptionMask as M;
-        self.run(Command::Subscribe(M::SINK | M::SOURCE | M::SINK_INPUT | M::SERVER | M::CARD))?;
+        self.run(Command::Subscribe(M::SINK | M::SOURCE | M::SINK_INPUT | M::SOURCE_OUTPUT | M::SERVER | M::CARD))?;
         // Events come whenever they come.
         self.socket.get_ref().set_read_timeout(None)?;
         loop {
@@ -319,18 +344,49 @@ fn source(s: protocol::SourceInfo) -> Device {
 }
 
 fn stream(s: protocol::SinkInputInfo) -> Stream {
-    let app = prop(&s.props, "application.name");
-    let title = prop(&s.props, "media.name");
     Stream {
-        index: s.index,
-        app: if app.is_empty() { lossy(&s.name) } else { app },
-        title,
-        icon: prop(&s.props, "application.icon_name"),
-        sink: s.sink_index,
+        device: s.sink_index,
         volume: volume(&s.cvolume, &s.channel_map),
         muted: s.muted,
         corked: s.corked,
+        ..named(s.index, &s.name, &s.props)
     }
+}
+
+fn recording(s: protocol::SourceOutputInfo) -> Stream {
+    Stream {
+        device: s.source_index,
+        volume: volume(&s.cvolume, &s.channel_map),
+        muted: s.muted,
+        corked: s.corked,
+        ..named(s.index, &s.name, &s.props)
+    }
+}
+
+/// A stream's app, what it plays or records, and the names to find its icon by.
+fn named(index: u32, name: &CStr, props: &protocol::Props) -> Stream {
+    let app = prop(props, "application.name");
+    Stream {
+        index,
+        app: if app.is_empty() { lossy(name) } else { app },
+        title: prop(props, "media.name"),
+        icon: prop(props, "application.icon_name"),
+        binary: prop(props, "application.process.binary"),
+        app_id: [prop(props, "application.id"), prop(props, "pipewire.access.portal.app_id")]
+            .into_iter()
+            .find(|v| !v.is_empty())
+            .unwrap_or_default(),
+        ..Stream::default()
+    }
+}
+
+/// A volume mixer's own stream, such as pavucontrol's level meters: not an app's sound, so it's
+/// left out, as pavucontrol leaves them out.
+fn from_a_mixer(props: &protocol::Props) -> bool {
+    matches!(
+        prop(props, "application.id").as_str(),
+        "org.PulseAudio.pavucontrol" | "org.gnome.VolumeControl" | "org.kde.kmixd"
+    )
 }
 
 fn card(c: protocol::CardInfo) -> Card {

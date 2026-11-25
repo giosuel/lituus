@@ -1,4 +1,5 @@
-//! What the sound server has: outputs and inputs, the apps playing, and the sound cards.
+//! What the sound server has: outputs and inputs, the apps playing and recording, and the sound
+//! cards.
 
 /// PulseAudio's 100 % on a channel.
 pub const NORM: u32 = 0x10000;
@@ -13,8 +14,13 @@ pub struct Snapshot {
     pub sinks: Vec<Device>,
     /// Inputs, without the monitors of the outputs.
     pub sources: Vec<Device>,
+    /// The outputs' monitors: what each output plays, which an app can record (a screen
+    /// recorder's desktop audio).
+    pub monitors: Vec<Device>,
     /// The apps playing (sink inputs).
     pub streams: Vec<Stream>,
+    /// The apps recording (source outputs), from an input or a monitor.
+    pub recordings: Vec<Stream>,
     pub cards: Vec<Card>,
 }
 
@@ -91,7 +97,7 @@ pub struct Port {
     pub available: Option<bool>,
 }
 
-/// An app playing sound.
+/// An app playing sound, or recording it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stream {
     pub index: u32,
@@ -99,9 +105,14 @@ pub struct Stream {
     pub app: String,
     /// What it plays: "YouTube – Music".
     pub title: String,
+    /// The icon name the app gives, if any ("firefox").
     pub icon: String,
-    /// The output it plays through.
-    pub sink: u32,
+    /// What else names it, for finding its icon when it gives none: its program ("spotify") and
+    /// its app id ("org.mozilla.firefox", a Flatpak's).
+    pub binary: String,
+    pub app_id: String,
+    /// The output it plays through; for a recording, the input (or monitor) it records from.
+    pub device: u32,
     pub volume: Volume,
     pub muted: bool,
     /// Paused.
