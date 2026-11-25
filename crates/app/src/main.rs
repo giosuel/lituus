@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod airplane;
+mod appearance;
 mod apps;
 mod audio;
 mod bluetooth;
@@ -23,11 +24,13 @@ mod input;
 mod instance;
 mod keymap;
 mod nav;
+mod night;
 mod notify;
 mod openconnect;
 mod openvpn;
 mod palette;
 mod portal;
+mod power;
 mod profiles;
 mod qr;
 mod quick;
@@ -69,6 +72,9 @@ struct Cli {
     /// Turn Wi-Fi on or off.
     #[arg(long, conflicts_with = "background")]
     toggle_wifi: bool,
+    /// The lid was closed: do what the Power page chose (Lituus's lid bind runs this).
+    #[arg(long, hide = true, conflicts_with_all = ["background", "quick", "toggle_wifi"])]
+    lid: bool,
 }
 
 /// The security choices of the hidden-network dialog, by index; the others use them too.
@@ -183,10 +189,10 @@ struct App {
     quick: quick::Quick,
     /// The popup was just made, and needs everything once.
     quick_new: bool,
-    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume (see
-    /// `sound::quick`), as last shown.
+    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume with the
+    /// apps playing (see `sound::quick`), as last shown.
     quick_bt: (Option<bool>, Vec<bluetooth::QuickDevice>),
-    quick_sound: Option<(f32, bool, f32)>,
+    quick_sound: Option<sound::Quick>,
     notifier: Option<notify::Notifier>,
     /// The Bluetooth page.
     bt: bluetooth::State,
@@ -196,6 +202,10 @@ struct App {
     displays: displays::State,
     /// The Sound page.
     sound: sound::State,
+    power: power::State,
+    appearance: appearance::State,
+    night: night::State,
+    quick_night: (bool, bool, String),
     /// The Input pages, and which of them was open last (for the Input item).
     input: input::State,
     input_page: Option<view::Page>,
@@ -250,6 +260,10 @@ thread_local! {
 
 fn main() -> Result<(), slint::PlatformError> {
     let cli = Cli::parse();
+    if cli.lid {
+        power::lid_closed();
+        return Ok(());
+    }
     // Switching Wi-Fi (from a key) is the running Lituus's job, or this process's, which then
     // leaves. It never claims the name: a Lituus started meanwhile would hand its request to a
     // process that's about to leave, and nothing would open.
@@ -345,6 +359,18 @@ fn main() -> Result<(), slint::PlatformError> {
     APP.with(|app| app.borrow_mut().bt.commands = Some(bt_commands));
     bluetooth::spawn(window.as_weak(), bt_receiver);
     sound::spawn(window.as_weak());
+    {
+        let config = config::load(&config::path());
+        APP.with(|app| power::read_files(&mut app.borrow_mut().power, &config));
+        APP.with(|app| {
+            let night = &mut app.borrow_mut().night;
+            night::read(night, &config.night_light);
+            night::ensure_running(night);
+        });
+    }
+    night::spawn(window.as_weak());
+    power::spawn(window.as_weak());
+    appearance::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
     input::refresh(&window.as_weak());
@@ -391,6 +417,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     let quit = slint::run_event_loop_until_quit();
     stop_counting_traffic();
+    APP.with(|app| night::quitting(&app.borrow().night));
     quit
 }
 
@@ -659,6 +686,33 @@ fn toggle_quick(window: &MainWindow) {
                 })
             }
         });
+        popup.on_app_volume_moved({
+            let main = window.as_weak();
+            move |id, v| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-volume", &id, v);
+                })
+            }
+        });
+        popup.on_app_mute_clicked({
+            let main = window.as_weak();
+            move |id| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-mute", &id, 0.0);
+                })
+            }
+        });
+        popup.on_apps_more_clicked({
+            let main = window.as_weak();
+            move || {
+                let Some(window) = main.upgrade() else { return };
+                hide_quick();
+                update(&main, |app| go(app, "sound"));
+                // The first view, where the apps are.
+                window.set_sound_tab(0);
+                let _ = window.show();
+            }
+        });
         popup.on_airplane_switched({
             let main = window.as_weak();
             move || {
@@ -666,6 +720,13 @@ fn toggle_quick(window: &MainWindow) {
                     let on = APP.with(|app| app.borrow().quick.airplane);
                     on_tray(&window, tray::Event::SetAirplane(!on));
                 }
+            }
+        });
+        popup.on_night_switched({
+            let main = window.as_weak();
+            move || {
+                let w = main.clone();
+                update(&main, |app| night::act(&w, &mut app.night, "switch", 0.0, ""));
             }
         });
         popup.on_open_main(on(tray::Event::Open));
@@ -702,7 +763,13 @@ fn render_quick(app: &mut App, airplane: bool) {
     }
     let bt = bluetooth::quick(&app.bt);
     let sound = sound::quick(&app.sound);
-    if q == app.quick && bt == app.quick_bt && sound == app.quick_sound && !std::mem::take(&mut app.quick_new) {
+    let night = night::quick(&app.night);
+    if q == app.quick
+        && bt == app.quick_bt
+        && sound == app.quick_sound
+        && night == app.quick_night
+        && !std::mem::take(&mut app.quick_new)
+    {
         return;
     }
     if let Some(tray) = &app.tray {
@@ -764,13 +831,19 @@ fn render_quick(app: &mut App, airplane: bool) {
                 .collect(),
         ));
         popup.set_sound_available(sound.is_some());
-        if let Some((volume, muted, max)) = sound {
-            popup.set_volume(volume);
-            popup.set_muted(muted);
-            popup.set_volume_max(max);
+        if let Some(sound) = &sound {
+            popup.set_volume(sound.volume);
+            popup.set_muted(sound.muted);
+            popup.set_volume_max(sound.max);
+            popup.set_apps(sound::quick_rows(&sound.apps));
+            popup.set_apps_more(sound.more as i32);
         }
         popup.set_airplane(q.airplane);
+        popup.set_night_available(night.0);
+        popup.set_night(night.1);
+        popup.set_night_line(night.2.as_str().into());
     });
+    app.quick_night = night;
     app.quick = q;
     app.quick_bt = bt;
     app.quick_sound = sound;
@@ -1039,6 +1112,18 @@ fn connect_callbacks(window: &MainWindow) {
     window.on_shortcuts_act(move |verb, arg| {
         let w = weak.clone();
         update(&weak, |app| shortcuts::act(&w, &mut app.shortcuts, &verb, &arg))
+    });
+    let weak = window.as_weak();
+    window.on_power_act(move |verb, value| update(&weak, |app| power::act(&mut app.power, &verb, value)));
+    let weak = window.as_weak();
+    window.on_night_act(move |verb, value, text| {
+        let w = weak.clone();
+        update(&weak, |app| night::act(&w, &mut app.night, &verb, value, &text))
+    });
+    let weak = window.as_weak();
+    window.on_appearance_act(move |verb, value| {
+        let w = weak.clone();
+        update(&weak, |app| appearance::act(&w, &mut app.appearance, &verb, value))
     });
     let weak = window.as_weak();
     window.on_sound_act(move |verb, id, value| {
@@ -1312,6 +1397,9 @@ fn go(app: &mut App, id: &str) {
     match view::navigate(&mut app.ui, &mut app.net_page, id) {
         Some(view::Page::Hotspot) => open_hotspot(app),
         Some(page @ (view::Page::Keyboard | view::Page::Mouse | view::Page::Shortcuts)) => app.input_page = Some(page),
+        Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
+        Some(view::Page::Appearance) => app.appearance.reread = true,
+        Some(view::Page::NightLight) => night::read(&mut app.night, &config::load(&config::path()).night_light),
         _ => {}
     }
 }
@@ -1738,12 +1826,45 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "power",
+            label: "Power",
+            icon: "power",
+            group: "DEVICES",
+            keywords: "power battery profile performance balanced power saver idle sleep suspend lock screen hypridle \
+                       hyprlock lid laptop power button charge limit upower",
+            status: power::status(&app.power),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
+            id: "appearance",
+            label: "Appearance",
+            icon: "palette",
+            group: "DESKTOP",
+            keywords: "appearance look style dark light theme gtk icons icon theme cursor cursor size fonts font \
+                       monospace hyprcursor xcursor gsettings",
+            status: appearance::status(&app.appearance),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "wallpaper",
             label: "Wallpaper",
             icon: "picture",
             group: "DESKTOP",
             keywords: "wallpaper wallpapers background backgrounds picture pictures awww swww hyprpaper slideshow",
             status: wallpaper::status(&app.wallpapers),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
+            id: "night-light",
+            label: "Night light",
+            icon: "moon",
+            group: "DESKTOP",
+            keywords: "night light nightlight night mode blue light filter warm colour color temperature sunset sunrise \
+                       hyprsunset redshift gammastep schedule",
+            status: night::status(&app.night),
             parent: None,
             off: "",
         },
@@ -1948,6 +2069,12 @@ fn render(window: &MainWindow) {
         ]));
         render_appearance(window, &app);
         sound::render(window, &app.sound);
+        power::render(window, &app.power);
+        appearance::render(window, &app.appearance);
+        night::render(window, &app.night);
+        if std::mem::take(&mut app.appearance.reread) {
+            appearance::spawn(window.as_weak());
+        }
         displays::render(window, &app.displays);
         let state = &mut *app;
         input::render(window, &mut state.input, state.bt.snapshot.as_ref());
@@ -4093,10 +4220,232 @@ mod tests {
         assert_eq!(control("Output device").accessible_role(), Some(AccessibleRole::Combobox));
         assert_eq!(control("Output device").accessible_value().as_deref(), Some("Samsung TV (HDMI)"));
 
-        // With no card left, the Cards tab goes and the page shows the devices.
-        window.set_sound_tab(2);
+        // With no card left, the Cards view goes and the page shows the devices.
+        window.set_sound_tab(1);
         super::sound::render(&window, &super::sound::State::default());
         assert_eq!(window.get_sound_tab(), 0);
+    }
+
+    /// The apps playing and recording sit beside Output and Input in the owner's window and
+    /// under them in a narrower one (S-157); a recording's row has its own mute, volume and
+    /// input, and its clicks go to Rust as recordings.
+    #[test]
+    fn sound_apps_sit_beside_the_devices_or_under_them() {
+        use super::SoundApp;
+        let window = window();
+        window.set_page("sound".into());
+        let names = |n: &[&str]| super::model(n.iter().map(|&n| SharedString::from(n)).collect());
+        let app = |id: &str, name: &str, output: i32| SoundApp {
+            id: id.into(),
+            name: name.into(),
+            sub: "Voice".into(),
+            volume: 0.8,
+            output,
+            ..Default::default()
+        };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            outputs_names: names(&["Speakers", "Sony WH-1000XM5"]),
+            output: 0,
+            inputs_names: names(&["Blue Yeti"]),
+            input: 0,
+            apps: super::model(vec![app("7", "Firefox", 1)]),
+            apps_line: "1 playing".into(),
+            recordings: super::model(vec![app("90", "Discord", 0), app("91", "OBS Studio", 1)]),
+            recordings_line: "2 recording".into(),
+            record_from: names(&["Blue Yeti", "Monitor of Speakers"]),
+            max: 1.0,
+            ..super::SoundView::default()
+        });
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_sound_act(move |verb, id, v| a.borrow_mut().push(format!("{verb} {id} {v:.2}")));
+        let at = |label: &str, role: AccessibleRole| control(&window, label, role).absolute_position();
+
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        // Right of the output's list, which ends its card.
+        let beside = |device: slint::LogicalPosition, firefox: slint::LogicalPosition| {
+            firefox.x > device.x + control(&window, "Output device", AccessibleRole::Combobox).size().width
+        };
+        assert!(beside(device, firefox), "beside: {device:?} {firefox:?}");
+        assert!(firefox.y < at("Input device", AccessibleRole::Combobox).y, "the apps start at the top");
+        // Recording, under the apps playing.
+        let discord = at("Discord recording volume", AccessibleRole::Slider);
+        assert!(discord.y > firefox.y && (discord.x - firefox.x).abs() < 1.0, "{discord:?} {firefox:?}");
+        assert_eq!(
+            control(&window, "Input for OBS Studio", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Monitor of Speakers")
+        );
+        control(&window, "Mute Discord recording", AccessibleRole::Button).invoke_accessible_default_action();
+        control(&window, "OBS Studio recording volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        control(&window, "Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["rec-mute 90 0.00", "rec-volume 91 0.85", "app-mute 7 0.00"]);
+
+        // A 1200 px window still has the two columns (D-55); the device cards give way first.
+        window.window().set_size(LogicalSize::new(1200.0, 760.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        assert!(beside(device, firefox), "beside at 1200 px: {device:?} {firefox:?}");
+        assert!(control(&window, "Output device", AccessibleRole::Combobox).size().width >= 140.0);
+
+        // The smallest window: Output, Input, then the apps, one under the other.
+        window.window().set_size(LogicalSize::new(1040.0, 760.0));
+        let (device, input) =
+            (at("Output device", AccessibleRole::Combobox), at("Input device", AccessibleRole::Combobox));
+        let firefox = at("Firefox volume", AccessibleRole::Slider);
+        assert!(device.y < input.y && input.y < firefox.y, "stacked: {device:?} {input:?} {firefox:?}");
+    }
+
+    /// Power on a laptop (S-181): the profile in the hero, the battery's charge limit, the idle
+    /// times, the lid and the power button; a choice goes to Rust.
+    #[test]
+    fn the_power_page_shows_a_laptops_controls() {
+        let window = window();
+        window.set_page("power".into());
+        let mut state = super::power::State::default();
+        state.snapshot = Some(lituus_power::Snapshot {
+            profiles: Some(lituus_power::Profiles {
+                active: "balanced".into(),
+                available: vec!["power-saver".into(), "balanced".into(), "performance".into()],
+                degraded: String::new(),
+            }),
+            battery: Some(lituus_power::Battery {
+                percent: 64.0,
+                charge_limit: Some(lituus_power::ChargeLimit { enabled: true, end: 80 }),
+                ..Default::default()
+            }),
+            lid: true,
+            ..Default::default()
+        });
+        state.hypridle = true;
+        state.lockers = vec!["hyprlock".into()];
+        window.set_power(super::power::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_power_act(move |verb, value| a.borrow_mut().push(format!("{verb} {value}")));
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        let profile = control(&window, "Power profile", AccessibleRole::RadioGroup);
+        let options: Vec<String> = profile
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::RadioButton)
+            .find_all()
+            .iter()
+            .filter_map(|e| e.accessible_label().map(|l| l.to_string()))
+            .collect();
+        assert_eq!(options, ["Power saver", "Balanced", "Performance"]);
+        control(&window, "Limit charging to 80 %", AccessibleRole::Switch);
+        control(&window, "Lock", AccessibleRole::Combobox);
+        // One lock screen: nothing to choose, and it looks it.
+        let locker = control(&window, "Lock screen", AccessibleRole::Combobox);
+        assert_eq!(locker.accessible_enabled(), Some(false));
+        control(&window, "On battery", AccessibleRole::RadioGroup);
+        control(&window, "Power button", AccessibleRole::RadioGroup);
+        ElementHandle::find_by_accessible_label(&window, "Performance")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["profile 2"]);
+        // The dotfiles' hypridle.conf, and Hyprland not loading Lituus's file: the same Set up…
+        // in the idle card and above the page.
+        state.idle_file = true;
+        state.not_loaded = true;
+        window.set_power(super::power::view(&state));
+        let setups = ElementHandle::find_by_accessible_label(&window, "Set up…")
+            .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
+            .count();
+        assert_eq!(setups, 2);
+        state.idle_file = false;
+        state.not_loaded = false;
+        // A desktop has no lid and no battery card.
+        state.snapshot.as_mut().unwrap().battery = None;
+        state.snapshot.as_mut().unwrap().lid = false;
+        window.set_power(super::power::view(&state));
+        assert!(ElementHandle::find_by_accessible_label(&window, "On battery").next().is_none());
+        assert!(ElementHandle::find_by_accessible_label(&window, "Limit charging to 80 %").next().is_none());
+        control(&window, "Power button", AccessibleRole::RadioGroup);
+    }
+
+    /// Night light (S-177): the switch in the hero, the temperature and the schedule; without
+    /// hyprsunset, how to install it.
+    #[test]
+    fn the_night_light_page_offers_the_switch_temperature_and_schedule() {
+        let window = window();
+        window.set_page("night-light".into());
+        let state = super::night::State {
+            installed: true,
+            enabled: true,
+            temperature: 4000,
+            schedule: "sun".into(),
+            zone: "Europe/Zurich".into(),
+            zone_place: Some((47.38, 8.54)),
+            day: 329,
+            offset: 60,
+            now: 23 * 60,
+            ..Default::default()
+        };
+        window.set_night(super::night::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_night_act(move |verb, value, text| a.borrow_mut().push(format!("{verb} {value} {text}")));
+        assert_eq!(control(&window, "Night light", AccessibleRole::Switch).accessible_checked(), Some(true));
+        assert_eq!(
+            control(&window, "Temperature", AccessibleRole::Slider).accessible_value().as_deref(),
+            Some("4000 K")
+        );
+        control(&window, "Location", AccessibleRole::RadioGroup);
+        ElementHandle::find_by_accessible_label(&window, "Fixed times")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["schedule 1 "]);
+        // All the time is Turn on's third choice; with it, no place or times to set.
+        ElementHandle::find_by_accessible_label(&window, "All the time")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(acts.borrow().last().map(String::as_str), Some("schedule 2 "));
+        window.set_night(super::night::view(&super::night::State { always: true, ..state }));
+        assert!(ElementHandle::find_by_accessible_label(&window, "Location").next().is_none());
+        assert!(ElementHandle::find_by_accessible_label(&window, "Hold to compare").next().is_none());
+        window.set_night(super::night::view(&super::night::State { installed: false, ..Default::default() }));
+        assert!(ElementHandle::find_by_accessible_label(&window, "Temperature").next().is_none());
+    }
+
+    /// Appearance (S-176): the apps' style in the hero, the themes and fonts as lists; a choice
+    /// goes to Rust.
+    #[test]
+    fn the_appearance_page_offers_the_style_themes_and_fonts() {
+        let window = window();
+        window.set_page("appearance".into());
+        let state = super::appearance::State {
+            look: Some(super::appearance::Look { scheme: "prefer-dark".into(), ..Default::default() }),
+            installed: super::appearance::Installed {
+                gtk: vec!["Adwaita".into(), "adw-gtk3-dark".into()],
+                ..Default::default()
+            },
+            gsettings: true,
+            ..Default::default()
+        };
+        window.set_appearance(super::appearance::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_appearance_act(move |verb, value| a.borrow_mut().push(format!("{verb} {value}")));
+        let style = control(&window, "Apps' style", AccessibleRole::RadioGroup);
+        assert_eq!(style.accessible_value().as_deref().unwrap_or(""), "", "a radio group has no value of its own");
+        for label in ["Apps (GTK)", "Icons", "Cursor", "Cursor size", "Interface font", "Monospace font", "Font size"] {
+            control(&window, label, AccessibleRole::Combobox);
+        }
+        assert_eq!(
+            control(&window, "Apps (GTK)", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Adwaita")
+        );
+        ElementHandle::find_by_accessible_label(&window, "Light")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["scheme 2"]);
     }
 
     /// With Network's sub-items open, the sidebar's pages scroll in the smallest window instead
@@ -4654,6 +5003,46 @@ mod tests {
         assert_eq!(disconnect, 2);
     }
 
+    /// The quick popup's apps: a click on an app's icon mutes it, its slider sets its volume, and
+    /// the apps beyond the first three are a link to the Sound page.
+    #[test]
+    fn the_quick_popups_apps_mute_move_and_lead_to_the_page() {
+        use super::{QuickWindow, SoundApp};
+        i_slint_backend_testing::init_no_event_loop();
+        let popup = QuickWindow::new().unwrap();
+        popup.set_sound_available(true);
+        popup.set_volume(0.8);
+        let firefox = SoundApp {
+            id: "7".into(),
+            name: "Firefox".into(),
+            sub: "YouTube".into(),
+            volume: 0.5,
+            ..Default::default()
+        };
+        popup.set_apps(super::model(vec![firefox.clone()]));
+        popup.set_apps_more(2);
+        let events = Rc::new(RefCell::new(Vec::<String>::new()));
+        let e = events.clone();
+        popup.on_app_mute_clicked(move |id| e.borrow_mut().push(format!("mute {id}")));
+        let e = events.clone();
+        popup.on_app_volume_moved(move |id, v| e.borrow_mut().push(format!("volume {id} {v:.2}")));
+        let e = events.clone();
+        popup.on_apps_more_clicked(move || e.borrow_mut().push("more".into()));
+        popup.show().unwrap();
+        let find = |label: &str, role: AccessibleRole| {
+            ElementHandle::find_by_accessible_label(&popup, label)
+                .find(|e| e.accessible_role() == Some(role))
+                .expect(label)
+        };
+        find("Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        find("Firefox volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        find("2 more on the Sound page", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*events.borrow(), ["mute 7", "volume 7 0.55", "more"]);
+        // Muted, its button says it unmutes.
+        popup.set_apps(super::model(vec![SoundApp { muted: true, ..firefox }]));
+        find("Unmute Firefox", AccessibleRole::Button);
+    }
+
     /// The views of a page are tabs, top right in its hero, and a card's views are tabs too; a
     /// value chosen from a few (Rotation, Mode) is a radio group.
     #[test]
@@ -4683,8 +5072,20 @@ mod tests {
         assert!(!roles("Rotation").contains(&AccessibleRole::TabList));
 
         window.set_page("sound".into());
+        // With no card to choose a profile for there's one view, and no tabs.
         window.set_sound(super::SoundView { state: "list".into(), max: 1.0, ..Default::default() });
-        assert_eq!(tabs("Sound"), ["Devices", "Apps"]);
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Sound")
+                .all(|e| e.accessible_role() != Some(AccessibleRole::TabList))
+        );
+        let card = super::SoundCard { id: "alsa_card.pci".into(), name: "Built-in Audio".into(), ..Default::default() };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            max: 1.0,
+            cards: super::model(vec![card]),
+            ..Default::default()
+        });
+        assert_eq!(tabs("Sound"), ["Devices and apps", "Cards"]);
         let views = ElementHandle::find_by_accessible_label(&window, "Sound")
             .find(|e| e.accessible_role() == Some(AccessibleRole::TabList))
             .unwrap();
@@ -5179,7 +5580,7 @@ mod tests {
     }
 
     /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
-    fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
+    fn drag(window: &impl ComponentHandle, slider: &ElementHandle, from: f32, to: f32) {
         let (p, s) = (slider.absolute_position(), slider.size());
         let at = |f: f32| LogicalPosition::new(p.x + s.width * f, p.y + s.height / 2.0);
         window.window().dispatch_event(WindowEvent::PointerMoved { position: at(from) });
@@ -5215,7 +5616,7 @@ mod tests {
                 ..Default::default()
             });
         });
-        window.set_sound_tab(1);
+        window.set_sound_tab(0);
         super::render(&window);
         let got = Rc::new(RefCell::new(Vec::<f32>::new()));
         let (g, w) = (got.clone(), window.as_weak());
@@ -5228,6 +5629,50 @@ mod tests {
         drag(&window, &control(&window, "Firefox volume", AccessibleRole::Slider), 0.3, 0.8);
         let last = *got.borrow().last().expect("the press moves it");
         assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The same for an app's slider in the quick popup: it keeps its rows from one render to the
+    /// next too.
+    #[test]
+    fn an_app_slider_in_the_quick_popup_can_be_dragged() {
+        let window = window();
+        super::APP.with(|app| {
+            app.borrow_mut().sound.snapshot = Some(lituus_sound::Snapshot {
+                default_sink: Some("speakers".into()),
+                sinks: vec![lituus_sound::Device {
+                    index: 40,
+                    name: "speakers".into(),
+                    description: "Speakers".into(),
+                    volume: volume(0.5),
+                    ..Default::default()
+                }],
+                streams: vec![lituus_sound::Stream {
+                    index: 7,
+                    app: "Firefox".into(),
+                    device: 40,
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        });
+        super::toggle_quick(&window);
+        let popup = super::QUICK.with(|q| q.borrow().as_ref().map(|p| p.clone_strong())).expect("the popup");
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // As the app does: the change renders at once, and PulseAudio's answer does again.
+        popup.on_app_volume_moved(move |_, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |_| {});
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().streams[0].volume = volume(v));
+        });
+        let slider = ElementHandle::find_by_accessible_label(&popup, "Firefox volume")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Slider))
+            .expect("Firefox's slider");
+        drag(&popup, &slider, 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+        super::hide_quick();
     }
 
     /// The same for a slider in a row of the command palette.
@@ -5404,14 +5849,30 @@ mod tests {
         window.set_page("shortcuts".into());
         window.set_shortcuts(super::ShortcutsView { state: "list".into(), not_loaded: true, ..Default::default() });
         let w = window.as_weak();
-        window.global::<super::Setup>().on_open(move || w.unwrap().global::<super::Setup>().set_shown(true));
+        window.global::<super::Setup>().on_open(move || {
+            let window = w.unwrap();
+            let setup = window.global::<super::Setup>();
+            setup.set_steps(super::model(vec![super::SetupStep {
+                id: "hyprland".into(),
+                title: "Hyprland loads Lituus's settings".into(),
+                chosen: true,
+                ..Default::default()
+            }]));
+            setup.set_ready(true);
+            setup.set_shown(true);
+        });
         tab_to(&window, "Set up…");
         press(&window, Key::Return);
         assert!(window.global::<super::Setup>().get_shown());
         tab_to(&window, "Not now");
         for _ in 0..4 {
             press(&window, Key::Tab);
-            assert!(ring_on(&window, "Not now") || ring_on(&window, "Add the line"), "the focus is behind the dialog");
+            assert!(
+                ring_on(&window, "Not now")
+                    || ring_on(&window, "Set up")
+                    || ring_on(&window, "Hyprland loads Lituus's settings"),
+                "the focus is behind the dialog"
+            );
         }
         tab_to(&window, "Not now");
         press(&window, Key::Return);
