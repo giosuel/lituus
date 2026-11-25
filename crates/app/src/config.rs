@@ -13,6 +13,7 @@ pub struct Config {
     pub sound: SoundConfig,
     pub power: PowerConfig,
     pub night_light: NightLightConfig,
+    pub accessibility: AccessibilityConfig,
     pub bluetooth: BluetoothConfig,
     pub wallpaper: WallpaperConfig,
     /// The System page's update commands the user changed, by package manager ("pacman").
@@ -102,6 +103,25 @@ pub struct NightLightConfig {
     pub location: String,
     pub latitude: f64,
     pub longitude: f64,
+}
+
+/// The Accessibility page's choices (gsettings and Hyprland have them too; these are what Lituus
+/// writes to its Hyprland file).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccessibilityConfig {
+    /// The text size, in percent.
+    pub text: u32,
+    pub contrast: bool,
+    pub reduce_motion: bool,
+    /// Hyprland's cursor zoom, 1 to 4.
+    pub zoom: f64,
+}
+
+impl Default for AccessibilityConfig {
+    fn default() -> Self {
+        Self { text: 100, contrast: false, reduce_motion: false, zoom: 1.0 }
+    }
 }
 
 impl Default for NightLightConfig {

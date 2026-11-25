@@ -7,6 +7,7 @@ use clap::Parser;
 use futures_util::StreamExt;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+mod accessibility;
 mod airplane;
 mod appearance;
 mod apps;
@@ -76,6 +77,12 @@ struct Cli {
     /// The lid was closed: do what the Power page chose (Lituus's lid bind runs this).
     #[arg(long, hide = true, conflicts_with_all = ["background", "quick", "toggle_wifi"])]
     lid: bool,
+    /// Zoom in or out a step (Hyprland's cursor zoom; Lituus's Super + = and Super + - binds).
+    #[arg(long, value_parser = ["in", "out"], conflicts_with_all = ["background", "quick", "toggle_wifi", "lid"])]
+    zoom: Option<String>,
+    /// Turn the screen reader (Orca) on or off (Lituus's Super + Alt + S bind).
+    #[arg(long, conflicts_with_all = ["background", "quick", "toggle_wifi", "lid"])]
+    screen_reader: bool,
 }
 
 /// The security choices of the hidden-network dialog, by index; the others use them too.
@@ -206,6 +213,7 @@ struct App {
     power: power::State,
     appearance: appearance::State,
     date: datetime::State,
+    access: accessibility::State,
     night: night::State,
     quick_night: (bool, bool, String),
     /// The Input pages, and which of them was open last (for the Input item).
@@ -264,6 +272,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let cli = Cli::parse();
     if cli.lid {
         power::lid_closed();
+        return Ok(());
+    }
+    if let Some(direction) = &cli.zoom {
+        accessibility::zoom_key(direction);
+        return Ok(());
+    }
+    if cli.screen_reader {
+        accessibility::reader_key();
         return Ok(());
     }
     // Switching Wi-Fi (from a key) is the running Lituus's job, or this process's, which then
@@ -375,6 +391,7 @@ fn main() -> Result<(), slint::PlatformError> {
     appearance::spawn(window.as_weak());
     datetime::spawn(window.as_weak());
     datetime::spawn_clock(window.as_weak());
+    accessibility::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
     input::refresh(&window.as_weak());
@@ -1135,6 +1152,18 @@ fn connect_callbacks(window: &MainWindow) {
         update(&weak, |app| datetime::act(&w, &mut app.date, &verb, value, &text))
     });
     let weak = window.as_weak();
+    window.on_access_act(move |verb, value| {
+        let w = weak.clone();
+        update(&weak, |app| {
+            // The cursor size is Appearance's: changed there, the same on both pages.
+            if verb == "cursor-size" {
+                appearance::act(&w, &mut app.appearance, "cursor-size", value as i32);
+            } else {
+                accessibility::act(&w, &mut app.access, &verb, value);
+            }
+        })
+    });
+    let weak = window.as_weak();
     window.on_sound_act(move |verb, id, value| {
         update(&weak, |app| {
             if let Some((table, key, on)) = sound::act(&mut app.sound, &verb, &id, value)
@@ -1409,6 +1438,7 @@ fn go(app: &mut App, id: &str) {
         Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
         Some(view::Page::Appearance) => app.appearance.reread = true,
         Some(view::Page::DateLanguage) => app.date.reread = true,
+        Some(view::Page::Accessibility) => app.access.reread = true,
         Some(view::Page::NightLight) => night::read(&mut app.night, &config::load(&config::path()).night_light),
         _ => {}
     }
@@ -1922,6 +1952,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             parent: None,
             off: "",
         },
+        nav::Entry {
+            id: "accessibility",
+            label: "Accessibility",
+            icon: "access",
+            group: "SYSTEM",
+            keywords: "accessibility a11y text size larger text font size scaling high contrast reduce motion animations \
+                       cursor size zoom magnifier screen reader orca blind vision",
+            status: accessibility::status(&app.access),
+            parent: None,
+            off: "",
+        },
         // Lituus's own look is in Settings; "Appearance" is kept for the desktop's (GTK) later.
         nav::Entry {
             id: "settings",
@@ -2099,6 +2140,10 @@ fn render(window: &MainWindow) {
         datetime::render(window, &app.date);
         if std::mem::take(&mut app.date.reread) {
             datetime::spawn(window.as_weak());
+        }
+        accessibility::render(window, &app.access, &app.appearance);
+        if std::mem::take(&mut app.access.reread) {
+            accessibility::spawn(window.as_weak());
         }
         displays::render(window, &app.displays);
         let state = &mut *app;
@@ -4481,6 +4526,42 @@ mod tests {
         assert!(ElementHandle::find_by_accessible_label(&window, "sudo pacman -S hyprpolkitagent").next().is_some());
     }
 
+    /// Accessibility (S-185): text size, contrast, motion, the cursor size (Appearance's), the
+    /// zoom and the screen reader; without Orca, the command to install it.
+    #[test]
+    fn the_accessibility_page_offers_seeing_zoom_and_the_reader() {
+        let window = window();
+        window.set_page("accessibility".into());
+        let state = super::accessibility::State {
+            loaded: true,
+            gsettings: true,
+            choices: super::accessibility::Choices { text: 125, contrast: false, reduce_motion: true, zoom: 1.5 },
+            orca: false,
+            install: "sudo pacman -S orca".into(),
+            ..Default::default()
+        };
+        let appearance = super::appearance::State {
+            look: Some(super::appearance::Look { cursor_size: 24, ..Default::default() }),
+            ..Default::default()
+        };
+        window.set_access(super::accessibility::view(&state, &appearance));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_access_act(move |verb, value| a.borrow_mut().push(format!("{verb} {value}")));
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        assert_eq!(
+            control(&window, "Text size", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("125 %")
+        );
+        assert_eq!(control(&window, "Reduce motion", AccessibleRole::Switch).accessible_checked(), Some(true));
+        assert_eq!(control(&window, "Cursor size", AccessibleRole::Combobox).accessible_value().as_deref(), Some("24"));
+        assert_eq!(control(&window, "Zoom", AccessibleRole::Slider).accessible_value().as_deref(), Some("1.5×"));
+        control(&window, "High contrast", AccessibleRole::Switch).invoke_accessible_default_action();
+        control(&window, "Screen reader", AccessibleRole::Switch).invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["contrast 0", "reader 0"]);
+        assert!(ElementHandle::find_by_accessible_label(&window, "sudo pacman -S orca").next().is_some());
+    }
+
     /// Appearance (S-176): the apps' style in the hero, the themes and fonts as lists; a choice
     /// goes to Rust.
     #[test]
@@ -4671,7 +4752,8 @@ mod tests {
         assert!(airplane < 590.0, "{airplane}");
         for label in &labels {
             wheel(1000.0);
-            for _ in 0..20 {
+            // Up to 1200 px down: the pages there are, and the five to come.
+            for _ in 0..40 {
                 if in_view(label) {
                     break;
                 }

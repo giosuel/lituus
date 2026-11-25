@@ -148,6 +148,18 @@ fn hyprland_accepts_the_lua_file() {
          hl.env(\"HYPRCURSOR_THEME\", \"Bibata-Modern-Ice\")\n\
          hl.env(\"HYPRCURSOR_SIZE\", \"24\")\n",
     );
+    // The Accessibility page's part, as crates/app/src/accessibility.rs writes it.
+    text = with_section(
+        &text,
+        "Accessibility",
+        "-- Written by Lituus (Accessibility). Change it in Lituus: text size, motion, zoom and the screen reader.\n\
+         hl.env(\"QT_FONT_DPI\", \"120\")\n\
+         hl.config({ animations = { enabled = false } })\n\
+         hl.config({ cursor = { zoom_factor = 1.5 } })\n\
+         hl.bind(\"SUPER + equal\", hl.dsp.exec_cmd(\"lituus --zoom in\"))\n\
+         hl.bind(\"SUPER + minus\", hl.dsp.exec_cmd(\"lituus --zoom out\"))\n\
+         hl.bind(\"SUPER + ALT + S\", hl.dsp.exec_cmd(\"lituus --screen-reader\"))\n",
+    );
     // The live forms too: they're what `hyprctl eval` runs.
     for r in &rules {
         text += &r.lua_live(Some(-1));

@@ -24,6 +24,7 @@ import { PowerPage, PowerView, PowerDevice } from "power.slint";
 import { AppearancePage, AppearanceView } from "look.slint";
 import { NightPage, NightView } from "night.slint";
 import { DatePage, DateView, ZoneRow, ZonePickerDialog } from "date.slint";
+import { AccessPage, AccessView } from "access.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
 import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem, ChipLine } from "apps.slint";
 import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
@@ -33,7 +34,7 @@ import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEdit
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
 import { Editor, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi } from "editor.slint";
 
-export { Theme, Focus, Setup, SetupStep, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, PowerView, PowerDevice, AppearanceView, NightView, DateView, ZoneRow, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
+export { Theme, Focus, Setup, SetupStep, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, PowerView, PowerDevice, AppearanceView, NightView, DateView, ZoneRow, AccessView, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
 
 /// icon: "bars" (signal bars), or an icon name. tone: "accent", "danger", "muted", "faint".
 /// indent: a port under its bridge or bond, or a VLAN under its device.
@@ -168,6 +169,9 @@ export component MainWindow inherits Window {
     // Date & language page (date.slint): (verb, number, text).
     in property <DateView> date;
     callback date-act(string, int, string);
+    // Accessibility page (access.slint): (verb, number).
+    in property <AccessView> access;
+    callback access-act(string, float);
     // The Input pages, Keyboard and Mouse & touchpad (see input.slint).
     in property <KeyboardView> keyboard;
     in property <MouseView> mouse;
@@ -871,6 +875,12 @@ export component MainWindow inherits Window {
                         compact: root.compact;
                         page: root.date;
                         act(verb, value, text) => { root.date-act(verb, value, text); }
+                    }
+                    if root.page == "accessibility": AccessPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.access;
+                        act(verb, value) => { root.access-act(verb, value); }
                     }
                     if root.page == "appearance": AppearancePage {
                         vertical-stretch: 1;

@@ -30,6 +30,7 @@ pub enum Page {
     DefaultApps,
     System,
     DateLanguage,
+    Accessibility,
     Settings,
 }
 
@@ -56,6 +57,7 @@ impl Page {
             "appearance" => Self::Appearance,
             "night-light" => Self::NightLight,
             "date-language" => Self::DateLanguage,
+            "accessibility" => Self::Accessibility,
             _ => return None,
         })
     }
@@ -95,6 +97,7 @@ impl Page {
             Self::DefaultApps => "default-apps",
             Self::System => "system",
             Self::DateLanguage => "date-language",
+            Self::Accessibility => "accessibility",
             Self::Settings => "settings",
         }
     }
@@ -420,6 +423,7 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         | Page::DefaultApps
         | Page::System
         | Page::DateLanguage
+        | Page::Accessibility
         | Page::Settings => Vec::new(),
     };
     // Rows grouped by section title, the selection resolved, and the selected row's details.
@@ -530,6 +534,7 @@ fn page_title(page: Page) -> &'static str {
         Page::DefaultApps => "Default apps",
         Page::System => "System",
         Page::DateLanguage => "Date & language",
+        Page::Accessibility => "Accessibility",
         Page::Settings => "Settings",
     }
 }

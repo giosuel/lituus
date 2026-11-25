@@ -403,6 +403,14 @@ pub fn cursor_part(look: &Look, lua: bool) -> String {
     lines.join("\n") + "\n"
 }
 
+/// The cursor sizes to choose from ("24") and the one in use, for Accessibility, which shares it.
+pub fn cursor_choices(state: &State) -> (Vec<String>, i32) {
+    let Some(look) = &state.look else { return (Vec::new(), -1) };
+    let sizes = with_n(&CURSOR_SIZES, look.cursor_size);
+    let at = sizes.iter().position(|s| *s == look.cursor_size).map_or(-1, |i| i as i32);
+    (sizes.iter().map(u32::to_string).collect(), at)
+}
+
 /// A list with `current` in it, so a choice that isn't installed (or wasn't found) still shows.
 fn with(list: &[String], current: &str) -> Vec<String> {
     let mut l = list.to_vec();
