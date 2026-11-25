@@ -128,6 +128,9 @@ export component Segmented inherits Focusable {
     /// caller sets what this is bound to, so the control always shows the app's state (as a
     /// Switch does), also after a Revert or a choice the app turned down.
     in property <int> selected;
+    /// In a hero (Power's profile): drawn as the view switcher is, on a control's background, so
+    /// the hero's glow doesn't show through, with the choice in the stronger accent tint.
+    in property <bool> hero;
     /// The user picks one.
     callback changed(int);
     clickable: false;
@@ -138,11 +141,12 @@ export component Segmented inherits Focusable {
         if event.text == Key.LeftArrow || event.text == Key.RightArrow { return accept; }
         reject
     }
-    height: root.details.length > 0 ? 52px : 40px;
+    height: root.details.length > 0 ? 52px : root.hero ? 34px : 40px;
     border-radius: 9px;
     border-width: 1px;
     // Turned off, as a Button: a subtle edge, grey for the choice and faint text.
     border-color: root.enabled ? Theme.ctrl-border : Theme.border;
+    background: root.hero ? Theme.ctrl-bg : transparent;
     accessible-role: radio-group;
     accessible-label: label;
     HorizontalLayout {
@@ -153,7 +157,8 @@ export component Segmented inherits Focusable {
             // Measured in the selected (heavier) weight, so choosing an option doesn't resize it.
             min-width: widest.preferred-width + 24px;
             border-radius: 7px;
-            background: i == root.selected ? (root.enabled ? Theme.accent-soft-bg : Theme.ctrl-bg) : option-touch.has-hover && root.enabled ? Theme.hover : transparent;
+            background: i == root.selected ? (!root.enabled ? Theme.ctrl-bg : root.hero ? Theme.accent-soft-border : Theme.accent-soft-bg)
+                : option-touch.has-hover && root.enabled ? Theme.hover : transparent;
             accessible-role: radio-button;
             accessible-label: option;
             accessible-checked: i == root.selected;
@@ -204,6 +209,11 @@ export component ViewSwitcher inherits Focusable {
     border-radius: 9px;
     border-width: 1px;
     border-color: Theme.ctrl-border;
+    // A control's own background, as the buttons beside it have: in a hero, the glow behind it
+    // showed through, greener on one side, and the selected view's soft accent was the glow's
+    // own colour (D-55: "the colors seem weird"). The selected view takes the stronger accent
+    // tint, so it stands out on any hero.
+    background: Theme.ctrl-bg;
     accessible-role: tab-list;
     accessible-label: label;
     HorizontalLayout {
@@ -212,7 +222,7 @@ export component ViewSwitcher inherits Focusable {
         for option[i] in root.options: Rectangle {
             min-width: widest.preferred-width + 24px;
             border-radius: 7px;
-            background: i == root.selected ? Theme.accent-soft-bg : view-touch.has-hover ? Theme.hover : transparent;
+            background: i == root.selected ? Theme.accent-soft-border : view-touch.has-hover ? Theme.hover : transparent;
             accessible-role: tab;
             accessible-label: option;
             accessible-item-selected: i == root.selected;

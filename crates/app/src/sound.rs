@@ -2,12 +2,14 @@
 //! state; the page sends its changes back as commands. Volumes from a dragged slider come fast,
 //! so the thread only keeps the last one for each slider.
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use lituus_sound::{Session, Snapshot, Volume};
-use slint::{Model, SharedString, VecModel};
+use lituus_sound::{Session, Snapshot, Stream, Volume};
+use lituus_xdg::{Dirs, desktop};
+use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::{APP, HeroInfo, MainWindow, SoundApp, SoundCard, SoundView, model, update};
 
@@ -23,6 +25,10 @@ pub enum Command {
     SourceMute(u32, bool),
     StreamMute(u32, bool),
     Move(u32, u32),
+    RecordingVolume(u32, Volume),
+    RecordingMute(u32, bool),
+    /// A recording to another input or monitor.
+    MoveRecording(u32, u32),
     SinkPort(u32, String),
     Profile(String, String),
 }
@@ -33,7 +39,10 @@ impl Command {
         use Command::*;
         matches!(
             (self, other),
-            (SinkVolume(a, _), SinkVolume(b, _)) | (SourceVolume(a, _), SourceVolume(b, _)) | (StreamVolume(a, _), StreamVolume(b, _))
+            (SinkVolume(a, _), SinkVolume(b, _))
+                | (SourceVolume(a, _), SourceVolume(b, _))
+                | (StreamVolume(a, _), StreamVolume(b, _))
+                | (RecordingVolume(a, _), RecordingVolume(b, _))
             if a == b
         )
     }
@@ -53,7 +62,159 @@ pub struct State {
     pub not_running: bool,
     pub error: Option<String>,
     pub overamplify: bool,
+    /// The apps' icons by `icon_key`, drawn on the sound thread: `None` when there's none to find.
+    icons: HashMap<String, Option<Image>>,
     commands: Option<Sender<Message>>,
+}
+
+/// The apps playing that the quick popup shows; the rest are a link to the page.
+pub const QUICK_APPS: usize = 3;
+
+/// The pixels of an app's icon, as the sound thread hands them over.
+type Drawn = Option<SharedPixelBuffer<Rgba8Pixel>>;
+
+/// The size the apps' icons are drawn at: twice the page's 24 px, for scaled screens.
+const ICON_SIDE: u32 = 48;
+
+/// Finds and draws the apps' icons on the sound thread, each once: looking through the icon
+/// themes and drawing an SVG would hold up the window.
+struct Icons {
+    dirs: Dirs,
+    theme: String,
+    done: HashSet<String>,
+    /// The installed apps, to find a stream's app by: read when an app is first looked up, and
+    /// again a minute later for apps installed meanwhile.
+    apps: Vec<desktop::App>,
+    read_at: Option<std::time::Instant>,
+}
+
+impl Icons {
+    fn new() -> Icons {
+        let dirs = Dirs::from_env();
+        let theme = crate::apps::icon_theme(&dirs);
+        Icons { dirs, theme, done: HashSet::new(), apps: Vec::new(), read_at: None }
+    }
+
+    /// The icons of the apps not seen before.
+    fn new_ones<'a>(&mut self, streams: impl IntoIterator<Item = &'a Stream>) -> Vec<(String, Drawn)> {
+        let mut out = Vec::new();
+        for st in streams {
+            let key = icon_key(st);
+            if self.done.contains(&key) {
+                continue;
+            }
+            if self.read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+                self.apps = desktop::all(&self.dirs);
+                self.read_at = Some(std::time::Instant::now());
+            }
+            self.done.insert(key.clone());
+            let steam = st.pid.and_then(steam_game);
+            let names = icon_names(st, &self.apps, steam.as_deref());
+            let file = names.iter().find_map(|n| desktop::icon_file(&self.dirs, &self.theme, n));
+            out.push((key, file.and_then(|f| crate::apps::draw_icon(&f, ICON_SIDE))));
+        }
+        out
+    }
+}
+
+/// The names an app's icon may go by, best first:
+/// - the one the stream gives;
+/// - its app's, from the desktop file found by its app id (a Flatpak's too), its program (by
+///   Exec, the file's name or StartupWMClass) or its name ("Spotify" is spotify.desktop's
+///   spotify-client);
+/// - a Steam game's (steam_icon_381210), by the game id its process was started with;
+/// - its app id, program and name in lower case, as icon names themselves.
+///
+/// Only icons from the stream and from desktop files may be a file's path; the others are names
+/// in the icon themes, never a way out of them.
+fn icon_names(st: &Stream, apps: &[desktop::App], steam: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let add_path = |names: &mut Vec<String>, icon: &str| {
+        let icon = icon.trim();
+        if !icon.is_empty()
+            && (!icon.contains('/') || icon.starts_with('/'))
+            && !icon.contains("..")
+            && !names.iter().any(|n| n == icon)
+        {
+            names.push(icon.to_owned());
+        }
+    };
+    add_path(&mut names, &st.icon);
+    for app in desktop_apps(st, apps) {
+        add_path(&mut names, &app.icon);
+    }
+    let steam = steam.map(|id| format!("steam_icon_{id}"));
+    for n in [
+        steam.unwrap_or_default(),
+        st.app_id.trim().to_owned(),
+        st.binary.trim().to_owned(),
+        st.app.trim().to_lowercase(),
+    ] {
+        if !n.is_empty() && !n.contains('/') && n != "." && n != ".." && !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names
+}
+
+/// The installed apps a stream may be, best match first: by app id, then by program, then by
+/// name. Apps without an icon don't count.
+fn desktop_apps<'a>(st: &Stream, apps: &'a [desktop::App]) -> Vec<&'a desktop::App> {
+    let lower = |s: &str| s.trim().to_lowercase();
+    let (app_id, binary, name) = (lower(&st.app_id), lower(&st.binary), lower(&st.app));
+    let stem = |a: &desktop::App| lower(a.id.strip_suffix(".desktop").unwrap_or(&a.id));
+    let with_icon = || apps.iter().filter(|a| !a.icon.trim().is_empty());
+    let mut found: Vec<&desktop::App> = Vec::new();
+    let add = |found: &mut Vec<&'a desktop::App>, a: &'a desktop::App| {
+        if !found.iter().any(|f| std::ptr::eq(*f, a)) {
+            found.push(a);
+        }
+    };
+    if !app_id.is_empty() {
+        for a in with_icon().filter(|a| stem(a) == app_id || lower(&a.flatpak) == app_id) {
+            add(&mut found, a);
+        }
+    }
+    if !binary.is_empty() {
+        for a in with_icon().filter(|a| program(&a.exec) == binary || stem(a) == binary || lower(&a.wm_class) == binary)
+        {
+            add(&mut found, a);
+        }
+    }
+    if !name.is_empty() {
+        for a in with_icon().filter(|a| lower(&a.name) == name) {
+            add(&mut found, a);
+        }
+    }
+    found
+}
+
+/// The program an Exec line runs, in lower case and without its folder: "spotify" for
+/// `env LD_PRELOAD=x /usr/bin/spotify --uri=%U`.
+fn program(exec: &str) -> String {
+    lituus_xdg::exec::words(exec)
+        .into_iter()
+        .map(|w| w.text)
+        .find(|w| w != "env" && !(w.contains('=') && !w.starts_with('/')))
+        .map(|w| w.rsplit('/').next().unwrap_or(&w).to_lowercase())
+        .unwrap_or_default()
+}
+
+/// The Steam game a process belongs to: Steam starts games with SteamAppId (or SteamGameId) in
+/// their environment, and Steam's shortcuts use its icon, steam_icon_<id>. Only that variable
+/// is read from the environment, and only digits are kept.
+fn steam_game(pid: u32) -> Option<String> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env.split(|&b| b == 0).find_map(|var| {
+        let value = var.strip_prefix(b"SteamAppId=").or_else(|| var.strip_prefix(b"SteamGameId="))?;
+        let id = std::str::from_utf8(value).ok()?;
+        (!id.is_empty() && id != "0" && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_owned())
+    })
+}
+
+/// What an app's icon is found by: the same for every stream of the app.
+fn icon_key(st: &Stream) -> String {
+    [st.icon.as_str(), &st.app_id, &st.binary, &st.app].join("\n")
 }
 
 /// Starts the sound thread; it reconnects when the server restarts.
@@ -71,6 +232,7 @@ fn post(weak: &slint::Weak<MainWindow>, change: impl FnOnce(&mut State) + Send +
 fn run(weak: slint::Weak<MainWindow>, tx: Sender<Message>, rx: Receiver<Message>) {
     // Each connection's number: a watcher that ends tells which one it watched.
     let mut connection = 0;
+    let mut icons = Icons::new();
     loop {
         connection += 1;
         let (mut session, watcher) = match (Session::connect(), Session::connect()) {
@@ -92,7 +254,7 @@ fn run(weak: slint::Weak<MainWindow>, tx: Sender<Message>, rx: Receiver<Message>
                 continue;
             }
         };
-        if connected(&weak, &mut session, watcher, &tx, &rx, connection).is_err() {
+        if connected(&weak, &mut session, watcher, &tx, &rx, connection, &mut icons).is_err() {
             post(&weak, |s| s.snapshot = None);
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -108,10 +270,11 @@ fn connected(
     tx: &Sender<Message>,
     rx: &Receiver<Message>,
     connection: u64,
+    icons: &mut Icons,
 ) -> Result<(), lituus_sound::Error> {
     let closer = watcher.closer().ok();
     watch(watcher, tx.clone(), connection);
-    let result = serve(weak, session, rx, connection);
+    let result = serve(weak, session, rx, connection, icons);
     // With the server still there (a reply that didn't come in time, say), the watcher would go
     // on: one more thread and connection on every pass, each change told once more.
     if let Some(closer) = closer {
@@ -136,6 +299,7 @@ fn serve(
     session: &mut Session,
     rx: &Receiver<Message>,
     connection: u64,
+    icons: &mut Icons,
 ) -> Result<(), lituus_sound::Error> {
     let mut first = true;
     loop {
@@ -175,7 +339,11 @@ fn serve(
             }
         }
         let snapshot = session.snapshot()?;
+        let drawn = icons.new_ones(snapshot.streams.iter().chain(&snapshot.recordings));
         post(weak, move |s| {
+            for (key, pixels) in drawn {
+                s.icons.insert(key, pixels.map(Image::from_rgba8));
+            }
             s.not_running = false;
             s.snapshot = Some(snapshot);
         });
@@ -193,6 +361,9 @@ fn execute(session: &mut Session, command: &Command) -> Result<(), lituus_sound:
         Command::SourceMute(i, m) => session.set_source_mute(*i, *m),
         Command::StreamMute(i, m) => session.set_stream_mute(*i, *m),
         Command::Move(stream, sink) => session.move_stream(*stream, *sink),
+        Command::RecordingVolume(i, v) => session.set_recording_volume(*i, v),
+        Command::RecordingMute(i, m) => session.set_recording_mute(*i, *m),
+        Command::MoveRecording(stream, source) => session.move_recording(*stream, *source),
         Command::SinkPort(i, port) => session.set_sink_port(*i, port),
         Command::Profile(card, profile) => session.set_card_profile(card, profile),
     }
@@ -208,7 +379,7 @@ fn send(state: &State, command: Command) {
 pub const NOT_RUNNING_COMMAND: &str = "systemctl --user enable --now pipewire-pulse";
 
 /// What a click or a drag on the page does: (verb, id, value). The device lists send the
-/// device's place in the list as the value.
+/// device's place in the list as the value; a recording's list is the inputs, then the monitors.
 pub fn act(state: &mut State, verb: &str, id: &str, value: f32) -> Option<(&'static str, &'static str, bool)> {
     if verb == "dismiss" {
         state.error = None;
@@ -250,6 +421,14 @@ pub fn act(state: &mut State, verb: &str, id: &str, value: f32) -> Option<(&'sta
                 "app-volume" => Command::StreamVolume(s.index, s.volume.with_percent(percent)),
                 "app-mute" => Command::StreamMute(s.index, !s.muted),
                 _ => Command::Move(s.index, snap.sinks.get(value as usize)?.index),
+            }
+        }
+        "rec-volume" | "rec-mute" | "rec-input" => {
+            let s = snap.recordings.iter().find(|s| s.index.to_string() == id)?;
+            match verb {
+                "rec-volume" => Command::RecordingVolume(s.index, s.volume.with_percent(percent)),
+                "rec-mute" => Command::RecordingMute(s.index, !s.muted),
+                _ => Command::MoveRecording(s.index, recording_from(snap).nth(value as usize)?.index),
             }
         }
         "profile" => {
@@ -299,11 +478,78 @@ fn s(text: impl AsRef<str>) -> SharedString {
     SharedString::from(text.as_ref())
 }
 
-/// The quick popup's volume: the output in use's (1.0 is 100 %), whether it's muted, and the
-/// highest the slider goes (as on the page). `None` without an output.
-pub fn quick(state: &State) -> Option<(f32, bool, f32)> {
-    let d = state.snapshot.as_ref()?.default_sink()?;
-    Some((d.volume.percent() as f32 / 100.0, d.muted, if state.overamplify { 1.5 } else { 1.0 }))
+/// The quick popup's Volume: the output in use's volume (1.0 is 100 %), whether it's muted, the
+/// highest the sliders go (as on the page), and the apps playing: `QUICK_APPS` at most, and how
+/// many more there are.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Quick {
+    pub volume: f32,
+    pub muted: bool,
+    pub max: f32,
+    pub apps: Vec<SoundApp>,
+    pub more: usize,
+}
+
+/// The quick popup's Volume; `None` without an output.
+pub fn quick(state: &State) -> Option<Quick> {
+    let snap = state.snapshot.as_ref()?;
+    let d = snap.default_sink()?;
+    let order = quick_order(&snap.streams);
+    Some(Quick {
+        volume: d.volume.percent() as f32 / 100.0,
+        muted: d.muted,
+        max: if state.overamplify { 1.5 } else { 1.0 },
+        apps: order.iter().take(QUICK_APPS).map(|st| app_row(state, snap, st)).collect(),
+        more: order.len().saturating_sub(QUICK_APPS),
+    })
+}
+
+/// The apps in the popup's order: those playing before those paused, the newest first in each
+/// (the server numbers streams as they start).
+fn quick_order(streams: &[Stream]) -> Vec<&Stream> {
+    let mut order: Vec<&Stream> = streams.iter().collect();
+    order.sort_by_key(|st| (st.corked, std::cmp::Reverse(st.index)));
+    order
+}
+
+/// An app's row, on the page and in the popup; `output` is its output's place in the outputs.
+fn app_row(state: &State, snap: &Snapshot, st: &Stream) -> SoundApp {
+    stream_row(state, st, snap.sinks.iter().position(|d| d.index == st.device))
+}
+
+/// A recording's row; `output` is its input's place in what it can record from.
+fn recording_row(state: &State, snap: &Snapshot, st: &Stream) -> SoundApp {
+    stream_row(state, st, recording_from(snap).position(|d| d.index == st.device))
+}
+
+fn stream_row(state: &State, st: &Stream, device: Option<usize>) -> SoundApp {
+    let icon = state.icons.get(&icon_key(st)).cloned().flatten();
+    SoundApp {
+        id: s(st.index.to_string()),
+        name: s(&st.app),
+        sub: s(if st.corked { format!("Paused · {}", st.title) } else { st.title.clone() }),
+        volume: st.volume.percent() as f32 / 100.0,
+        muted: st.muted,
+        output: device.map_or(-1, |i| i as i32),
+        has_icon: icon.is_some(),
+        icon: icon.unwrap_or_default(),
+    }
+}
+
+/// What an app can record from, in its list's order: the inputs, then the outputs' monitors.
+fn recording_from(snap: &Snapshot) -> impl Iterator<Item = &lituus_sound::Device> {
+    snap.sources.iter().chain(&snap.monitors)
+}
+
+/// "2 playing · 1 paused", "1 recording": how many streams there are, and how many paused.
+fn streams_line(streams: &[Stream], doing: &str) -> String {
+    let paused = streams.iter().filter(|s| s.corked).count();
+    match (streams.len() - paused, paused) {
+        (0, 0) => String::new(),
+        (n, 0) => format!("{n} {doing}"),
+        (0, p) => format!("{p} paused"),
+        (n, p) => format!("{n} {doing} · {p} paused"),
+    }
 }
 
 /// The sidebar's status: the volume of the output in use.
@@ -340,6 +586,7 @@ pub fn view(state: &State) -> SoundView {
     v.error = s(state.error.clone().unwrap_or_default());
     // How many of each, as the other pages' lines say it.
     let playing = snap.streams.iter().filter(|s| !s.corked).count();
+    let recording = snap.recordings.iter().filter(|s| !s.corked).count();
     let mut sub = format!(
         "{} · {}",
         plural(snap.sinks.len(), "output", "outputs"),
@@ -349,6 +596,12 @@ pub fn view(state: &State) -> SoundView {
         0 => {}
         1 => sub.push_str(" · 1 app playing"),
         n => sub.push_str(&format!(" · {n} apps playing")),
+    }
+    match (playing, recording) {
+        (_, 0) => {}
+        (0, 1) => sub.push_str(" · 1 app recording"),
+        (0, n) => sub.push_str(&format!(" · {n} apps recording")),
+        (_, n) => sub.push_str(&format!(" · {n} recording")),
     }
     v.sub = s(sub);
     let port_name = |d: &lituus_sound::Device| {
@@ -399,19 +652,13 @@ pub fn view(state: &State) -> SoundView {
         v.in_volume = d.volume.percent() as f32 / 100.0;
         v.in_muted = d.muted;
     }
-    v.apps = model(
-        snap.streams
-            .iter()
-            .map(|st| SoundApp {
-                id: s(st.index.to_string()),
-                name: s(&st.app),
-                sub: s(if st.corked { format!("Paused · {}", st.title) } else { st.title.clone() }),
-                volume: st.volume.percent() as f32 / 100.0,
-                muted: st.muted,
-                output: snap.sinks.iter().position(|d| d.index == st.sink).unwrap_or(0) as i32,
-            })
-            .collect(),
-    );
+    v.apps = model(snap.streams.iter().map(|st| app_row(state, snap, st)).collect());
+    v.apps_line = s(streams_line(&snap.streams, "playing"));
+    v.recordings = model(snap.recordings.iter().map(|st| recording_row(state, snap, st)).collect());
+    v.recordings_line = s(streams_line(&snap.recordings, "recording"));
+    v.record_from = model(recording_from(snap).map(|d| s(&d.description)).collect());
+    v.record_from_details =
+        model(snap.sources.iter().map(details).chain(snap.monitors.iter().map(|_| s("What it plays"))).collect());
     v.cards =
         model(
             snap.cards
@@ -452,13 +699,22 @@ thread_local! {
     /// The apps' rows, kept as one model from one render to the next: a new one would build the
     /// row being dragged again, and its volume slider would stop after the first step.
     static APPS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
+    /// The same for the apps recording, and the quick popup's apps.
+    static RECORDINGS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
+    static QUICK_ROWS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
+}
+
+/// The quick popup's apps, in the model it keeps (see `QUICK_ROWS`).
+pub fn quick_rows(apps: &[SoundApp]) -> ModelRc<SoundApp> {
+    QUICK_ROWS.with(|kept| crate::input::kept(kept, &model(apps.to_vec())))
 }
 
 pub fn render(window: &MainWindow, state: &State) {
     let mut view = view(state);
     view.apps = APPS.with(|kept| crate::input::kept(kept, &view.apps));
-    // The Cards tab goes when the last card with profiles does.
-    if view.cards.row_count() == 0 && window.get_sound_tab() > 1 {
+    view.recordings = RECORDINGS.with(|kept| crate::input::kept(kept, &view.recordings));
+    // The Cards view goes when the last card with profiles does.
+    if view.cards.row_count() == 0 && window.get_sound_tab() > 0 {
         window.set_sound_tab(0);
     }
     window.set_sound(view);
@@ -518,22 +774,181 @@ mod tests {
                 index: 7,
                 app: "Firefox".into(),
                 title: "YouTube".into(),
-                sink: 41,
+                device: 41,
                 volume: stereo(80),
                 ..Stream::default()
             }],
+            monitors: vec![Device {
+                index: 60,
+                name: "speakers.monitor".into(),
+                description: "Monitor of Speakers".into(),
+                volume: stereo(100),
+                ..Device::default()
+            }],
+            recordings: Vec::new(),
             cards: Vec::new(),
         }
+    }
+
+    /// Discord on a call records from the Yeti; OBS records what the speakers play.
+    fn recording() -> Snapshot {
+        let mut snap = snapshot();
+        snap.recordings = vec![
+            Stream {
+                index: 90,
+                app: "Discord".into(),
+                title: "Voice".into(),
+                device: 50,
+                volume: stereo(100),
+                ..Stream::default()
+            },
+            Stream {
+                index: 91,
+                app: "OBS Studio".into(),
+                title: "Desktop audio".into(),
+                device: 60,
+                volume: stereo(85),
+                ..Stream::default()
+            },
+        ];
+        snap
     }
 
     #[test]
     fn the_quick_popup_has_the_outputs_volume() {
         let mut state = State { snapshot: Some(snapshot()), ..State::default() };
-        let (volume, muted, max) = quick(&state).unwrap();
-        assert!((volume - 0.45).abs() < 0.001 && !muted && max == 1.0);
+        let q = quick(&state).unwrap();
+        assert!((q.volume - 0.45).abs() < 0.001 && !q.muted && q.max == 1.0);
         state.overamplify = true;
-        assert_eq!(quick(&state).map(|q| q.2), Some(1.5));
+        assert_eq!(quick(&state).map(|q| q.max), Some(1.5));
         assert_eq!(quick(&State::default()), None);
+    }
+
+    /// The popup shows three apps at most: those playing, newest first, then those paused; the
+    /// rest are counted for its link to the page.
+    #[test]
+    fn the_quick_popup_shows_three_apps_playing_first() {
+        let mut snap = snapshot();
+        let app = |index: u32, app: &str, corked: bool| Stream {
+            index,
+            app: app.into(),
+            device: 41,
+            volume: stereo(50),
+            corked,
+            ..Stream::default()
+        };
+        snap.streams =
+            vec![app(3, "mpv", true), app(5, "Firefox", false), app(9, "Spotify", true), app(8, "Discord", false)];
+        let q = quick(&State { snapshot: Some(snap), ..State::default() }).unwrap();
+        let names: Vec<&str> = q.apps.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Discord", "Firefox", "Spotify"]);
+        assert_eq!(q.apps[2].sub, "Paused · ");
+        assert_eq!(q.more, 1);
+    }
+
+    /// An app's icon is looked for under the name it gives, then its app id, program and name;
+    /// none of them may lead out of the icon themes.
+    #[test]
+    fn an_apps_icon_goes_by_its_names() {
+        let st = Stream {
+            app: "Spotify".into(),
+            icon: "../../etc/passwd".into(),
+            binary: "spotify".into(),
+            app_id: "com.spotify.Client".into(),
+            ..Stream::default()
+        };
+        assert_eq!(icon_names(&st, &[], None), ["com.spotify.Client", "spotify"]);
+        let st =
+            Stream { app: "Firefox".into(), icon: "firefox".into(), binary: "firefox".into(), ..Stream::default() };
+        assert_eq!(icon_names(&st, &[], None), ["firefox"]);
+        let st =
+            Stream { app: "x".into(), icon: "/opt/x/icon.png".into(), binary: "bin/x".into(), ..Stream::default() };
+        assert_eq!(icon_names(&st, &[], None), ["/opt/x/icon.png", "x"]);
+    }
+
+    /// The stream's app is found among the installed apps by its app id, its program or its name,
+    /// and its icon comes first; a Steam game's goes by its game id.
+    #[test]
+    fn an_apps_icon_comes_from_its_desktop_file() {
+        let app = |id: &str, name: &str, icon: &str, exec: &str| lituus_xdg::desktop::App {
+            id: id.into(),
+            name: name.into(),
+            icon: icon.into(),
+            exec: exec.into(),
+            ..Default::default()
+        };
+        let apps = [
+            app(
+                "spotify.desktop",
+                "Spotify",
+                "spotify-client",
+                "env LD_PRELOAD=/usr/lib/x.so /usr/bin/spotify --uri=%U",
+            ),
+            app("zen.desktop", "Zen Browser", "zen-browser", "/opt/zen-browser-bin/zen-bin %u"),
+            app("Dead by Daylight.desktop", "Dead by Daylight", "steam_icon_381210", "steam steam://rungameid/381210"),
+            lituus_xdg::desktop::App {
+                flatpak: "org.gnome.Nautilus".into(),
+                ..app("files.desktop", "Files", "org.gnome.Nautilus", "nautilus")
+            },
+            app("noicon.desktop", "Spotify", "", "spotify"),
+        ];
+        let by = |app: &str, binary: &str, app_id: &str| {
+            let st = Stream { app: app.into(), binary: binary.into(), app_id: app_id.into(), ..Stream::default() };
+            icon_names(&st, &apps, None)
+        };
+        // By the program its Exec runs (past env and its variables).
+        assert_eq!(by("Spotify", "spotify", "")[0], "spotify-client");
+        assert_eq!(by("Zen", "zen-bin", "")[0], "zen-browser");
+        // By its Flatpak id.
+        assert_eq!(by("Files", "", "org.gnome.Nautilus")[0], "org.gnome.Nautilus");
+        // By its name, when its program is Wine's.
+        assert_eq!(by("Dead by Daylight", "wine64-preloader", "")[0], "steam_icon_381210");
+        // A Steam game without a shortcut: its game id.
+        let st = Stream { app: "Hades".into(), binary: "wine64-preloader".into(), ..Stream::default() };
+        assert_eq!(icon_names(&st, &apps, Some("1145360"))[0], "steam_icon_1145360");
+        // Nothing found: the names alone, as before.
+        assert_eq!(by("mpv", "mpv", ""), ["mpv"]);
+        assert_eq!(program("\"/opt/My App/run\" --x"), "run");
+    }
+
+    /// A process's Steam game id is read from its environment, and nothing else is.
+    #[test]
+    fn a_steam_game_is_known_by_its_environment() {
+        // This test's own process has none.
+        assert_eq!(steam_game(std::process::id()), None);
+        // A child's environment is readable a moment after it starts its program (even after
+        // its name changes), so this waits until the variable is there.
+        let started = |steam_app_id: &str| {
+            let child = std::process::Command::new("sleep").arg("5").env("SteamAppId", steam_app_id).spawn().unwrap();
+            let set = format!("SteamAppId={steam_app_id}");
+            for _ in 0..300 {
+                let env = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap_or_default();
+                if env.split(|&b| b == 0).any(|v| v == set.as_bytes()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child
+        };
+        for (value, read) in [("381210", Some("381210")), ("../x", None), ("0", None)] {
+            let mut child = started(value);
+            assert_eq!(steam_game(child.id()).as_deref(), read, "{value}");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// A drawn icon reaches the app's row; one that wasn't found leaves the line icon.
+    #[test]
+    fn the_rows_carry_the_icons_found() {
+        let mut state = State { snapshot: Some(snapshot()), ..State::default() };
+        let key = icon_key(&state.snapshot.as_ref().unwrap().streams[0]);
+        assert!(!view(&state).apps.row_data(0).unwrap().has_icon);
+        state.icons.insert(key.clone(), None);
+        assert!(!view(&state).apps.row_data(0).unwrap().has_icon);
+        state.icons.insert(key, Some(Image::from_rgba8(SharedPixelBuffer::new(2, 2))));
+        assert!(view(&state).apps.row_data(0).unwrap().has_icon);
+        assert!(quick(&state).unwrap().apps[0].has_icon);
     }
 
     #[test]
@@ -598,6 +1013,55 @@ mod tests {
         assert_eq!(sent("app-volume", "99", 0.5), None, "no such app");
     }
 
+    /// The apps recording have their own rows, choosing from the inputs and then the outputs'
+    /// monitors; the hero's line counts them.
+    #[test]
+    fn the_page_shows_the_apps_recording() {
+        let state = State { snapshot: Some(recording()), ..State::default() };
+        let v = view(&state);
+        let rows: Vec<(String, i32)> = v.recordings.iter().map(|r| (r.name.to_string(), r.output)).collect();
+        assert_eq!(rows, [("Discord".to_owned(), 0), ("OBS Studio".to_owned(), 1)]);
+        let from: Vec<String> = v.record_from.iter().map(|n| n.to_string()).collect();
+        assert_eq!(from, ["Blue Yeti", "Monitor of Speakers"]);
+        let details: Vec<String> = v.record_from_details.iter().map(|n| n.to_string()).collect();
+        assert_eq!(details, ["USB", "What it plays"]);
+        assert_eq!(v.sub, "2 outputs · 1 input · 1 app playing · 2 recording");
+        assert_eq!((v.apps_line.as_str(), v.recordings_line.as_str()), ("1 playing", "2 recording"));
+        // The outputs' monitors aren't inputs to choose for everything.
+        assert_eq!(v.inputs_names.row_count(), 1);
+
+        let mut snap = recording();
+        snap.streams.clear();
+        snap.recordings[1].corked = true;
+        let v = view(&State { snapshot: Some(snap), ..State::default() });
+        assert_eq!(v.sub, "2 outputs · 1 input · 1 app recording");
+        assert_eq!(v.recordings_line, "1 recording · 1 paused");
+        assert_eq!(v.apps_line, "");
+    }
+
+    #[test]
+    fn a_recordings_clicks_become_commands() {
+        let (tx, rx) = channel();
+        let mut state = State { snapshot: Some(recording()), commands: Some(tx), ..State::default() };
+        let mut sent = |verb: &str, id: &str, value: f32| {
+            act(&mut state, verb, id, value);
+            match rx.try_recv() {
+                Ok(Message::Run(c)) => Some(c),
+                _ => None,
+            }
+        };
+        assert_eq!(sent("rec-volume", "90", 0.4), Some(Command::RecordingVolume(90, stereo(40))));
+        assert_eq!(sent("rec-mute", "91", 0.0), Some(Command::RecordingMute(91, true)));
+        // Its list is the inputs, then the monitors.
+        assert_eq!(sent("rec-input", "90", 1.0), Some(Command::MoveRecording(90, 60)));
+        assert_eq!(sent("rec-input", "91", 0.0), Some(Command::MoveRecording(91, 50)));
+        assert_eq!(sent("rec-input", "91", 2.0), None, "no such input");
+        assert_eq!(sent("rec-volume", "7", 0.4), None, "an app playing isn't a recording");
+        // A dragged recording slider keeps only its last volume, as the others do.
+        assert!(Command::RecordingVolume(90, stereo(50)).replaces(&Command::RecordingVolume(90, stereo(40))));
+        assert!(!Command::RecordingVolume(90, stereo(50)).replaces(&Command::StreamVolume(90, stereo(40))));
+    }
+
     #[test]
     fn a_refused_change_shows_until_dismissed() {
         let mut state =
@@ -651,6 +1115,12 @@ mod tests {
                 Command::GetSinkInputInfoList => {
                     protocol::write_reply_message(w, seq, &protocol::SinkInputInfoList::new(), v)
                 }
+                Command::GetSourceOutputInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::SourceOutputInfoList::new(), v)
+                }
+                Command::GetClientInfoList => {
+                    protocol::write_reply_message(w, seq, &protocol::ClientInfoList::new(), v)
+                }
                 Command::GetCardInfoList => protocol::write_reply_message(w, seq, &protocol::CardInfoList::new(), v),
                 _ => protocol::write_ack_message(w, seq),
             };
@@ -685,7 +1155,7 @@ mod tests {
         std::thread::spawn(move || {
             // As run() sets them up: it keeps `tx` for as long as it lives.
             let (tx, rx) = channel();
-            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1);
+            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1, &mut Icons::new());
             let _ = done.send(result.is_err());
         });
         // The first snapshot is read, the watcher has subscribed.
@@ -708,7 +1178,7 @@ mod tests {
         let commands = tx.clone();
         let (done, returned) = channel();
         std::thread::spawn(move || {
-            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1);
+            let result = connected(&slint::Weak::default(), &mut session, watcher, &tx, &rx, 1, &mut Icons::new());
             let _ = done.send(result.is_err());
         });
         std::thread::sleep(Duration::from_millis(300));
