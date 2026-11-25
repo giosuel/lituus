@@ -681,7 +681,8 @@ fn toggle_quick(window: &MainWindow) {
                 let Some(window) = main.upgrade() else { return };
                 hide_quick();
                 update(&main, |app| go(app, "sound"));
-                window.set_sound_tab(1);
+                // The first view, where the apps are.
+                window.set_sound_tab(0);
                 let _ = window.show();
             }
         });
@@ -4121,10 +4122,72 @@ mod tests {
         assert_eq!(control("Output device").accessible_role(), Some(AccessibleRole::Combobox));
         assert_eq!(control("Output device").accessible_value().as_deref(), Some("Samsung TV (HDMI)"));
 
-        // With no card left, the Cards tab goes and the page shows the devices.
-        window.set_sound_tab(2);
+        // With no card left, the Cards view goes and the page shows the devices.
+        window.set_sound_tab(1);
         super::sound::render(&window, &super::sound::State::default());
         assert_eq!(window.get_sound_tab(), 0);
+    }
+
+    /// The apps playing and recording sit beside Output and Input in the owner's window and
+    /// under them in a narrower one (S-157); a recording's row has its own mute, volume and
+    /// input, and its clicks go to Rust as recordings.
+    #[test]
+    fn sound_apps_sit_beside_the_devices_or_under_them() {
+        use super::SoundApp;
+        let window = window();
+        window.set_page("sound".into());
+        let names = |n: &[&str]| super::model(n.iter().map(|&n| SharedString::from(n)).collect());
+        let app = |id: &str, name: &str, output: i32| SoundApp {
+            id: id.into(),
+            name: name.into(),
+            sub: "Voice".into(),
+            volume: 0.8,
+            output,
+            ..Default::default()
+        };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            outputs_names: names(&["Speakers", "Sony WH-1000XM5"]),
+            output: 0,
+            inputs_names: names(&["Blue Yeti"]),
+            input: 0,
+            apps: super::model(vec![app("7", "Firefox", 1)]),
+            apps_line: "1 playing".into(),
+            recordings: super::model(vec![app("90", "Discord", 0), app("91", "OBS Studio", 1)]),
+            recordings_line: "2 recording".into(),
+            record_from: names(&["Blue Yeti", "Monitor of Speakers"]),
+            max: 1.0,
+            ..super::SoundView::default()
+        });
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_sound_act(move |verb, id, v| a.borrow_mut().push(format!("{verb} {id} {v:.2}")));
+        let at = |label: &str, role: AccessibleRole| control(&window, label, role).absolute_position();
+
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        // Right of the output's list (240 px), which ends its card.
+        assert!(firefox.x > device.x + 240.0, "beside: {device:?} {firefox:?}");
+        assert!(firefox.y < at("Input device", AccessibleRole::Combobox).y, "the apps start at the top");
+        // Recording, under the apps playing.
+        let discord = at("Discord recording volume", AccessibleRole::Slider);
+        assert!(discord.y > firefox.y && (discord.x - firefox.x).abs() < 1.0, "{discord:?} {firefox:?}");
+        assert_eq!(
+            control(&window, "Input for OBS Studio", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Monitor of Speakers")
+        );
+        control(&window, "Mute Discord recording", AccessibleRole::Button).invoke_accessible_default_action();
+        control(&window, "OBS Studio recording volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        control(&window, "Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["rec-mute 90 0.00", "rec-volume 91 0.85", "app-mute 7 0.00"]);
+
+        // A narrower window: Output, Input, then the apps, one under the other.
+        window.window().set_size(LogicalSize::new(1200.0, 760.0));
+        let (device, input) =
+            (at("Output device", AccessibleRole::Combobox), at("Input device", AccessibleRole::Combobox));
+        let firefox = at("Firefox volume", AccessibleRole::Slider);
+        assert!(device.y < input.y && input.y < firefox.y, "stacked: {device:?} {input:?} {firefox:?}");
     }
 
     /// With Network's sub-items open, the sidebar's pages scroll in the smallest window instead
@@ -4751,8 +4814,20 @@ mod tests {
         assert!(!roles("Rotation").contains(&AccessibleRole::TabList));
 
         window.set_page("sound".into());
+        // With no card to choose a profile for there's one view, and no tabs.
         window.set_sound(super::SoundView { state: "list".into(), max: 1.0, ..Default::default() });
-        assert_eq!(tabs("Sound"), ["Devices", "Apps"]);
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Sound")
+                .all(|e| e.accessible_role() != Some(AccessibleRole::TabList))
+        );
+        let card = super::SoundCard { id: "alsa_card.pci".into(), name: "Built-in Audio".into(), ..Default::default() };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            max: 1.0,
+            cards: super::model(vec![card]),
+            ..Default::default()
+        });
+        assert_eq!(tabs("Sound"), ["Devices and apps", "Cards"]);
         let views = ElementHandle::find_by_accessible_label(&window, "Sound")
             .find(|e| e.accessible_role() == Some(AccessibleRole::TabList))
             .unwrap();
@@ -5283,7 +5358,7 @@ mod tests {
                 ..Default::default()
             });
         });
-        window.set_sound_tab(1);
+        window.set_sound_tab(0);
         super::render(&window);
         let got = Rc::new(RefCell::new(Vec::<f32>::new()));
         let (g, w) = (got.clone(), window.as_weak());
@@ -5316,7 +5391,7 @@ mod tests {
                 streams: vec![lituus_sound::Stream {
                     index: 7,
                     app: "Firefox".into(),
-                    sink: 40,
+                    device: 40,
                     volume: volume(0.2),
                     ..Default::default()
                 }],

@@ -61,3 +61,65 @@ fn a_watcher_hears_changes() {
     rx.recv_timeout(std::time::Duration::from_secs(3)).expect("an event");
     session.set_sink_mute(sink.index, sink.muted).unwrap();
 }
+
+/// An app recording (pw-record, when it's installed) is listed with its name, and its volume,
+/// mute and input change.
+#[test]
+fn reads_and_changes_a_recording() {
+    if std::env::var_os("LITUUS_SOUND_TEST").is_none() {
+        return;
+    }
+    let file = std::env::temp_dir().join(format!("lituus-recording-{}.wav", std::process::id()));
+    let Ok(mut recorder) = std::process::Command::new("pw-record")
+        .args(["-P", "{ application.name = \"Lituus test recorder\" }"])
+        .arg(&file)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        eprintln!("no pw-record: skipped");
+        return;
+    };
+    let mut session = Session::connect().unwrap();
+    let find = |session: &mut Session| {
+        session.snapshot().unwrap().recordings.into_iter().find(|r| r.app == "Lituus test recorder")
+    };
+    let mut found = None;
+    for _ in 0..60 {
+        found = find(&mut session);
+        if found.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let rec = found.expect("the recording is listed");
+        let snap = session.snapshot().unwrap();
+        assert!(
+            snap.sources.iter().chain(&snap.monitors).any(|d| d.index == rec.device),
+            "it records from an input or a monitor"
+        );
+        session.set_recording_volume(rec.index, &rec.volume.with_percent(37)).unwrap();
+        session.set_recording_mute(rec.index, true).unwrap();
+        let after = find(&mut session).unwrap();
+        assert_eq!(after.volume.percent(), 37);
+        assert!(after.muted);
+        // To another input, or an output's monitor; the session manager moves it a moment later.
+        let Some(other) = snap.sources.iter().chain(&snap.monitors).find(|d| d.index != rec.device) else { return };
+        session.move_recording(rec.index, other.index).unwrap();
+        let mut device = rec.device;
+        for _ in 0..40 {
+            device = find(&mut session).unwrap().device;
+            if device == other.index {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(device, other.index);
+    }));
+    let _ = recorder.kill();
+    let _ = recorder.wait();
+    let _ = std::fs::remove_file(&file);
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}

@@ -25,6 +25,10 @@ pub enum Command {
     SourceMute(u32, bool),
     StreamMute(u32, bool),
     Move(u32, u32),
+    RecordingVolume(u32, Volume),
+    RecordingMute(u32, bool),
+    /// A recording to another input or monitor.
+    MoveRecording(u32, u32),
     SinkPort(u32, String),
     Profile(String, String),
 }
@@ -35,7 +39,10 @@ impl Command {
         use Command::*;
         matches!(
             (self, other),
-            (SinkVolume(a, _), SinkVolume(b, _)) | (SourceVolume(a, _), SourceVolume(b, _)) | (StreamVolume(a, _), StreamVolume(b, _))
+            (SinkVolume(a, _), SinkVolume(b, _))
+                | (SourceVolume(a, _), SourceVolume(b, _))
+                | (StreamVolume(a, _), StreamVolume(b, _))
+                | (RecordingVolume(a, _), RecordingVolume(b, _))
             if a == b
         )
     }
@@ -85,7 +92,7 @@ impl Icons {
     }
 
     /// The icons of the apps not seen before.
-    fn new_ones(&mut self, streams: &[Stream]) -> Vec<(String, Drawn)> {
+    fn new_ones<'a>(&mut self, streams: impl IntoIterator<Item = &'a Stream>) -> Vec<(String, Drawn)> {
         let mut out = Vec::new();
         for st in streams {
             let key = icon_key(st);
@@ -241,7 +248,7 @@ fn serve(
             }
         }
         let snapshot = session.snapshot()?;
-        let drawn = icons.new_ones(&snapshot.streams);
+        let drawn = icons.new_ones(snapshot.streams.iter().chain(&snapshot.recordings));
         post(weak, move |s| {
             for (key, pixels) in drawn {
                 s.icons.insert(key, pixels.map(Image::from_rgba8));
@@ -263,6 +270,9 @@ fn execute(session: &mut Session, command: &Command) -> Result<(), lituus_sound:
         Command::SourceMute(i, m) => session.set_source_mute(*i, *m),
         Command::StreamMute(i, m) => session.set_stream_mute(*i, *m),
         Command::Move(stream, sink) => session.move_stream(*stream, *sink),
+        Command::RecordingVolume(i, v) => session.set_recording_volume(*i, v),
+        Command::RecordingMute(i, m) => session.set_recording_mute(*i, *m),
+        Command::MoveRecording(stream, source) => session.move_recording(*stream, *source),
         Command::SinkPort(i, port) => session.set_sink_port(*i, port),
         Command::Profile(card, profile) => session.set_card_profile(card, profile),
     }
@@ -278,7 +288,7 @@ fn send(state: &State, command: Command) {
 pub const NOT_RUNNING_COMMAND: &str = "systemctl --user enable --now pipewire-pulse";
 
 /// What a click or a drag on the page does: (verb, id, value). The device lists send the
-/// device's place in the list as the value.
+/// device's place in the list as the value; a recording's list is the inputs, then the monitors.
 pub fn act(state: &mut State, verb: &str, id: &str, value: f32) -> Option<(&'static str, &'static str, bool)> {
     if verb == "dismiss" {
         state.error = None;
@@ -320,6 +330,14 @@ pub fn act(state: &mut State, verb: &str, id: &str, value: f32) -> Option<(&'sta
                 "app-volume" => Command::StreamVolume(s.index, s.volume.with_percent(percent)),
                 "app-mute" => Command::StreamMute(s.index, !s.muted),
                 _ => Command::Move(s.index, snap.sinks.get(value as usize)?.index),
+            }
+        }
+        "rec-volume" | "rec-mute" | "rec-input" => {
+            let s = snap.recordings.iter().find(|s| s.index.to_string() == id)?;
+            match verb {
+                "rec-volume" => Command::RecordingVolume(s.index, s.volume.with_percent(percent)),
+                "rec-mute" => Command::RecordingMute(s.index, !s.muted),
+                _ => Command::MoveRecording(s.index, recording_from(snap).nth(value as usize)?.index),
             }
         }
         "profile" => {
@@ -403,8 +421,17 @@ fn quick_order(streams: &[Stream]) -> Vec<&Stream> {
     order
 }
 
-/// An app's row, on the page and in the popup.
+/// An app's row, on the page and in the popup; `output` is its output's place in the outputs.
 fn app_row(state: &State, snap: &Snapshot, st: &Stream) -> SoundApp {
+    stream_row(state, st, snap.sinks.iter().position(|d| d.index == st.device))
+}
+
+/// A recording's row; `output` is its input's place in what it can record from.
+fn recording_row(state: &State, snap: &Snapshot, st: &Stream) -> SoundApp {
+    stream_row(state, st, recording_from(snap).position(|d| d.index == st.device))
+}
+
+fn stream_row(state: &State, st: &Stream, device: Option<usize>) -> SoundApp {
     let icon = state.icons.get(&icon_key(st)).cloned().flatten();
     SoundApp {
         id: s(st.index.to_string()),
@@ -412,9 +439,25 @@ fn app_row(state: &State, snap: &Snapshot, st: &Stream) -> SoundApp {
         sub: s(if st.corked { format!("Paused · {}", st.title) } else { st.title.clone() }),
         volume: st.volume.percent() as f32 / 100.0,
         muted: st.muted,
-        output: snap.sinks.iter().position(|d| d.index == st.sink).unwrap_or(0) as i32,
+        output: device.map_or(-1, |i| i as i32),
         has_icon: icon.is_some(),
         icon: icon.unwrap_or_default(),
+    }
+}
+
+/// What an app can record from, in its list's order: the inputs, then the outputs' monitors.
+fn recording_from(snap: &Snapshot) -> impl Iterator<Item = &lituus_sound::Device> {
+    snap.sources.iter().chain(&snap.monitors)
+}
+
+/// "2 playing · 1 paused", "1 recording": how many streams there are, and how many paused.
+fn streams_line(streams: &[Stream], doing: &str) -> String {
+    let paused = streams.iter().filter(|s| s.corked).count();
+    match (streams.len() - paused, paused) {
+        (0, 0) => String::new(),
+        (n, 0) => format!("{n} {doing}"),
+        (0, p) => format!("{p} paused"),
+        (n, p) => format!("{n} {doing} · {p} paused"),
     }
 }
 
@@ -452,6 +495,7 @@ pub fn view(state: &State) -> SoundView {
     v.error = s(state.error.clone().unwrap_or_default());
     // How many of each, as the other pages' lines say it.
     let playing = snap.streams.iter().filter(|s| !s.corked).count();
+    let recording = snap.recordings.iter().filter(|s| !s.corked).count();
     let mut sub = format!(
         "{} · {}",
         plural(snap.sinks.len(), "output", "outputs"),
@@ -461,6 +505,12 @@ pub fn view(state: &State) -> SoundView {
         0 => {}
         1 => sub.push_str(" · 1 app playing"),
         n => sub.push_str(&format!(" · {n} apps playing")),
+    }
+    match (playing, recording) {
+        (_, 0) => {}
+        (0, 1) => sub.push_str(" · 1 app recording"),
+        (0, n) => sub.push_str(&format!(" · {n} apps recording")),
+        (_, n) => sub.push_str(&format!(" · {n} recording")),
     }
     v.sub = s(sub);
     let port_name = |d: &lituus_sound::Device| {
@@ -512,6 +562,12 @@ pub fn view(state: &State) -> SoundView {
         v.in_muted = d.muted;
     }
     v.apps = model(snap.streams.iter().map(|st| app_row(state, snap, st)).collect());
+    v.apps_line = s(streams_line(&snap.streams, "playing"));
+    v.recordings = model(snap.recordings.iter().map(|st| recording_row(state, snap, st)).collect());
+    v.recordings_line = s(streams_line(&snap.recordings, "recording"));
+    v.record_from = model(recording_from(snap).map(|d| s(&d.description)).collect());
+    v.record_from_details =
+        model(snap.sources.iter().map(details).chain(snap.monitors.iter().map(|_| s("What it plays"))).collect());
     v.cards =
         model(
             snap.cards
@@ -552,7 +608,8 @@ thread_local! {
     /// The apps' rows, kept as one model from one render to the next: a new one would build the
     /// row being dragged again, and its volume slider would stop after the first step.
     static APPS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
-    /// The same for the quick popup's apps.
+    /// The same for the apps recording, and the quick popup's apps.
+    static RECORDINGS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
     static QUICK_ROWS: Rc<VecModel<SoundApp>> = Rc::new(VecModel::default());
 }
 
@@ -564,8 +621,9 @@ pub fn quick_rows(apps: &[SoundApp]) -> ModelRc<SoundApp> {
 pub fn render(window: &MainWindow, state: &State) {
     let mut view = view(state);
     view.apps = APPS.with(|kept| crate::input::kept(kept, &view.apps));
-    // The Cards tab goes when the last card with profiles does.
-    if view.cards.row_count() == 0 && window.get_sound_tab() > 1 {
+    view.recordings = RECORDINGS.with(|kept| crate::input::kept(kept, &view.recordings));
+    // The Cards view goes when the last card with profiles does.
+    if view.cards.row_count() == 0 && window.get_sound_tab() > 0 {
         window.set_sound_tab(0);
     }
     window.set_sound(view);
@@ -625,12 +683,44 @@ mod tests {
                 index: 7,
                 app: "Firefox".into(),
                 title: "YouTube".into(),
-                sink: 41,
+                device: 41,
                 volume: stereo(80),
                 ..Stream::default()
             }],
+            monitors: vec![Device {
+                index: 60,
+                name: "speakers.monitor".into(),
+                description: "Monitor of Speakers".into(),
+                volume: stereo(100),
+                ..Device::default()
+            }],
+            recordings: Vec::new(),
             cards: Vec::new(),
         }
+    }
+
+    /// Discord on a call records from the Yeti; OBS records what the speakers play.
+    fn recording() -> Snapshot {
+        let mut snap = snapshot();
+        snap.recordings = vec![
+            Stream {
+                index: 90,
+                app: "Discord".into(),
+                title: "Voice".into(),
+                device: 50,
+                volume: stereo(100),
+                ..Stream::default()
+            },
+            Stream {
+                index: 91,
+                app: "OBS Studio".into(),
+                title: "Desktop audio".into(),
+                device: 60,
+                volume: stereo(85),
+                ..Stream::default()
+            },
+        ];
+        snap
     }
 
     #[test]
@@ -651,7 +741,7 @@ mod tests {
         let app = |index: u32, app: &str, corked: bool| Stream {
             index,
             app: app.into(),
-            sink: 41,
+            device: 41,
             volume: stereo(50),
             corked,
             ..Stream::default()
@@ -758,6 +848,55 @@ mod tests {
         assert_eq!(sent("in-volume", "", 0.5), Some(Command::SourceVolume(50, stereo(50))));
         assert_eq!(sent("in-mute", "", 0.0), Some(Command::SourceMute(50, true)));
         assert_eq!(sent("app-volume", "99", 0.5), None, "no such app");
+    }
+
+    /// The apps recording have their own rows, choosing from the inputs and then the outputs'
+    /// monitors; the hero's line counts them.
+    #[test]
+    fn the_page_shows_the_apps_recording() {
+        let state = State { snapshot: Some(recording()), ..State::default() };
+        let v = view(&state);
+        let rows: Vec<(String, i32)> = v.recordings.iter().map(|r| (r.name.to_string(), r.output)).collect();
+        assert_eq!(rows, [("Discord".to_owned(), 0), ("OBS Studio".to_owned(), 1)]);
+        let from: Vec<String> = v.record_from.iter().map(|n| n.to_string()).collect();
+        assert_eq!(from, ["Blue Yeti", "Monitor of Speakers"]);
+        let details: Vec<String> = v.record_from_details.iter().map(|n| n.to_string()).collect();
+        assert_eq!(details, ["USB", "What it plays"]);
+        assert_eq!(v.sub, "2 outputs · 1 input · 1 app playing · 2 recording");
+        assert_eq!((v.apps_line.as_str(), v.recordings_line.as_str()), ("1 playing", "2 recording"));
+        // The outputs' monitors aren't inputs to choose for everything.
+        assert_eq!(v.inputs_names.row_count(), 1);
+
+        let mut snap = recording();
+        snap.streams.clear();
+        snap.recordings[1].corked = true;
+        let v = view(&State { snapshot: Some(snap), ..State::default() });
+        assert_eq!(v.sub, "2 outputs · 1 input · 1 app recording");
+        assert_eq!(v.recordings_line, "1 recording · 1 paused");
+        assert_eq!(v.apps_line, "");
+    }
+
+    #[test]
+    fn a_recordings_clicks_become_commands() {
+        let (tx, rx) = channel();
+        let mut state = State { snapshot: Some(recording()), commands: Some(tx), ..State::default() };
+        let mut sent = |verb: &str, id: &str, value: f32| {
+            act(&mut state, verb, id, value);
+            match rx.try_recv() {
+                Ok(Message::Run(c)) => Some(c),
+                _ => None,
+            }
+        };
+        assert_eq!(sent("rec-volume", "90", 0.4), Some(Command::RecordingVolume(90, stereo(40))));
+        assert_eq!(sent("rec-mute", "91", 0.0), Some(Command::RecordingMute(91, true)));
+        // Its list is the inputs, then the monitors.
+        assert_eq!(sent("rec-input", "90", 1.0), Some(Command::MoveRecording(90, 60)));
+        assert_eq!(sent("rec-input", "91", 0.0), Some(Command::MoveRecording(91, 50)));
+        assert_eq!(sent("rec-input", "91", 2.0), None, "no such input");
+        assert_eq!(sent("rec-volume", "7", 0.4), None, "an app playing isn't a recording");
+        // A dragged recording slider keeps only its last volume, as the others do.
+        assert!(Command::RecordingVolume(90, stereo(50)).replaces(&Command::RecordingVolume(90, stereo(40))));
+        assert!(!Command::RecordingVolume(90, stereo(50)).replaces(&Command::StreamVolume(90, stereo(40))));
     }
 
     #[test]
