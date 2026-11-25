@@ -94,8 +94,9 @@ impl Session {
     /// Everything, read afresh.
     pub fn snapshot(&mut self) -> Result<Snapshot, Error> {
         let server: protocol::ServerInfo = self.ask(Command::GetServerInfo)?;
-        let sinks: protocol::SinkInfoList = self.ask(Command::GetSinkInfoList)?;
-        let sources: protocol::SourceInfoList = self.ask(Command::GetSourceInfoList)?;
+        // Read leniently: a device PipeWire failed to start mustn't hide all the others.
+        let crate::lenient::Sinks(sinks) = self.ask(Command::GetSinkInfoList)?;
+        let crate::lenient::Sources(sources) = self.ask(Command::GetSourceInfoList)?;
         let streams: protocol::SinkInputInfoList = self.ask(Command::GetSinkInputInfoList)?;
         let recordings: protocol::SourceOutputInfoList = self.ask(Command::GetSourceOutputInfoList)?;
         let cards: protocol::CardInfoList = self.ask(Command::GetCardInfoList)?;
