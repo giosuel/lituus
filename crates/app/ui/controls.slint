@@ -321,6 +321,8 @@ export component PillSwitch inherits Focusable {
     in property <string> note;
     callback toggled();
     width: pill.preferred-width;
+    // Turned off (Night light without hyprsunset), it looks it.
+    opacity: root.enabled ? 1 : 0.45;
     border-radius: 8px;
     border-width: 1px;
     border-color: Theme.ctrl-border;

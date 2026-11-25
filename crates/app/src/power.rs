@@ -74,7 +74,7 @@ pub fn read_files(state: &mut State, config: &crate::config::Config) {
     state.power_key = config.power.power_key.clone();
 }
 
-fn installed(program: &str) -> bool {
+pub(crate) fn installed(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
 }
 
@@ -257,29 +257,36 @@ fn write_idle(state: &mut State, idle: Idle) {
     }
 }
 
-/// hypridle reads its file once, when it starts: so it's started again, through its systemd unit
-/// when it runs as one, else by Hyprland.
+/// hypridle reads its file once, when it starts: so it's started again.
 fn restart_hypridle() {
-    std::thread::spawn(|| {
-        let unit = std::process::Command::new("systemctl")
-            .args(["--user", "--quiet", "is-active", "hypridle.service"])
+    restart("hypridle");
+}
+
+/// Starts a daemon of Hyprland's again (hypridle, hyprsunset), so it reads its file: through its
+/// systemd unit when it runs as one, else stopped and started by Hyprland.
+pub(crate) fn restart(program: &'static str) {
+    std::thread::spawn(move || {
+        let unit = format!("{program}.service");
+        let active = std::process::Command::new("systemctl")
+            .args(["--user", "--quiet", "is-active", &unit])
             .status()
             .is_ok_and(|s| s.success());
-        if unit {
-            let _ = std::process::Command::new("systemctl").args(["--user", "restart", "hypridle.service"]).status();
+        if active {
+            let _ = std::process::Command::new("systemctl").args(["--user", "restart", &unit]).status();
             return;
         }
-        for pid in pids("hypridle") {
+        for pid in pids(program) {
             let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
         }
+        std::thread::sleep(std::time::Duration::from_millis(200));
         if let Ok(hypr) = lituus_hypr::Hyprland::from_env() {
-            let _ = hypr.request("dispatch exec hypridle");
+            let _ = hypr.request(&format!("dispatch exec {program}"));
         }
     });
 }
 
 /// This user's processes running `name`.
-fn pids(name: &str) -> Vec<u32> {
+pub(crate) fn pids(name: &str) -> Vec<u32> {
     let me = std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
     let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
     dir.flatten()

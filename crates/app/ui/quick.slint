@@ -93,6 +93,11 @@ export component QuickWindow inherits Window {
     in property <[SoundApp]> apps;
     in property <int> apps-more;
     in property <bool> airplane;
+    /// Night light (D-57): its row, above Airplane mode, while hyprsunset is installed.
+    in property <bool> night-available;
+    in property <bool> night;
+    in property <string> night-line;
+    callback night-switched();
     callback wifi-switched();
     callback rescan();
     /// A row's button, or a click on a row that isn't connected.
@@ -271,6 +276,19 @@ export component QuickWindow inherits Window {
                         clicked => { root.apps-more-clicked(); }
                     }
                 }
+            }
+            if root.night-available: HorizontalLayout {
+                padding-left: 2px;
+                height: 44px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    CardTitle { text: "Night light"; }
+                    Text { text: root.night-line; color: root.night ? Theme.accent : Theme.muted; font-size: Type.label; overflow: elide; }
+                }
+                Switch { on: root.night; label: "Night light"; switch-width: 40px; y: (parent.height - self.height) / 2; toggled => { root.night-switched(); } }
             }
             HorizontalLayout {
                 padding-left: 2px;

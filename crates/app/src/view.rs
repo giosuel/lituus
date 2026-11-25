@@ -25,6 +25,7 @@ pub enum Page {
     Shortcuts,
     Appearance,
     Wallpaper,
+    NightLight,
     Apps,
     DefaultApps,
     System,
@@ -52,6 +53,7 @@ impl Page {
             // Lituus's own look moved to Settings.
             "settings" => Self::Settings,
             "appearance" => Self::Appearance,
+            "night-light" => Self::NightLight,
             _ => return None,
         })
     }
@@ -86,6 +88,7 @@ impl Page {
             Self::Shortcuts => "shortcuts",
             Self::Appearance => "appearance",
             Self::Wallpaper => "wallpaper",
+            Self::NightLight => "night-light",
             Self::Apps => "apps",
             Self::DefaultApps => "default-apps",
             Self::System => "system",
@@ -409,6 +412,7 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         | Page::Shortcuts
         | Page::Appearance
         | Page::Wallpaper
+        | Page::NightLight
         | Page::Apps
         | Page::DefaultApps
         | Page::System
@@ -517,6 +521,7 @@ fn page_title(page: Page) -> &'static str {
         Page::Shortcuts => "Shortcuts",
         Page::Appearance => "Appearance",
         Page::Wallpaper => "Wallpaper",
+        Page::NightLight => "Night light",
         Page::Apps => "Apps",
         Page::DefaultApps => "Default apps",
         Page::System => "System",

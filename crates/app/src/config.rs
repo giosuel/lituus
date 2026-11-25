@@ -12,6 +12,7 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     pub sound: SoundConfig,
     pub power: PowerConfig,
+    pub night_light: NightLightConfig,
     pub bluetooth: BluetoothConfig,
     pub wallpaper: WallpaperConfig,
     /// The System page's update commands the user changed, by package manager ("pacman").
@@ -82,6 +83,38 @@ pub struct PowerConfig {
     /// With another screen connected.
     pub lid_external: String,
     pub power_key: String,
+}
+
+/// The Night light page: hyprsunset's warmth and when it's on.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NightLightConfig {
+    pub enabled: bool,
+    /// Kelvin, 2500 to 6500.
+    pub temperature: u32,
+    /// "sun" (sunset to sunrise) or "times" (`from` to `to`, as "21:00").
+    pub schedule: String,
+    pub from: String,
+    pub to: String,
+    /// "manual" for `latitude` and `longitude`; otherwise the time zone's place.
+    pub location: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+impl Default for NightLightConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            temperature: 4000,
+            schedule: "sun".into(),
+            from: "21:00".into(),
+            to: "07:00".into(),
+            location: String::new(),
+            latitude: 0.0,
+            longitude: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]

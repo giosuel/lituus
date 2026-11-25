@@ -24,6 +24,7 @@ mod input;
 mod instance;
 mod keymap;
 mod nav;
+mod night;
 mod notify;
 mod openconnect;
 mod openvpn;
@@ -203,6 +204,8 @@ struct App {
     sound: sound::State,
     power: power::State,
     appearance: appearance::State,
+    night: night::State,
+    quick_night: (bool, bool, String),
     /// The Input pages, and which of them was open last (for the Input item).
     input: input::State,
     input_page: Option<view::Page>,
@@ -359,7 +362,13 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let config = config::load(&config::path());
         APP.with(|app| power::read_files(&mut app.borrow_mut().power, &config));
+        APP.with(|app| {
+            let night = &mut app.borrow_mut().night;
+            night::read(night, &config.night_light);
+            night::ensure_running(night);
+        });
     }
+    night::spawn(window.as_weak());
     power::spawn(window.as_weak());
     appearance::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
@@ -712,6 +721,13 @@ fn toggle_quick(window: &MainWindow) {
                 }
             }
         });
+        popup.on_night_switched({
+            let main = window.as_weak();
+            move || {
+                let w = main.clone();
+                update(&main, |app| night::act(&w, &mut app.night, "switch", 0.0, ""));
+            }
+        });
         popup.on_open_main(on(tray::Event::Open));
         popup.on_open_settings(on(tray::Event::Settings));
         popup.on_dismissed(hide_quick);
@@ -746,7 +762,13 @@ fn render_quick(app: &mut App, airplane: bool) {
     }
     let bt = bluetooth::quick(&app.bt);
     let sound = sound::quick(&app.sound);
-    if q == app.quick && bt == app.quick_bt && sound == app.quick_sound && !std::mem::take(&mut app.quick_new) {
+    let night = night::quick(&app.night);
+    if q == app.quick
+        && bt == app.quick_bt
+        && sound == app.quick_sound
+        && night == app.quick_night
+        && !std::mem::take(&mut app.quick_new)
+    {
         return;
     }
     if let Some(tray) = &app.tray {
@@ -816,7 +838,11 @@ fn render_quick(app: &mut App, airplane: bool) {
             popup.set_apps_more(sound.more as i32);
         }
         popup.set_airplane(q.airplane);
+        popup.set_night_available(night.0);
+        popup.set_night(night.1);
+        popup.set_night_line(night.2.as_str().into());
     });
+    app.quick_night = night;
     app.quick = q;
     app.quick_bt = bt;
     app.quick_sound = sound;
@@ -1088,6 +1114,11 @@ fn connect_callbacks(window: &MainWindow) {
     });
     let weak = window.as_weak();
     window.on_power_act(move |verb, value| update(&weak, |app| power::act(&mut app.power, &verb, value)));
+    let weak = window.as_weak();
+    window.on_night_act(move |verb, value, text| {
+        let w = weak.clone();
+        update(&weak, |app| night::act(&w, &mut app.night, &verb, value, &text))
+    });
     let weak = window.as_weak();
     window.on_appearance_act(move |verb, value| {
         let w = weak.clone();
@@ -1367,6 +1398,7 @@ fn go(app: &mut App, id: &str) {
         Some(page @ (view::Page::Keyboard | view::Page::Mouse | view::Page::Shortcuts)) => app.input_page = Some(page),
         Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
         Some(view::Page::Appearance) => app.appearance.reread = true,
+        Some(view::Page::NightLight) => night::read(&mut app.night, &config::load(&config::path()).night_light),
         _ => {}
     }
 }
@@ -1825,6 +1857,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "night-light",
+            label: "Night light",
+            icon: "moon",
+            group: "DESKTOP",
+            keywords: "night light nightlight night mode blue light filter warm colour color temperature sunset sunrise \
+                       hyprsunset redshift gammastep schedule",
+            status: night::status(&app.night),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "apps",
             label: "Apps",
             icon: "app",
@@ -2027,6 +2070,7 @@ fn render(window: &MainWindow) {
         sound::render(window, &app.sound);
         power::render(window, &app.power);
         appearance::render(window, &app.appearance);
+        night::render(window, &app.night);
         if std::mem::take(&mut app.appearance.reread) {
             appearance::spawn(window.as_weak());
         }
@@ -4306,6 +4350,43 @@ mod tests {
         assert!(ElementHandle::find_by_accessible_label(&window, "On battery").next().is_none());
         assert!(ElementHandle::find_by_accessible_label(&window, "Limit charging to 80 %").next().is_none());
         control(&window, "Power button", AccessibleRole::RadioGroup);
+    }
+
+    /// Night light (S-177): the switch in the hero, the temperature and the schedule; without
+    /// hyprsunset, how to install it.
+    #[test]
+    fn the_night_light_page_offers_the_switch_temperature_and_schedule() {
+        let window = window();
+        window.set_page("night-light".into());
+        let state = super::night::State {
+            installed: true,
+            enabled: true,
+            temperature: 4000,
+            schedule: "sun".into(),
+            zone: "Europe/Zurich".into(),
+            zone_place: Some((47.38, 8.54)),
+            day: 329,
+            offset: 60,
+            now: 23 * 60,
+            ..Default::default()
+        };
+        window.set_night(super::night::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_night_act(move |verb, value, text| a.borrow_mut().push(format!("{verb} {value} {text}")));
+        assert_eq!(control(&window, "Night light", AccessibleRole::Switch).accessible_checked(), Some(true));
+        assert_eq!(
+            control(&window, "Temperature", AccessibleRole::Slider).accessible_value().as_deref(),
+            Some("4000 K")
+        );
+        control(&window, "Location", AccessibleRole::RadioGroup);
+        ElementHandle::find_by_accessible_label(&window, "Fixed times")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["schedule 1 "]);
+        window.set_night(super::night::view(&super::night::State { installed: false, ..Default::default() }));
+        assert!(ElementHandle::find_by_accessible_label(&window, "Temperature").next().is_none());
     }
 
     /// Appearance (S-176): the apps' style in the hero, the themes and fonts as lists; a choice
