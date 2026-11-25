@@ -69,7 +69,8 @@ showing the signal of the network you're on.
 - **Right-click** for the menu: Wi-Fi, the networks in range, your VPNs, airplane mode, Open
   Lituus, Settings and Quit.
 - **Left-click** for the quick popup: the Wi-Fi switch and the nearest networks, the VPNs, the
-  Bluetooth devices, the volume and airplane mode. `lituus --quick` opens or hides it too.
+  Bluetooth devices, the volume with the apps playing, and airplane mode. `lituus --quick` opens
+  or hides it too.
 
 With a tray, closing the window keeps Lituus running there. Both can be turned off in
 [Settings](/guide/settings/). The window rules that place the popup are on the

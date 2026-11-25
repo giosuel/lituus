@@ -32,6 +32,7 @@ lituus-fs.workspace = true
 lituus-hypr.workspace = true
 lituus-keyring.workspace = true
 lituus-nm.workspace = true
+lituus-power.workspace = true
 lituus-sound.workspace = true
 lituus-system.workspace = true
 lituus-xdg.workspace = true

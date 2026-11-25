@@ -141,8 +141,12 @@ export component Segmented inherits Focusable {
     height: root.details.length > 0 ? 52px : 40px;
     border-radius: 9px;
     border-width: 1px;
-    // Turned off, as a Button: a subtle edge, grey for the choice and faint text.
+    // Drawn as the view switcher is, everywhere (the owner, 2026-11-25: "i like the top one and I
+    // think all of them should look like that"): a control's background, so a hero's glow
+    // doesn't show through, and the choice in the stronger accent tint. Turned off, as a Button:
+    // a subtle edge, no background, grey for the choice and faint text.
     border-color: root.enabled ? Theme.ctrl-border : Theme.border;
+    background: root.enabled ? Theme.ctrl-bg : transparent;
     accessible-role: radio-group;
     accessible-label: label;
     HorizontalLayout {
@@ -153,7 +157,8 @@ export component Segmented inherits Focusable {
             // Measured in the selected (heavier) weight, so choosing an option doesn't resize it.
             min-width: widest.preferred-width + 24px;
             border-radius: 7px;
-            background: i == root.selected ? (root.enabled ? Theme.accent-soft-bg : Theme.ctrl-bg) : option-touch.has-hover && root.enabled ? Theme.hover : transparent;
+            background: i == root.selected ? (!root.enabled ? Theme.ctrl-bg : Theme.accent-soft-border)
+                : option-touch.has-hover && root.enabled ? Theme.hover : transparent;
             accessible-role: radio-button;
             accessible-label: option;
             accessible-checked: i == root.selected;
@@ -204,6 +209,11 @@ export component ViewSwitcher inherits Focusable {
     border-radius: 9px;
     border-width: 1px;
     border-color: Theme.ctrl-border;
+    // A control's own background, as the buttons beside it have: in a hero, the glow behind it
+    // showed through, greener on one side, and the selected view's soft accent was the glow's
+    // own colour (D-55: "the colors seem weird"). The selected view takes the stronger accent
+    // tint, so it stands out on any hero.
+    background: Theme.ctrl-bg;
     accessible-role: tab-list;
     accessible-label: label;
     HorizontalLayout {
@@ -212,7 +222,7 @@ export component ViewSwitcher inherits Focusable {
         for option[i] in root.options: Rectangle {
             min-width: widest.preferred-width + 24px;
             border-radius: 7px;
-            background: i == root.selected ? Theme.accent-soft-bg : view-touch.has-hover ? Theme.hover : transparent;
+            background: i == root.selected ? Theme.accent-soft-border : view-touch.has-hover ? Theme.hover : transparent;
             accessible-role: tab;
             accessible-label: option;
             accessible-item-selected: i == root.selected;
@@ -352,16 +362,18 @@ export component Select inherits Focusable {
     height: select-height;
     border-radius: 8px;
     border-width: 1px;
-    border-color: Theme.ctrl-border;
-    background: self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
+    // Turned off, as a Button: a subtle edge, a control's grey and faint text.
+    border-color: root.enabled ? Theme.ctrl-border : Theme.border;
+    background: !root.enabled ? Theme.ctrl-bg : self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
     accessible-role: combobox;
     accessible-label: label;
     accessible-value: root.options[root.selected];
-    accessible-action-default => { root.open(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.open(); } }
     activated => { root.open(); }
     // Here rather than through `activated`, which would take the focus back from the list.
     key(event) => {
-        if event.text == " " || event.text == Key.Return || event.text == Key.DownArrow || event.text == Key.UpArrow {
+        if root.enabled && (event.text == " " || event.text == Key.Return || event.text == Key.DownArrow || event.text == Key.UpArrow) {
             root.open();
             return accept;
         }
@@ -370,8 +382,8 @@ export component Select inherits Focusable {
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 10px;
-        Text { text: root.options[root.selected]; color: Theme.text; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-        Icon { name: "chevron"; tint: Theme.icon-soft; y: (parent.height - 16px) / 2; }
+        Text { text: root.options[root.selected]; color: root.enabled ? Theme.text : Theme.faint; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { name: "chevron"; tint: root.enabled ? Theme.icon-soft : Theme.faint; y: (parent.height - 16px) / 2; }
     }
     // The list is as wide as its longest option, up to 480 px, and never narrower than the
     // button; it opens left-aligned under it (D-46, the owner on 2026-11-23: long names were cut).
@@ -438,20 +450,22 @@ export component SelectButton inherits Focusable {
     height: root.select-height;
     border-radius: 8px;
     border-width: 1px;
-    border-color: Theme.ctrl-border;
-    background: self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
+    // Turned off as a Select is.
+    border-color: root.enabled ? Theme.ctrl-border : Theme.border;
+    background: !root.enabled ? Theme.ctrl-bg : self.has-hover ? Theme.hovered(Theme.input-bg) : Theme.input-bg;
     accessible-role: combobox;
     accessible-label: root.label;
     accessible-value: root.text;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
     activated => { root.clicked(); }
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
         spacing: 10px;
         @children
-        Text { text: root.text; color: Theme.text; font-size: Type.body; font-family: root.mono ? "JetBrains Mono" : "Inter"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-        Icon { name: "chevron"; tint: Theme.icon-soft; y: (parent.height - 16px) / 2; }
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: Type.body; font-family: root.mono ? "JetBrains Mono" : "Inter"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { name: "chevron"; tint: root.enabled ? Theme.icon-soft : Theme.faint; y: (parent.height - 16px) / 2; }
     }
 }
 
