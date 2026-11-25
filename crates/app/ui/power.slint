@@ -126,10 +126,11 @@ component LockCard inherits Card {
             first: true;
             Switch { on: root.page.lock-before-sleep; enabled: root.page.idle-editable; label: "Lock before suspending"; toggled => { root.act("lock-before-sleep", 0); } }
         }
+        // Turned off with nothing else to choose, or while hypridle.conf isn't Lituus's.
         if root.page.lockers.length > 0: SettingRow {
             label: "Lock screen";
-            description: "The ones installed";
-            Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; enabled: root.page.idle-editable; label: "Lock screen"; options: root.page.lockers; selected: root.page.locker; chosen(i) => { root.act("locker", i); } }
+            description: root.page.lockers.length == 1 ? "The only one installed" : !root.page.idle-editable ? "Once Lituus manages hypridle.conf" : "The ones installed";
+            Select { min-width: 140px; preferred-width: 170px; horizontal-stretch: 0; select-height: Size.field; enabled: root.page.idle-editable && root.page.lockers.length > 1; label: "Lock screen"; options: root.page.lockers; selected: root.page.locker; chosen(i) => { root.act("locker", i); } }
         }
     }
 }
@@ -262,7 +263,7 @@ export component PowerPage inherits VerticalLayout {
             x: parent.width - self.width - 24px;
             y: parent.height - self.height - 26px;
             width: self.preferred-width;
-            hero: true;
+            height: 34px;
             label: "Power profile";
             options: root.page.profiles;
             selected: root.page.profile;

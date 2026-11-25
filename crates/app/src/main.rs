@@ -4336,6 +4336,9 @@ mod tests {
         assert_eq!(options, ["Power saver", "Balanced", "Performance"]);
         control(&window, "Limit charging to 80 %", AccessibleRole::Switch);
         control(&window, "Lock", AccessibleRole::Combobox);
+        // One lock screen: nothing to choose, and it looks it.
+        let locker = control(&window, "Lock screen", AccessibleRole::Combobox);
+        assert_eq!(locker.accessible_enabled(), Some(false));
         control(&window, "On battery", AccessibleRole::RadioGroup);
         control(&window, "Power button", AccessibleRole::RadioGroup);
         ElementHandle::find_by_accessible_label(&window, "Performance")
