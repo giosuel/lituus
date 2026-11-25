@@ -328,7 +328,7 @@ pub(crate) fn running_after_start(program: &str) -> bool {
 fn alive(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
-        .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().chars().next() != Some('Z')))
+        .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| !rest.trim_start().starts_with('Z')))
         .unwrap_or(false)
 }
 
