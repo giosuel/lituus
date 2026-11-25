@@ -2760,6 +2760,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lituus-power"
+version = "0.0.0-dev"
+dependencies = [
+ "futures-util",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "lituus-sound"
 version = "0.0.0-dev"
 dependencies = [
