@@ -129,6 +129,25 @@ fn hyprland_accepts_the_lua_file() {
     let mut text = file(true, Some("Desk + TV"), &rules, &workspaces);
     // The Input part, after the Displays part.
     text = with_section(&text, "Input", &input().file(true));
+    // The Power page's binds, as crates/app/src/power.rs writes them: the lid switch (it runs
+    // `lituus --lid`) and the power key, locked so they work on the lock screen too.
+    text = with_section(
+        &text,
+        "Power",
+        "-- Written by Lituus (Power). Change it in Lituus: the lid and the power button.\n\
+         hl.bind(\"switch:on:Lid Switch\", hl.dsp.exec_cmd(\"lituus --lid\"), { locked = true })\n\
+         hl.bind(\"XF86PowerOff\", hl.dsp.exec_cmd(\"systemctl suspend\"), { locked = true })\n",
+    );
+    // The Appearance page's cursor, as crates/app/src/appearance.rs writes it.
+    text = with_section(
+        &text,
+        "Appearance",
+        "-- Written by Lituus (Appearance). Change it in Lituus: the cursor.\n\
+         hl.env(\"XCURSOR_THEME\", \"Bibata-Modern-Ice\")\n\
+         hl.env(\"XCURSOR_SIZE\", \"24\")\n\
+         hl.env(\"HYPRCURSOR_THEME\", \"Bibata-Modern-Ice\")\n\
+         hl.env(\"HYPRCURSOR_SIZE\", \"24\")\n",
+    );
     // The live forms too: they're what `hyprctl eval` runs.
     for r in &rules {
         text += &r.lua_live(Some(-1));
