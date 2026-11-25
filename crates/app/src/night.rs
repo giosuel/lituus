@@ -305,8 +305,7 @@ fn restart_hyprsunset(weak: &slint::Weak<MainWindow>) {
 }
 
 /// When hyprsunset quits as soon as it's started.
-const NOT_RUNNING: &str =
-    "hyprsunset didn't keep running. Start it in a terminal (hyprsunset) to see why; the page tries again with your next change.";
+const NOT_RUNNING: &str = "hyprsunset didn't keep running. Start it in a terminal (hyprsunset) to see why; the page tries again with your next change.";
 
 /// A choice on the page or in the popup: (verb, number, text).
 pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value: f32, text: &str) {
