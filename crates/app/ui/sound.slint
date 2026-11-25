@@ -1,15 +1,18 @@
-// The Sound page, following the "Lituus: Sound" mockups: the output in use is the hero, with a
-// big volume slider; then devices, apps and cards in tabs. The output and the input in use are
-// each chosen from a list, with that device's settings under it. What it shows comes from Rust
+// The Sound page, following the "Lituus: Sound" mockups and S-157: the output in use is the hero,
+// with a big volume slider. Its first view has the Output and Input cards on the left and the apps
+// playing and recording on the right (stacked in a narrow window); the sound cards' profiles are
+// the second view. The output and the input in use are each chosen from a list, with that
+// device's settings under it. What it shows comes from Rust
 // (src/sound.rs); everything the user does goes back through `act(verb, id, value)`.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, CardTitle, Notice, Scroll, Focusable, Focus } from "controls.slint";
+import { Button, IconButton, Switch, CardTitle, CardFooter, SectionLabel, Notice, Scroll, Focusable, Focus, AppIcon } from "controls.slint";
 import { ViewSwitcher, Select } from "dialogs.slint";
-import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState } from "shell.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, DividerRow, SettingRow, EmptyState } from "shell.slint";
 
-/// An app playing. output: its output's place in `outputs`.
-export struct SoundApp { id: string, name: string, sub: string, volume: float, muted: bool, output: int }
+/// An app playing or recording. output: its output's place in `outputs-names`, or for a
+/// recording its input's place in `record-from` (-1: neither). icon: its own, when has-icon.
+export struct SoundApp { id: string, name: string, sub: string, volume: float, muted: bool, output: int, icon: image, has-icon: bool }
 /// A sound card and its profiles.
 export struct SoundCard { id: string, name: string, profiles: [string], selected: int }
 /// state: "list", "loading" or "not-running" (the empty-* fields say why).
@@ -34,7 +37,15 @@ export struct SoundView {
     input: int,
     in-volume: float,
     in-muted: bool,
+    /// The apps playing, and "2 playing · 1 paused".
     apps: [SoundApp],
+    apps-line: string,
+    /// The apps recording, and their line.
+    recordings: [SoundApp],
+    recordings-line: string,
+    /// What an app can record from: the inputs, then the outputs' monitors.
+    record-from: [string],
+    record-from-details: [string],
     cards: [SoundCard],
     /// The highest volume the sliders go to: 1.0, or 1.5 with "Louder than 100 %" on.
     max: float,
@@ -61,6 +72,8 @@ export component Slider inherits Focusable {
     in property <float> step: 0.05;
     /// Its value for a screen reader, if not a percentage ("300 ms").
     in property <string> value-text;
+    /// Greyed, for a volume that's muted; it still moves.
+    in property <bool> faded;
     callback moved(float);
     property <float> local: value;
     property <bool> dragging: touch.pressed;
@@ -98,7 +111,7 @@ export component Slider inherits Focusable {
             x: 0;
             width: parent.width * root.fraction;
             border-radius: parent.border-radius;
-            background: Theme.accent;
+            background: root.faded ? Theme.faint : Theme.accent;
         }
         if root.mark >= 0: Rectangle {
             x: parent.width * (root.mark - root.minimum) / (root.maximum - root.minimum) - 1px;
@@ -113,7 +126,7 @@ export component Slider inherits Focusable {
         width: root.knob;
         height: root.knob;
         border-radius: root.knob / 2;
-        background: Theme.accent;
+        background: root.faded ? Theme.faint : Theme.accent;
         border-width: 3px;
         border-color: Theme.surface;
     }
@@ -149,6 +162,249 @@ component Percent inherits Text {
     horizontal-alignment: right;
     vertical-alignment: center;
     width: 52px;
+}
+
+/// The output in use: which one, its port, balance, and how loud the sliders go.
+component OutputCard inherits ScrollCard {
+    in property <SoundView> page;
+    callback act(string, string, float);
+    // Setting rows stay at a width where the label is near its control.
+    HorizontalLayout {
+        alignment: start;
+        VerticalLayout {
+            padding: 18px;
+            padding-top: 14px;
+            spacing: 0;
+            alignment: start;
+            preferred-width: 756px;
+            max-width: 756px;
+            horizontal-stretch: 1;
+            CardTitle { text: "Output"; }
+            if root.page.outputs-names.length == 0: Text { text: "No speakers, headphones or other output."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
+            if root.page.outputs-names.length > 0: SettingRow {
+                label: "Output device";
+                description: "Where sound plays";
+                first: true;
+                Select {
+                    min-width: 140px;
+                    preferred-width: 240px;
+                    horizontal-stretch: 0;
+                    select-height: Size.field;
+                    label: "Output device";
+                    options: root.page.outputs-names;
+                    details: root.page.outputs-details;
+                    selected: root.page.output;
+                    chosen(i) => { root.act("default-sink", "", i); }
+                }
+            }
+            if root.page.out-ports.length > 1: SettingRow {
+                label: "Port";
+                description: "Which of its connectors plays";
+                Select {
+                    min-width: 140px;
+                    preferred-width: 240px;
+                    horizontal-stretch: 0;
+                    select-height: Size.field;
+                    label: "Port";
+                    options: root.page.out-ports;
+                    selected: root.page.out-port;
+                    chosen(i) => { root.act("out-port", "" + i, 0); }
+                }
+            }
+            if root.page.has-balance: SettingRow {
+                label: "Balance";
+                HorizontalLayout {
+                    spacing: 14px;
+                    horizontal-stretch: 0;
+                    Text { text: "L"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+                    Slider {
+                        preferred-width: 180px;
+                        label: "Balance";
+                        minimum: -1;
+                        maximum: 1;
+                        mark: 0;
+                        value: root.page.out-balance;
+                        y: (parent.height - self.height) / 2;
+                        moved(v) => { root.act("balance", "", abs(v) < 0.06 ? 0 : v); }
+                    }
+                    Text { text: "R"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+                }
+            }
+            // It changes every volume slider (the input's and the apps' too), so it
+            // sits with the devices rather than under Cards.
+            SettingRow {
+                label: "Louder than 100 %";
+                description: "Lets the volume sliders go to 150 %; sound may distort";
+                first: root.page.outputs-names.length == 0;
+                Switch { on: root.page.overamplify; label: "Louder than 100 %"; toggled => { root.act("overamplify", "", 0); } }
+            }
+        }
+    }
+}
+
+/// The input in use: which one, and its volume.
+component InputCard inherits ScrollCard {
+    in property <SoundView> page;
+    callback act(string, string, float);
+    HorizontalLayout {
+        alignment: start;
+        VerticalLayout {
+            padding: 18px;
+            padding-top: 14px;
+            spacing: 0;
+            alignment: start;
+            preferred-width: 756px;
+            max-width: 756px;
+            horizontal-stretch: 1;
+            CardTitle { text: "Input"; }
+            if root.page.inputs-names.length == 0: Text { text: "No microphone or other input."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
+            if root.page.inputs-names.length > 0: SettingRow {
+                label: "Input device";
+                description: "What apps hear";
+                first: true;
+                Select {
+                    min-width: 140px;
+                    preferred-width: 240px;
+                    horizontal-stretch: 0;
+                    select-height: Size.field;
+                    label: "Input device";
+                    options: root.page.inputs-names;
+                    details: root.page.inputs-details;
+                    selected: root.page.input;
+                    chosen(i) => { root.act("default-source", "", i); }
+                }
+            }
+            // Muted the way the output and the apps are: the button beside its slider.
+            if root.page.inputs-names.length > 0: SettingRow {
+                label: "Volume";
+                description: root.page.in-muted ? "Muted in every app" : "";
+                HorizontalLayout {
+                    spacing: 12px;
+                    horizontal-stretch: 0;
+                    IconButton {
+                        icon: root.page.in-muted ? "mic-off" : "mic";
+                        label: root.page.in-muted ? "Unmute the input" : "Mute the input";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.act("in-mute", "", 0); }
+                    }
+                    Slider {
+                        preferred-width: 180px;
+                        label: "Input volume";
+                        value: root.page.in-volume;
+                        maximum: root.page.max;
+                        mark: root.page.max > 1 ? 1 : -1;
+                        y: (parent.height - self.height) / 2;
+                        moved(v) => { root.act("in-volume", "", v); }
+                    }
+                    Percent { value: root.page.in-volume; muted: root.page.in-muted; }
+                }
+            }
+        }
+    }
+}
+
+/// A group's label in the Apps card, with how many there are on the right.
+component GroupLine inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> line;
+    height: 28px;
+    SectionLabel { text: root.text; vertical-alignment: center; horizontal-stretch: 1; }
+    Text { text: root.line; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+}
+
+/// An app playing or recording: its icon (crossed out when muted), its name and what it plays,
+/// mute, volume, and the output it plays on or the input it records from.
+component StreamRow inherits DividerRow {
+    in property <SoundApp> app;
+    in property <bool> recording;
+    in property <float> max;
+    in property <[string]> devices;
+    in property <[string]> details;
+    callback act(string, string, float);
+    property <string> verb: root.recording ? "rec-" : "app-";
+    min-height: 56px;
+    HorizontalLayout {
+        spacing: 12px;
+        AppIcon { picture: root.app.icon; has-picture: root.app.has-icon; crossed: root.app.muted; size: 24px; y: (parent.height - self.height) / 2; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            // The name gives way to the slider's least width in a narrow card.
+            min-width: 100px;
+            preferred-width: 200px;
+            horizontal-stretch: 0;
+            Text { text: root.app.name; color: Theme.text; font-size: Type.body; overflow: elide; }
+            if root.app.sub != "": Text { text: root.app.sub; color: Theme.faint; font-size: Type.note; overflow: elide; }
+        }
+        IconButton {
+            icon: root.recording ? (root.app.muted ? "mic-off" : "mic") : (root.app.muted ? "volume-off" : "volume");
+            label: (root.app.muted ? "Unmute " : "Mute ") + root.app.name + (root.recording ? " recording" : "");
+            focus-key: root.verb + "mute:" + root.app.id;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.act(root.verb + "mute", root.app.id, 0); }
+        }
+        Slider {
+            horizontal-stretch: 1;
+            label: root.app.name + (root.recording ? " recording volume" : " volume");
+            focus-key: root.verb + "volume:" + root.app.id;
+            value: root.app.volume;
+            maximum: root.max;
+            mark: root.max > 1 ? 1 : -1;
+            y: (parent.height - self.height) / 2;
+            moved(v) => { root.act(root.verb + "volume", root.app.id, v); }
+        }
+        Percent { value: root.app.volume; muted: root.app.muted; }
+        Select {
+            width: 190px;
+            select-height: Size.field;
+            label: (root.recording ? "Input for " : "Output for ") + root.app.name;
+            focus-key: (root.recording ? "rec-input:" : "app-output:") + root.app.id;
+            options: root.devices;
+            details: root.details;
+            selected: root.app.output;
+            y: (parent.height - self.height) / 2;
+            chosen(i) => { root.act(root.recording ? "rec-input" : "app-output", root.app.id, i); }
+        }
+    }
+}
+
+/// The apps playing, and those recording while any do; each row is one stream.
+component AppsCard inherits ScrollCard {
+    in property <SoundView> page;
+    callback act(string, string, float);
+    // The note stays at the bottom of a tall card.
+    fill: true;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        spacing: 0;
+        CardTitle { text: "Apps"; }
+        GroupLine { text: "PLAYING"; line: root.page.apps-line; }
+        if root.page.apps.length == 0: Text { text: "No app is playing sound."; color: Theme.faint; font-size: Type.body; height: 48px; vertical-alignment: center; }
+        for a[i] in root.page.apps: StreamRow {
+            app: a;
+            first: i == 0;
+            max: root.page.max;
+            devices: root.page.outputs-names;
+            details: root.page.outputs-details;
+            act(v, id, x) => { root.act(v, id, x); }
+        }
+        if root.page.recordings.length > 0: VerticalLayout {
+            padding-top: 14px;
+            GroupLine { text: "RECORDING"; line: root.page.recordings-line; }
+        }
+        for a[i] in root.page.recordings: StreamRow {
+            app: a;
+            first: i == 0;
+            recording: true;
+            max: root.page.max;
+            devices: root.page.record-from;
+            details: root.page.record-from-details;
+            act(v, id, x) => { root.act(v, id, x); }
+        }
+        Rectangle { vertical-stretch: 1; min-height: 14px; }
+        CardFooter { text: "Each row is one stream: an app on a call plays and records, so it has a row in each. Moving one moves only that app; the output and input in use stay as they are."; }
+    }
 }
 
 export component SoundPage inherits VerticalLayout {
@@ -199,10 +455,10 @@ export component SoundPage inherits VerticalLayout {
             y: 18px;
             width: self.preferred-width;
             height: 34px;
-            if root.page.state == "list": ViewSwitcher {
+            // Cards only when there's a card with profiles to choose; otherwise there's one view.
+            if root.page.state == "list" && root.page.cards.length > 0: ViewSwitcher {
                 label: "Sound";
-                // Cards only when there's a card with profiles to choose.
-                options: root.page.cards.length > 0 ? ["Devices", "Apps", "Cards"] : ["Devices", "Apps"];
+                options: ["Devices and apps", "Cards"];
                 selected <=> root.tab;
             }
         }
@@ -210,7 +466,12 @@ export component SoundPage inherits VerticalLayout {
 
     // Below the hero the cards reach the bottom and scroll inside; the page scrolls only when
     // the window is too short for them.
-    Scroll {
+    body := Scroll {
+        // Two columns when the apps' rows fit beside Output and Input, as in the mockup; in one
+        // column the cards keep their height and the page scrolls.
+        property <bool> two-columns: self.width >= 1240px;
+        // The columns follow its width, so its least width can't follow them.
+        min-width: 0;
         vertical-stretch: 1;
         fill: true;
         spacing: 14px;
@@ -223,207 +484,38 @@ export component SoundPage inherits VerticalLayout {
             dismissed => { root.act("dismiss", "", 0); }
         }
 
-        if root.page.state == "list" && (root.tab == 0 || (root.tab > 1 && root.page.cards.length == 0)): HorizontalLayout {
+        if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && body.two-columns: HorizontalLayout {
             spacing: 14px;
             vertical-stretch: 1;
-            ScrollCard {
+            // The same preferred width, so they share the row evenly.
+            VerticalLayout {
+                preferred-width: 420px;
                 horizontal-stretch: 1;
-                // Setting rows stay at a width where the label is near its control.
-                HorizontalLayout {
-                    alignment: start;
-                    VerticalLayout {
-                        padding: 18px;
-                        padding-top: 14px;
-                        spacing: 0;
-                        alignment: start;
-                        preferred-width: 756px;
-                        max-width: 756px;
-                        horizontal-stretch: 1;
-                        CardTitle { text: "Output"; }
-                        if root.page.outputs-names.length == 0: Text { text: "No speakers, headphones or other output."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
-                        if root.page.outputs-names.length > 0: SettingRow {
-                            label: "Output device";
-                            description: "Where sound plays";
-                            first: true;
-                            Select {
-                                min-width: 140px;
-                                preferred-width: 240px;
-                                horizontal-stretch: 0;
-                                select-height: Size.field;
-                                label: "Output device";
-                                options: root.page.outputs-names;
-                                details: root.page.outputs-details;
-                                selected: root.page.output;
-                                chosen(i) => { root.act("default-sink", "", i); }
-                            }
-                        }
-                        if root.page.out-ports.length > 1: SettingRow {
-                            label: "Port";
-                            description: "Which of its connectors plays";
-                            Select {
-                                min-width: 140px;
-                                preferred-width: 240px;
-                                horizontal-stretch: 0;
-                                select-height: Size.field;
-                                label: "Port";
-                                options: root.page.out-ports;
-                                selected: root.page.out-port;
-                                chosen(i) => { root.act("out-port", "" + i, 0); }
-                            }
-                        }
-                        if root.page.has-balance: SettingRow {
-                            label: "Balance";
-                            HorizontalLayout {
-                                spacing: 14px;
-                                horizontal-stretch: 0;
-                                Text { text: "L"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
-                                Slider {
-                                    preferred-width: 180px;
-                                    label: "Balance";
-                                    minimum: -1;
-                                    maximum: 1;
-                                    mark: 0;
-                                    value: root.page.out-balance;
-                                    y: (parent.height - self.height) / 2;
-                                    moved(v) => { root.act("balance", "", abs(v) < 0.06 ? 0 : v); }
-                                }
-                                Text { text: "R"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
-                            }
-                        }
-                        // It changes every volume slider (the input's and the apps' too), so it
-                        // sits with the devices rather than under Cards.
-                        SettingRow {
-                            label: "Louder than 100 %";
-                            description: "Lets the volume sliders go to 150 %; sound may distort";
-                            first: root.page.outputs-names.length == 0;
-                            Switch { on: root.page.overamplify; label: "Louder than 100 %"; toggled => { root.act("overamplify", "", 0); } }
-                        }
-                    }
-                }
+                spacing: 14px;
+                OutputCard { whole: true; vertical-stretch: 0; page: root.page; act(v, id, x) => { root.act(v, id, x); } }
+                InputCard { page: root.page; act(v, id, x) => { root.act(v, id, x); } }
             }
-            ScrollCard {
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    alignment: start;
-                    VerticalLayout {
-                        padding: 18px;
-                        padding-top: 14px;
-                        spacing: 0;
-                        alignment: start;
-                        preferred-width: 756px;
-                        max-width: 756px;
-                        horizontal-stretch: 1;
-                        CardTitle { text: "Input"; }
-                        if root.page.inputs-names.length == 0: Text { text: "No microphone or other input."; color: Theme.faint; font-size: Type.note; height: 40px; vertical-alignment: center; }
-                        if root.page.inputs-names.length > 0: SettingRow {
-                            label: "Input device";
-                            description: "What apps hear";
-                            first: true;
-                            Select {
-                                min-width: 140px;
-                                preferred-width: 240px;
-                                horizontal-stretch: 0;
-                                select-height: Size.field;
-                                label: "Input device";
-                                options: root.page.inputs-names;
-                                details: root.page.inputs-details;
-                                selected: root.page.input;
-                                chosen(i) => { root.act("default-source", "", i); }
-                            }
-                        }
-                        // Muted the way the output and the apps are: the button beside its slider.
-                        if root.page.inputs-names.length > 0: SettingRow {
-                            label: "Volume";
-                            description: root.page.in-muted ? "Muted in every app" : "";
-                            HorizontalLayout {
-                                spacing: 12px;
-                                horizontal-stretch: 0;
-                                IconButton {
-                                    icon: root.page.in-muted ? "mic-off" : "mic";
-                                    label: root.page.in-muted ? "Unmute the input" : "Mute the input";
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.act("in-mute", "", 0); }
-                                }
-                                Slider {
-                                    preferred-width: 180px;
-                                    label: "Input volume";
-                                    value: root.page.in-volume;
-                                    maximum: root.page.max;
-                                    mark: root.page.max > 1 ? 1 : -1;
-                                    y: (parent.height - self.height) / 2;
-                                    moved(v) => { root.act("in-volume", "", v); }
-                                }
-                                Percent { value: root.page.in-volume; muted: root.page.in-muted; }
-                            }
-                        }
-                    }
-                }
-            }
+            AppsCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, id, x) => { root.act(v, id, x); } }
+        }
+        if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && !body.two-columns: OutputCard {
+            whole: true;
+            vertical-stretch: 0;
+            page: root.page;
+            act(v, id, x) => { root.act(v, id, x); }
+        }
+        if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && !body.two-columns: InputCard {
+            whole: true;
+            vertical-stretch: 0;
+            page: root.page;
+            act(v, id, x) => { root.act(v, id, x); }
+        }
+        if root.page.state == "list" && (root.tab == 0 || root.page.cards.length == 0) && !body.two-columns: AppsCard {
+            whole: true;
+            page: root.page;
+            act(v, id, x) => { root.act(v, id, x); }
         }
 
-        if root.page.state == "list" && root.tab == 1: ScrollCard {
-            HorizontalLayout {
-                alignment: start;
-                apps := VerticalLayout {
-                    padding: 18px;
-                    padding-top: 14px;
-                    spacing: 0;
-                    alignment: start;
-                    preferred-width: 756px;
-                    max-width: 756px;
-                    horizontal-stretch: 1;
-                    HorizontalLayout {
-                        height: 30px;
-                        CardTitle { text: "Apps"; horizontal-stretch: 1; }
-                        Text { text: root.page.apps.length == 1 ? "1 playing" : root.page.apps.length + " playing"; color: Theme.muted; font-size: Type.note; }
-                    }
-                    if root.page.apps.length == 0: Text { text: "No app is playing sound."; color: Theme.faint; font-size: Type.body; height: 48px; vertical-alignment: center; }
-                    for a[i] in root.page.apps: HorizontalLayout {
-                        min-height: 56px;
-                        spacing: 12px;
-                        Icon { name: "app"; tint: Theme.muted; size: 17px; y: (parent.height - 17px) / 2; }
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 2px;
-                            width: 200px;
-                            Text { text: a.name; color: Theme.text; font-size: Type.body; overflow: elide; }
-                            if a.sub != "": Text { text: a.sub; color: Theme.faint; font-size: Type.note; overflow: elide; }
-                        }
-                        IconButton {
-                            icon: a.muted ? "volume-off" : "volume";
-                            label: a.muted ? "Unmute " + a.name : "Mute " + a.name;
-                            focus-key: "app-mute:" + a.id;
-                            y: (parent.height - self.height) / 2;
-                            clicked => { root.act("app-mute", a.id, 0); }
-                        }
-                        Slider {
-                            horizontal-stretch: 1;
-                            label: a.name + " volume";
-                            focus-key: "app-volume:" + a.id;
-                            value: a.volume;
-                            maximum: root.page.max;
-                            mark: root.page.max > 1 ? 1 : -1;
-                            y: (parent.height - self.height) / 2;
-                            moved(v) => { root.act("app-volume", a.id, v); }
-                        }
-                        Percent { value: a.volume; muted: a.muted; }
-                        Select {
-                            width: 190px;
-                            select-height: Size.field;
-                            label: "Output for " + a.name;
-                            focus-key: "app-output:" + a.id;
-                            options: root.page.outputs-names;
-                            details: root.page.outputs-details;
-                            selected: a.output;
-                            y: (parent.height - self.height) / 2;
-                            chosen(i) => { root.act("app-output", a.id, i); }
-                        }
-                    }
-                }
-            }
-        }
-
-        if root.page.state == "list" && root.tab == 2 && root.page.cards.length > 0: ScrollCard {
+        if root.page.state == "list" && root.tab == 1 && root.page.cards.length > 0: ScrollCard {
             HorizontalLayout {
                 alignment: start;
                 cards := VerticalLayout {

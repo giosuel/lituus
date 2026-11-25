@@ -656,6 +656,59 @@ export component Link inherits Focusable {
     link-text := Text { text: root.text; color: root.has-hover ? Theme.text : root.link-color; font-size: root.font-size; vertical-alignment: center; }
 }
 
+/// An app's own icon (from its icon theme), or the line icon for an app when it has none.
+/// `crossed`: faded and struck through, for an app that's muted.
+export component AppIcon inherits Rectangle {
+    in property <image> picture;
+    in property <bool> has-picture;
+    in property <bool> crossed;
+    in property <length> size: 20px;
+    width: root.size;
+    height: root.size;
+    Image { source: root.picture; width: root.size; height: root.size; image-fit: contain; visible: root.has-picture; opacity: root.crossed ? 0.45 : 1; }
+    Icon { name: root.has-picture ? "" : "app"; size: root.size * 0.85; tint: Theme.icon-soft; opacity: root.crossed ? 0.45 : 1; }
+    // The stroke has the surface's colour round it, so it reads over any icon.
+    Path {
+        visible: root.crossed;
+        width: root.size;
+        height: root.size;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M 2 18 L 18 2";
+        stroke: Theme.surface;
+        stroke-width: 4px;
+    }
+    Path {
+        visible: root.crossed;
+        width: root.size;
+        height: root.size;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M 2 18 L 18 2";
+        stroke: Theme.text;
+        stroke-width: 1.6px;
+    }
+}
+
+/// An app's icon as a button, as the quick popup's apps have it: a click mutes or unmutes it.
+export component AppButton inherits Focusable {
+    in property <image> picture;
+    in property <bool> has-picture;
+    in property <bool> crossed;
+    in property <string> label;
+    in property <length> size: 32px;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: 8px;
+    background: self.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { clicked(); }
+    activated => { root.clicked(); }
+    AppIcon { picture: root.picture; has-picture: root.has-picture; crossed: root.crossed; }
+}
+
 /// A line icon on a small square (D-46): 32 px in facts, 36 px in rows that lead with one.
 export component IconTile inherits Rectangle {
     in property <string> icon;
