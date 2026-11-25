@@ -51,7 +51,8 @@ if command -v pipewire >/dev/null && command -v wireplumber >/dev/null && comman
   }
   node speakers Speakers Audio/Sink
   node tv TV Audio/Sink
-  node mic Microphone Audio/Source
+  # Virtual: a plain null source fails to start when an app records from it (PipeWire 1.6).
+  node mic Microphone Audio/Source/Virtual
   # PIPEWIRE_RUNTIME_DIR: the recording test's pw-record joins the same PipeWire.
   export PULSE_SERVER="unix:$pw/pulse/native" PIPEWIRE_RUNTIME_DIR="$pw" LITUUS_SOUND_TEST=1
 else
