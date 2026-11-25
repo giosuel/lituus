@@ -326,6 +326,11 @@ fn stream(s: protocol::SinkInputInfo) -> Stream {
         app: if app.is_empty() { lossy(&s.name) } else { app },
         title,
         icon: prop(&s.props, "application.icon_name"),
+        binary: prop(&s.props, "application.process.binary"),
+        app_id: [prop(&s.props, "application.id"), prop(&s.props, "pipewire.access.portal.app_id")]
+            .into_iter()
+            .find(|v| !v.is_empty())
+            .unwrap_or_default(),
         sink: s.sink_index,
         volume: volume(&s.cvolume, &s.channel_map),
         muted: s.muted,

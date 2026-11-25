@@ -183,10 +183,10 @@ struct App {
     quick: quick::Quick,
     /// The popup was just made, and needs everything once.
     quick_new: bool,
-    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume (see
-    /// `sound::quick`), as last shown.
+    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume with the
+    /// apps playing (see `sound::quick`), as last shown.
     quick_bt: (Option<bool>, Vec<bluetooth::QuickDevice>),
-    quick_sound: Option<(f32, bool, f32)>,
+    quick_sound: Option<sound::Quick>,
     notifier: Option<notify::Notifier>,
     /// The Bluetooth page.
     bt: bluetooth::State,
@@ -659,6 +659,32 @@ fn toggle_quick(window: &MainWindow) {
                 })
             }
         });
+        popup.on_app_volume_moved({
+            let main = window.as_weak();
+            move |id, v| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-volume", &id, v);
+                })
+            }
+        });
+        popup.on_app_mute_clicked({
+            let main = window.as_weak();
+            move |id| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-mute", &id, 0.0);
+                })
+            }
+        });
+        popup.on_apps_more_clicked({
+            let main = window.as_weak();
+            move || {
+                let Some(window) = main.upgrade() else { return };
+                hide_quick();
+                update(&main, |app| go(app, "sound"));
+                window.set_sound_tab(1);
+                let _ = window.show();
+            }
+        });
         popup.on_airplane_switched({
             let main = window.as_weak();
             move || {
@@ -764,10 +790,12 @@ fn render_quick(app: &mut App, airplane: bool) {
                 .collect(),
         ));
         popup.set_sound_available(sound.is_some());
-        if let Some((volume, muted, max)) = sound {
-            popup.set_volume(volume);
-            popup.set_muted(muted);
-            popup.set_volume_max(max);
+        if let Some(sound) = &sound {
+            popup.set_volume(sound.volume);
+            popup.set_muted(sound.muted);
+            popup.set_volume_max(sound.max);
+            popup.set_apps(sound::quick_rows(&sound.apps));
+            popup.set_apps_more(sound.more as i32);
         }
         popup.set_airplane(q.airplane);
     });
@@ -4654,6 +4682,46 @@ mod tests {
         assert_eq!(disconnect, 2);
     }
 
+    /// The quick popup's apps: a click on an app's icon mutes it, its slider sets its volume, and
+    /// the apps beyond the first three are a link to the Sound page.
+    #[test]
+    fn the_quick_popups_apps_mute_move_and_lead_to_the_page() {
+        use super::{QuickWindow, SoundApp};
+        i_slint_backend_testing::init_no_event_loop();
+        let popup = QuickWindow::new().unwrap();
+        popup.set_sound_available(true);
+        popup.set_volume(0.8);
+        let firefox = SoundApp {
+            id: "7".into(),
+            name: "Firefox".into(),
+            sub: "YouTube".into(),
+            volume: 0.5,
+            ..Default::default()
+        };
+        popup.set_apps(super::model(vec![firefox.clone()]));
+        popup.set_apps_more(2);
+        let events = Rc::new(RefCell::new(Vec::<String>::new()));
+        let e = events.clone();
+        popup.on_app_mute_clicked(move |id| e.borrow_mut().push(format!("mute {id}")));
+        let e = events.clone();
+        popup.on_app_volume_moved(move |id, v| e.borrow_mut().push(format!("volume {id} {v:.2}")));
+        let e = events.clone();
+        popup.on_apps_more_clicked(move || e.borrow_mut().push("more".into()));
+        popup.show().unwrap();
+        let find = |label: &str, role: AccessibleRole| {
+            ElementHandle::find_by_accessible_label(&popup, label)
+                .find(|e| e.accessible_role() == Some(role))
+                .expect(label)
+        };
+        find("Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        find("Firefox volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        find("2 more on the Sound page", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*events.borrow(), ["mute 7", "volume 7 0.55", "more"]);
+        // Muted, its button says it unmutes.
+        popup.set_apps(super::model(vec![SoundApp { muted: true, ..firefox }]));
+        find("Unmute Firefox", AccessibleRole::Button);
+    }
+
     /// The views of a page are tabs, top right in its hero, and a card's views are tabs too; a
     /// value chosen from a few (Rotation, Mode) is a radio group.
     #[test]
@@ -5179,7 +5247,7 @@ mod tests {
     }
 
     /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
-    fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
+    fn drag(window: &impl ComponentHandle, slider: &ElementHandle, from: f32, to: f32) {
         let (p, s) = (slider.absolute_position(), slider.size());
         let at = |f: f32| LogicalPosition::new(p.x + s.width * f, p.y + s.height / 2.0);
         window.window().dispatch_event(WindowEvent::PointerMoved { position: at(from) });
@@ -5228,6 +5296,50 @@ mod tests {
         drag(&window, &control(&window, "Firefox volume", AccessibleRole::Slider), 0.3, 0.8);
         let last = *got.borrow().last().expect("the press moves it");
         assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The same for an app's slider in the quick popup: it keeps its rows from one render to the
+    /// next too.
+    #[test]
+    fn an_app_slider_in_the_quick_popup_can_be_dragged() {
+        let window = window();
+        super::APP.with(|app| {
+            app.borrow_mut().sound.snapshot = Some(lituus_sound::Snapshot {
+                default_sink: Some("speakers".into()),
+                sinks: vec![lituus_sound::Device {
+                    index: 40,
+                    name: "speakers".into(),
+                    description: "Speakers".into(),
+                    volume: volume(0.5),
+                    ..Default::default()
+                }],
+                streams: vec![lituus_sound::Stream {
+                    index: 7,
+                    app: "Firefox".into(),
+                    sink: 40,
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        });
+        super::toggle_quick(&window);
+        let popup = super::QUICK.with(|q| q.borrow().as_ref().map(|p| p.clone_strong())).expect("the popup");
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // As the app does: the change renders at once, and PulseAudio's answer does again.
+        popup.on_app_volume_moved(move |_, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |_| {});
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().streams[0].volume = volume(v));
+        });
+        let slider = ElementHandle::find_by_accessible_label(&popup, "Firefox volume")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Slider))
+            .expect("Firefox's slider");
+        drag(&popup, &slider, 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+        super::hide_quick();
     }
 
     /// The same for a slider in a row of the command palette.
