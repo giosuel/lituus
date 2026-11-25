@@ -1,7 +1,7 @@
 //! The Night light page (D-57, S-177 to S-179) and the quick popup's row: hyprsunset warms the
 //! screens. The temperature changes at once through its IPC (`hyprctl hyprsunset`); the schedule
-//! goes to hyprsunset.conf as two profiles, read when hyprsunset starts, so it's started again
-//! after a change. Sunset and sunrise come from the time zone's place in zone1970.tab (or a
+//! goes to hyprsunset.conf as two profiles (one, all the time), read when hyprsunset starts, so
+//! it's started again after a change. Sunset and sunrise come from the time zone's place in zone1970.tab (or a
 //! location typed in), and are written again as the days get longer or shorter, while Lituus runs.
 
 use std::path::PathBuf;
@@ -21,6 +21,8 @@ pub const WARMEST: u32 = 2500;
 pub struct State {
     pub installed: bool,
     pub enabled: bool,
+    /// On all the time, not only on its schedule.
+    pub always: bool,
     pub temperature: u32,
     /// "sun" (sunset to sunrise) or "times".
     pub schedule: String,
@@ -39,8 +41,9 @@ pub struct State {
     pub install: String,
     /// Counts the times typed and refused: the field shows the time in use again.
     pub refused: i32,
-    /// What the schedule file says now: its two times, to notice when the sun's move.
-    pub(crate) written: Option<(u32, u32)>,
+    /// hyprsunset.conf as Lituus last wrote it (none: someone else's, or none at all), to notice
+    /// when the sun's times move.
+    pub(crate) written: Option<String>,
     pub(crate) restarts: u64,
 }
 
@@ -53,6 +56,7 @@ pub fn path() -> PathBuf {
 pub fn read(state: &mut State, config: &crate::config::NightLightConfig) {
     state.installed = crate::power::installed("hyprsunset");
     state.enabled = config.enabled;
+    state.always = config.always;
     state.temperature = config.temperature.clamp(WARMEST, COOLEST);
     state.schedule = if config.schedule == "times" { "times".into() } else { "sun".into() };
     state.from = config.from.clone();
@@ -60,18 +64,14 @@ pub fn read(state: &mut State, config: &crate::config::NightLightConfig) {
     state.manual = (config.location == "manual").then_some((config.latitude, config.longitude));
     state.zone = zone();
     state.zone_place = place(&state.zone);
-    state.written = std::fs::read_to_string(path()).ok().and_then(|text| written(&text));
+    state.written = std::fs::read_to_string(path()).ok().filter(|text| ours(text));
     state.install = install_command(&std::fs::read_to_string("/etc/os-release").unwrap_or_default());
     clock(state);
 }
 
-/// The two times in a hyprsunset.conf Lituus wrote; `None` for anyone else's.
-fn written(text: &str) -> Option<(u32, u32)> {
-    if text.lines().next() != Some(HEADER) {
-        return None;
-    }
-    let mut times = text.lines().filter_map(|l| l.trim().strip_prefix("time = ")).filter_map(parse_time);
-    Some((times.next()?, times.next()?))
+/// A hyprsunset.conf Lituus wrote.
+fn ours(text: &str) -> bool {
+    text.lines().next() == Some(HEADER)
 }
 
 /// The line that installs hyprsunset, from os-release's ID and ID_LIKE; empty when unknown.
@@ -104,13 +104,34 @@ pub fn ensure_running(state: &State) {
 }
 
 /// What hyprsunset shows now, at once (its IPC): the temperature, or the screens as they are.
+/// When it isn't running (Night light off since Lituus started), it's started first: it reads
+/// the file just written, then takes the temperature.
 fn show(warm: Option<u32>) {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let args: Vec<String> = match warm {
         Some(t) => vec!["temperature".into(), t.to_string()],
         None => vec!["identity".into()],
     };
     std::thread::spawn(move || {
-        let _ = std::process::Command::new("hyprctl").arg("hyprsunset").args(&args).output();
+        let _one = ONE_AT_A_TIME.lock();
+        let send = || {
+            std::process::Command::new("hyprctl")
+                .arg("hyprsunset")
+                .args(&args)
+                .output()
+                .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).contains("Couldn't"))
+        };
+        if send() || !crate::power::pids("hyprsunset").is_empty() {
+            return;
+        }
+        crate::power::start("hyprsunset");
+        // Its socket comes a moment after it starts.
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
+            if send() {
+                return;
+            }
+        }
     });
 }
 
@@ -224,15 +245,17 @@ fn on_at(now: u32, (on, off): (u32, u32)) -> bool {
 }
 
 pub fn is_on(state: &State) -> bool {
-    state.enabled && times(state).is_some_and(|t| on_at(state.now, t))
+    state.enabled && (state.always || times(state).is_some_and(|t| on_at(state.now, t)))
 }
 
 /// hyprsunset.conf for these choices. hyprsunset applies, when it starts, the profile whose time
 /// passed last (wrapping round midnight); with none it would start at its own 6000 K, so off is
-/// one profile, the screens as they are all day.
+/// one profile, the screens as they are all day, and all the time one with the temperature.
 pub fn conf(state: &State) -> String {
     let mut out = format!("{HEADER}\n");
-    if let (true, Some((on, off))) = (state.enabled, times(state)) {
+    if state.enabled && state.always {
+        out.push_str(&format!("\nprofile {{\n    time = 00:00\n    temperature = {}\n}}\n", state.temperature));
+    } else if let (true, Some((on, off))) = (state.enabled, times(state)) {
         out.push_str(&format!(
             "\nprofile {{\n    time = {}\n    temperature = {}\n}}\n\nprofile {{\n    time = {}\n    identity = true\n}}\n",
             time_text(on),
@@ -246,10 +269,10 @@ pub fn conf(state: &State) -> String {
 }
 
 /// Writes the schedule (keeping someone else's file once, as .bak), and has hyprsunset show it:
-/// at once through its IPC, and started again a moment later so it reads the new times. `preview`
-/// shows the temperature even when it's off now (the slider being moved); the restart then goes
-/// back to what the schedule says.
-fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, restart: bool, preview: bool) {
+/// at once through its IPC, and started again `after` the last change so it reads the new times.
+/// `preview` shows the temperature even when it's off now (the slider being moved); the restart
+/// then goes back to what the schedule says.
+fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, after: Duration, preview: bool) {
     if !state.installed {
         return;
     }
@@ -260,19 +283,20 @@ fn apply(weak: &slint::Weak<MainWindow>, state: &mut State, restart: bool, previ
         let _ = std::fs::copy(&path, path.with_extension("conf.bak"));
     }
     let _ = std::fs::create_dir_all(lituus_hypr::config_dir());
-    if let Err(e) = lituus_fs::write_atomic(&path, conf(state)) {
+    let text = conf(state);
+    if let Err(e) = lituus_fs::write_atomic(&path, &text) {
         state.error = Some(format!("Couldn't save hyprsunset.conf: {e}"));
         return;
     }
-    state.written = times(state);
+    state.written = Some(text);
     show((preview || is_on(state)).then_some(state.temperature));
-    if restart {
+    {
         state.restarts += 1;
         let ticket = state.restarts;
         let weak = weak.clone();
         // A slider being dragged restarts it once, after the last move.
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(800));
+            std::thread::sleep(after);
             let weak2 = weak.clone();
             let _ = weak.upgrade_in_event_loop(move |_| {
                 update(&weak2, |app| {
@@ -304,6 +328,11 @@ fn restart_hyprsunset(weak: &slint::Weak<MainWindow>) {
     });
 }
 
+/// hyprsunset is started again this long after a change (after the last of several at once).
+const SOON: Duration = Duration::from_millis(800);
+/// How long a temperature moved to shows before the screens go back to the schedule.
+const PREVIEW: Duration = Duration::from_secs(3);
+
 /// When hyprsunset quits as soon as it's started.
 const NOT_RUNNING: &str = "hyprsunset didn't keep running. Start it in a terminal (hyprsunset) to see why; the page tries again with your next change.";
 
@@ -315,26 +344,31 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
     };
     match verb {
         "dismiss" | "copied" => state.error = None,
-        // Hold to compare: the other way while held (without it when it's on, with it when off).
-        "compare" => show((!is_on(state)).then_some(state.temperature)),
-        "compare-end" => show(is_on(state).then_some(state.temperature)),
         "switch" => {
             state.enabled = !state.enabled;
             save("enabled", state.enabled.into());
-            apply(weak, state, true, false);
+            apply(weak, state, SOON, false);
         }
+        "always" => {
+            state.always = !state.always;
+            save("always", state.always.into());
+            apply(weak, state, SOON, false);
+        }
+        // Shown at once, also by day or with Night light off; back to the schedule a few
+        // seconds after the last move (the owner, 2026-11-25: "just briefly show the night light
+        // for a few seconds everytime the slider is moved").
         "temperature" => {
             let t = ((value.clamp(WARMEST as f32, COOLEST as f32) / 100.0).round() * 100.0) as u32;
             if t != state.temperature {
                 state.temperature = t;
                 save("temperature", i64::from(t).into());
-                apply(weak, state, true, true);
+                apply(weak, state, PREVIEW, true);
             }
         }
         "schedule" => {
             state.schedule = if value as i32 == 1 { "times".into() } else { "sun".into() };
             save("schedule", state.schedule.as_str().into());
-            apply(weak, state, true, false);
+            apply(weak, state, SOON, false);
         }
         "from" | "to" => {
             if parse_time(text).is_none() {
@@ -349,7 +383,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
                 state.to = t.clone();
             }
             save(verb, t.as_str().into());
-            apply(weak, state, true, false);
+            apply(weak, state, SOON, false);
         }
         "location" => {
             if value as i32 == 1 {
@@ -359,7 +393,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
                 state.manual = None;
                 save("location", "zone".into());
             }
-            apply(weak, state, true, false);
+            apply(weak, state, SOON, false);
         }
         "latitude" | "longitude" => {
             let Ok(v) = text.trim().replace(',', ".").parse::<f64>() else {
@@ -371,7 +405,7 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
             state.manual =
                 Some(if verb == "latitude" { (v.clamp(-90.0, 90.0), lon) } else { (lat, v.clamp(-180.0, 180.0)) });
             save(verb, v.into());
-            apply(weak, state, true, false);
+            apply(weak, state, SOON, false);
         }
         _ => {}
     }
@@ -403,8 +437,9 @@ pub fn spawn(weak: slint::Weak<MainWindow>) {
                         state.installed = installed;
                         ensure_running(state);
                     }
-                    if state.installed && state.enabled && state.schedule == "sun" && times(state) != state.written {
-                        apply(&w, state, true, false);
+                    // Lituus's file, with yesterday's sunset: today's.
+                    if state.installed && state.written.as_ref().is_some_and(|text| *text != conf(state)) {
+                        apply(&w, state, SOON, false);
                     }
                 })
             });
@@ -421,6 +456,9 @@ fn s(text: impl AsRef<str>) -> SharedString {
 
 /// "On until 07:12" or "Off until 17:07"; "Off" with no schedule.
 fn now_line(state: &State) -> String {
+    if state.enabled && state.always {
+        return "On".to_owned();
+    }
     match (state.enabled, times(state)) {
         (true, Some(t)) if on_at(state.now, t) => format!("On until {}", time_text(t.1)),
         (true, Some(t)) => format!("Off until {}", time_text(t.0)),
@@ -465,8 +503,10 @@ pub fn view(state: &State) -> NightView {
     }
     v.state = s("list");
     v.enabled = state.enabled;
+    v.always = state.always;
     let t = times(state);
     v.sub = s(match (state.schedule.as_str(), t) {
+        _ if state.always => "All the time".to_owned(),
         ("sun", Some((on, off))) => {
             format!("{} · sunset {}, sunrise {}", city(&state.zone), time_text(on), time_text(off))
         }
@@ -479,7 +519,13 @@ pub fn view(state: &State) -> NightView {
         meta: s(format!(
             "{} K · {}",
             state.temperature,
-            if state.schedule == "times" { "at fixed times" } else { "from sunset to sunrise" }
+            if state.always {
+                "all the time"
+            } else if state.schedule == "times" {
+                "at fixed times"
+            } else {
+                "from sunset to sunrise"
+            }
         )),
         tone: s(if is_on(state) { "accent" } else { "muted" }),
         detail: s("hyprsunset"),
@@ -502,8 +548,6 @@ pub fn view(state: &State) -> NightView {
     });
     v.latitude = s(format!("{lat:.2}"));
     v.longitude = s(format!("{lon:.2}"));
-    v.compare =
-        s(if is_on(state) { "Shows the screens without it while held" } else { "Shows the temperature while held" });
     v.refused = state.refused;
     v.from = s(&state.from);
     v.to = s(&state.to);
@@ -581,7 +625,23 @@ mod tests {
         let off = conf(&State { enabled: false, ..state });
         assert_eq!(off.matches("profile").count(), 1, "{off}");
         assert!(off.contains("time = 00:00\n    identity = true"), "{off}");
-        assert_eq!(written(&off), None);
+        // All the time: one profile with the temperature, and on at noon too.
+        let always = State {
+            enabled: true,
+            always: true,
+            temperature: 4000,
+            schedule: "times".into(),
+            from: "21:00".into(),
+            to: "07:00".into(),
+            now: 12 * 60,
+            ..State::default()
+        };
+        let text = conf(&always);
+        assert_eq!(text.matches("profile").count(), 1, "{text}");
+        assert!(text.contains("time = 00:00\n    temperature = 4000"), "{text}");
+        assert!(is_on(&always));
+        assert_eq!(now_line(&always), "On");
+        assert_eq!(quick(&always).2, "On · 4000 K");
     }
 
     #[test]
@@ -594,8 +654,8 @@ mod tests {
             to: "07:00".into(),
             ..State::default()
         };
-        assert_eq!(written(&conf(&state)), Some((21 * 60, 7 * 60)));
-        assert_eq!(written("profile {\n    time = 20:00\n}\n"), None);
+        assert!(ours(&conf(&state)));
+        assert!(!ours("profile {\n    time = 20:00\n}\n"));
         assert_eq!(
             install_command("NAME=\"EndeavourOS\"\nID=endeavouros\nID_LIKE=arch\n"),
             "sudo pacman -S hyprsunset"

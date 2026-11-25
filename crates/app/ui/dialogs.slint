@@ -149,6 +149,7 @@ export component Segmented inherits Focusable {
     background: root.enabled ? Theme.ctrl-bg : transparent;
     accessible-role: radio-group;
     accessible-label: label;
+    accessible-enabled: root.enabled;
     HorizontalLayout {
         padding: 3px;
         spacing: 3px;

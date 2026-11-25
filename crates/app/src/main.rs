@@ -4388,6 +4388,13 @@ mod tests {
             .unwrap()
             .invoke_accessible_default_action();
         assert_eq!(*acts.borrow(), ["schedule 1 "]);
+        // All the time: the schedule below is turned off.
+        control(&window, "All the time", AccessibleRole::Switch).invoke_accessible_default_action();
+        assert_eq!(acts.borrow().last().map(String::as_str), Some("always 0 "));
+        assert_eq!(control(&window, "Turn on", AccessibleRole::RadioGroup).accessible_enabled(), Some(true));
+        window.set_night(super::night::view(&super::night::State { always: true, ..state }));
+        assert_eq!(control(&window, "Turn on", AccessibleRole::RadioGroup).accessible_enabled(), Some(false));
+        assert!(ElementHandle::find_by_accessible_label(&window, "Hold to compare").next().is_none());
         window.set_night(super::night::view(&super::night::State { installed: false, ..Default::default() }));
         assert!(ElementHandle::find_by_accessible_label(&window, "Temperature").next().is_none());
     }

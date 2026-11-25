@@ -90,6 +90,8 @@ pub struct PowerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct NightLightConfig {
     pub enabled: bool,
+    /// On all the time, not only on its schedule.
+    pub always: bool,
     /// Kelvin, 2500 to 6500.
     pub temperature: u32,
     /// "sun" (sunset to sunrise) or "times" (`from` to `to`, as "21:00").
@@ -106,6 +108,7 @@ impl Default for NightLightConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            always: false,
             temperature: 4000,
             schedule: "sun".into(),
             from: "21:00".into(),
