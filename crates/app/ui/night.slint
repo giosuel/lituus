@@ -177,8 +177,9 @@ export component NightPage inherits VerticalLayout {
             ColourCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
             ScheduleCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
         }
-        if root.page.state == "list" && !body.two-columns: ColourCard { vertical-stretch: 0; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
-        if root.page.state == "list" && !body.two-columns: ScheduleCard { page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        // Stacked: each as tall as what's in it, and the page scrolls (as Power's).
+        if root.page.state == "list" && !body.two-columns: ColourCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "list" && !body.two-columns: ScheduleCard { whole: true; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
         if root.page.state == "missing": Card {
             vertical-stretch: 1;
             EmptyState {
