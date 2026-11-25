@@ -134,7 +134,8 @@ fn hyprland_accepts_the_lua_file() {
     text = with_section(
         &text,
         "Power",
-        "hl.bind(\"switch:on:Lid Switch\", hl.dsp.exec_cmd(\"lituus --lid\"), { locked = true })\n\
+        "-- Written by Lituus (Power). Change it in Lituus: the lid and the power button.\n\
+         hl.bind(\"switch:on:Lid Switch\", hl.dsp.exec_cmd(\"lituus --lid\"), { locked = true })\n\
          hl.bind(\"XF86PowerOff\", hl.dsp.exec_cmd(\"systemctl suspend\"), { locked = true })\n",
     );
     // The live forms too: they're what `hyprctl eval` runs.

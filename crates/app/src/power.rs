@@ -290,10 +290,10 @@ fn pids(name: &str) -> Vec<u32> {
 
 /// The lid's and the power button's binds, for Lituus's file.
 pub fn binds(state: &State, lua: bool) -> String {
-    let mut lines = vec!["-- The lid and the power button (Power page).".to_owned()];
-    if !lua {
-        lines[0] = "# The lid and the power button (Power page).".to_owned();
-    }
+    // The header names the part, so the next write replaces it (lituus_hypr::with_section).
+    let comment = if lua { "--" } else { "#" };
+    let mut lines =
+        vec![format!("{comment} Written by Lituus ({SECTION}). Change it in Lituus: the lid and the power button.")];
     let mut bind = |keys: &str, command: &str| {
         lines.push(if lua {
             format!(
@@ -535,12 +535,15 @@ pub fn view(state: &State) -> PowerView {
     let chosen_key = !state.power_key.is_empty();
     v.lid_note = s(if chosen_lid && snap.logind.is_some() && !logind.leaves_lid() {
         "systemd-logind still handles the lid itself. Add HandleLidSwitch=ignore, HandleLidSwitchExternalPower=ignore and \
-         HandleLidSwitchDocked=ignore to /etc/systemd/logind.conf.d/lituus.conf and restart it."
+         HandleLidSwitchDocked=ignore under [Login] in /etc/systemd/logind.conf.d/lituus.conf, then have it read the file: \
+         sudo systemctl kill -s HUP systemd-logind (restarting it would end your session)."
     } else {
         "Lituus writes these as Hyprland binds on the lid switch, in its own file."
     });
     v.key_note = s(if chosen_key && snap.logind.is_some() && !logind.leaves_power_key() {
-        "systemd-logind still handles the key itself. Add HandlePowerKey=ignore to /etc/systemd/logind.conf.d/lituus.conf and restart it."
+        "systemd-logind still handles the key itself. Add HandlePowerKey=ignore under [Login] in \
+         /etc/systemd/logind.conf.d/lituus.conf, then have it read the file: sudo systemctl kill -s HUP systemd-logind \
+         (restarting it would end your session)."
     } else {
         "A Hyprland bind on the power key, in Lituus's own file."
     });
@@ -697,6 +700,12 @@ mod tests {
         let conf = binds(&state, false);
         assert!(conf.contains("bindl = , switch:on:Lid Switch, exec, lituus --lid"), "{conf}");
         assert!(conf.contains("bindl = , XF86PowerOff, exec, systemctl suspend"), "{conf}");
+        // A second write replaces the first, in a file with other pages' parts.
+        let file = "-- Written by Lituus (Input). Change it in Lituus.\nhl.config({ input = {} })\n";
+        let once = lituus_hypr::with_section(file, SECTION, &lua);
+        let twice = lituus_hypr::with_section(&once, SECTION, &binds(&state, true));
+        assert_eq!(once, twice);
+        assert!(twice.contains("hl.config({ input = {} })"));
         // Nothing on every case: no bind at all.
         let none = State {
             lid_battery: "nothing".into(),

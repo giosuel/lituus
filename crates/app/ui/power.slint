@@ -210,15 +210,15 @@ component LidCard inherits Card {
         SettingRow {
             label: "On battery";
             first: true;
-            Segmented { label: "On battery"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-battery; changed(i) => { root.act("lid-battery", i); } }
+            Segmented { width: self.preferred-width; label: "On battery"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-battery; changed(i) => { root.act("lid-battery", i); } }
         }
         SettingRow {
             label: "Plugged in";
-            Segmented { label: "Plugged in"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-plugged; changed(i) => { root.act("lid-plugged", i); } }
+            Segmented { width: self.preferred-width; label: "Plugged in"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-plugged; changed(i) => { root.act("lid-plugged", i); } }
         }
         SettingRow {
             label: "With an external screen";
-            Segmented { label: "With an external screen"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-external; changed(i) => { root.act("lid-external", i); } }
+            Segmented { width: self.preferred-width; label: "With an external screen"; options: ["Suspend", "Lock", "Nothing"]; selected: root.page.lid-external; changed(i) => { root.act("lid-external", i); } }
         }
         CardFooter { text: root.page.lid-note; }
     }
@@ -237,7 +237,7 @@ component ButtonCard inherits ScrollCard {
         SettingRow {
             label: "Power button";
             first: true;
-            Segmented { label: "Power button"; options: ["Suspend", "Power off", "Nothing"]; selected: root.page.power-key; changed(i) => { root.act("power-key", i); } }
+            Segmented { width: self.preferred-width; label: "Power button"; options: ["Suspend", "Power off", "Nothing"]; selected: root.page.power-key; changed(i) => { root.act("power-key", i); } }
         }
         CardFooter { text: root.page.key-note; }
     }
@@ -281,7 +281,9 @@ export component PowerPage inherits VerticalLayout {
         if root.page.state == "list" && body.two-columns: HorizontalLayout {
             spacing: 14px;
             vertical-stretch: 1;
+            // The same preferred width, so they share the row evenly.
             VerticalLayout {
+                preferred-width: 420px;
                 horizontal-stretch: 1;
                 spacing: 14px;
                 if root.page.has-battery: BatteryCard { page: root.page; act(v, x) => { root.act(v, x); } }
@@ -289,6 +291,7 @@ export component PowerPage inherits VerticalLayout {
                 BatteriesCard { page: root.page; }
             }
             VerticalLayout {
+                preferred-width: 420px;
                 horizontal-stretch: 1;
                 spacing: 14px;
                 if root.page.has-lid: LidCard { page: root.page; act(v, x) => { root.act(v, x); } }
