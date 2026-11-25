@@ -130,7 +130,11 @@ async fn run(weak: slint::Weak<MainWindow>, rx: Receiver<Command>) {
                     Command::Profile(p) => client.set_profile(p).await,
                     Command::ChargeLimit(path, on) => client.set_charge_limit(path, *on).await,
                 };
-                let error = result.err().map(|e| format!("Couldn't change that: {e}"));
+                // A service's message can run to many lines (a traceback): its first says what went wrong.
+                let error = result.err().map(|e| {
+                    let e = e.to_string();
+                    format!("Couldn't change that: {}", e.lines().next().unwrap_or_default().trim_end_matches(':'))
+                });
                 post(&weak, move |state| state.error = error);
             }
         }
