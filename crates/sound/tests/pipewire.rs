@@ -129,6 +129,12 @@ fn reads_and_changes_a_recording() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert_eq!(device, other.index);
+        // The session manager keeps an app's volume, mute and input for its next recordings
+        // (WirePlumber's restore-stream, by media.role), so they go back as they were.
+        session.move_recording(rec.index, rec.device).unwrap();
+        session.set_recording_volume(rec.index, &rec.volume).unwrap();
+        session.set_recording_mute(rec.index, rec.muted).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }));
     let _ = recorder.kill();
     let _ = recorder.wait();
