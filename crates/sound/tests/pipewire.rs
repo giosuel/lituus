@@ -83,10 +83,13 @@ fn reads_and_changes_a_recording() {
     let find = |session: &mut Session| {
         session.snapshot().unwrap().recordings.into_iter().find(|r| r.app == "Lituus test recorder")
     };
+    // Listed as soon as it starts, and linked to an input or a monitor once the session manager
+    // gets to it (a moment later on Ubuntu 24.04's PipeWire 1.0).
     let mut found = None;
-    for _ in 0..60 {
-        found = find(&mut session);
-        if found.is_some() {
+    for _ in 0..100 {
+        let snap = session.snapshot().unwrap();
+        found = snap.recordings.iter().find(|r| r.app == "Lituus test recorder").cloned();
+        if found.as_ref().is_some_and(|r| snap.sources.iter().chain(&snap.monitors).any(|d| d.index == r.device)) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -96,7 +99,8 @@ fn reads_and_changes_a_recording() {
         let snap = session.snapshot().unwrap();
         assert!(
             snap.sources.iter().chain(&snap.monitors).any(|d| d.index == rec.device),
-            "it records from an input or a monitor"
+            "it records from an input or a monitor, not {}",
+            rec.device
         );
         session.set_recording_volume(rec.index, &rec.volume.with_percent(37)).unwrap();
         session.set_recording_mute(rec.index, true).unwrap();
