@@ -85,24 +85,7 @@ fn ours(text: &str) -> bool {
 
 /// The line that installs hyprsunset, from os-release's ID and ID_LIKE; empty when unknown.
 fn install_command(os_release: &str) -> String {
-    let ids: Vec<String> = os_release
-        .lines()
-        .filter_map(|l| l.strip_prefix("ID=").or_else(|| l.strip_prefix("ID_LIKE=")))
-        .flat_map(|v| v.trim_matches('"').split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-        .collect();
-    let is = |id: &str| ids.iter().any(|i| i == id);
-    if is("arch") {
-        "sudo pacman -S hyprsunset"
-    } else if is("fedora") {
-        "sudo dnf install hyprsunset"
-    } else if is("debian") || is("ubuntu") {
-        "sudo apt install hyprsunset"
-    } else if is("nixos") {
-        "nix profile install nixpkgs#hyprsunset"
-    } else {
-        ""
-    }
-    .to_owned()
+    crate::power::install_line(os_release, "hyprsunset")
 }
 
 /// At Lituus's start: with Night light on and its schedule in place, hyprsunset should run.

@@ -13,6 +13,7 @@ mod apps;
 mod audio;
 mod bluetooth;
 mod config;
+mod datetime;
 mod defaultapps;
 mod displays;
 mod editing;
@@ -204,6 +205,7 @@ struct App {
     sound: sound::State,
     power: power::State,
     appearance: appearance::State,
+    date: datetime::State,
     night: night::State,
     quick_night: (bool, bool, String),
     /// The Input pages, and which of them was open last (for the Input item).
@@ -371,6 +373,8 @@ fn main() -> Result<(), slint::PlatformError> {
     night::spawn(window.as_weak());
     power::spawn(window.as_weak());
     appearance::spawn(window.as_weak());
+    datetime::spawn(window.as_weak());
+    datetime::spawn_clock(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
     input::refresh(&window.as_weak());
@@ -1126,6 +1130,11 @@ fn connect_callbacks(window: &MainWindow) {
         update(&weak, |app| appearance::act(&w, &mut app.appearance, &verb, value))
     });
     let weak = window.as_weak();
+    window.on_date_act(move |verb, value, text| {
+        let w = weak.clone();
+        update(&weak, |app| datetime::act(&w, &mut app.date, &verb, value, &text))
+    });
+    let weak = window.as_weak();
     window.on_sound_act(move |verb, id, value| {
         update(&weak, |app| {
             if let Some((table, key, on)) = sound::act(&mut app.sound, &verb, &id, value)
@@ -1399,6 +1408,7 @@ fn go(app: &mut App, id: &str) {
         Some(page @ (view::Page::Keyboard | view::Page::Mouse | view::Page::Shortcuts)) => app.input_page = Some(page),
         Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
         Some(view::Page::Appearance) => app.appearance.reread = true,
+        Some(view::Page::DateLanguage) => app.date.reread = true,
         Some(view::Page::NightLight) => night::read(&mut app.night, &config::load(&config::path()).night_light),
         _ => {}
     }
@@ -1901,6 +1911,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             parent: None,
             off: "",
         },
+        nav::Entry {
+            id: "date-language",
+            label: "Date & language",
+            icon: "globe",
+            group: "SYSTEM",
+            keywords: "date time clock time zone timezone ntp timesyncd automatic set the time language locale formats \
+                       region regional number currency money 24 hour timedated localed locale.conf",
+            status: datetime::status(&app.date),
+            parent: None,
+            off: "",
+        },
         // Lituus's own look is in Settings; "Appearance" is kept for the desktop's (GTK) later.
         nav::Entry {
             id: "settings",
@@ -2074,6 +2095,10 @@ fn render(window: &MainWindow) {
         night::render(window, &app.night);
         if std::mem::take(&mut app.appearance.reread) {
             appearance::spawn(window.as_weak());
+        }
+        datetime::render(window, &app.date);
+        if std::mem::take(&mut app.date.reread) {
+            datetime::spawn(window.as_weak());
         }
         displays::render(window, &app.displays);
         let state = &mut *app;
@@ -4411,6 +4436,49 @@ mod tests {
         assert!(ElementHandle::find_by_accessible_label(&window, "Hold to compare").next().is_none());
         window.set_night(super::night::view(&super::night::State { installed: false, ..Default::default() }));
         assert!(ElementHandle::find_by_accessible_label(&window, "Temperature").next().is_none());
+    }
+
+    /// Date & language (S-183, S-184): set automatically, the zone and its picker, the language and
+    /// the formats; without a polkit agent, the warning with the command.
+    #[test]
+    fn the_date_page_offers_the_zone_time_and_language() {
+        let window = window();
+        window.set_page("date-language".into());
+        let mut state = super::datetime::State { loaded: true, ..Default::default() };
+        state.read.clock =
+            Some(super::datetime::Clock { zone: "Europe/Zurich".into(), ntp: true, can_ntp: true, synced: true });
+        state.read.locale = vec!["LANG=en_GB.UTF-8".into()];
+        state.read.locales = vec!["de_CH.UTF-8".into(), "en_GB.UTF-8".into()];
+        state.read.zones = vec![("Europe/London".into(), "UTC".into()), ("Europe/Zurich".into(), "UTC+1".into())];
+        state.read.agent = true;
+        state.read.install = "sudo pacman -S hyprpolkitagent".into();
+        window.set_date(super::datetime::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_date_act(move |verb, value, text| a.borrow_mut().push(format!("{verb} {value} {text}")));
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        assert_eq!(control(&window, "Set automatically", AccessibleRole::Switch).accessible_checked(), Some(true));
+        assert_eq!(
+            control(&window, "Time zone", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Europe/Zurich")
+        );
+        control(&window, "Time zone", AccessibleRole::Combobox).invoke_accessible_default_action();
+        control(&window, "Language", AccessibleRole::Combobox);
+        control(&window, "Formats", AccessibleRole::Combobox);
+        assert!(ElementHandle::find_by_accessible_label(&window, "sudo pacman -S hyprpolkitagent").next().is_none());
+        // The picker: the zones, the one in use ticked; a pick goes to Rust.
+        state.picking = true;
+        window.set_date(super::datetime::view(&state));
+        ElementHandle::find_by_accessible_label(&window, "Europe/London")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::ListItem))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["zone-open 0 ", "zone 0 Europe/London"]);
+        // No agent: the warning first.
+        state.picking = false;
+        state.read.agent = false;
+        window.set_date(super::datetime::view(&state));
+        assert!(ElementHandle::find_by_accessible_label(&window, "sudo pacman -S hyprpolkitagent").next().is_some());
     }
 
     /// Appearance (S-176): the apps' style in the hero, the themes and fonts as lists; a choice

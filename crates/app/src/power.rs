@@ -75,6 +75,28 @@ pub fn read_files(state: &mut State, config: &crate::config::Config) {
     state.not_loaded = crate::setup::not_loaded();
 }
 
+/// The line that installs a package of Hyprland's (hyprsunset, hyprpolkitagent, orca), from
+/// os-release's ID and ID_LIKE; empty when the distribution is unknown.
+pub(crate) fn install_line(os_release: &str, package: &str) -> String {
+    let ids: Vec<String> = os_release
+        .lines()
+        .filter_map(|l| l.strip_prefix("ID=").or_else(|| l.strip_prefix("ID_LIKE=")))
+        .flat_map(|v| v.trim_matches('"').split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+        .collect();
+    let is = |id: &str| ids.iter().any(|i| i == id);
+    if is("arch") {
+        format!("sudo pacman -S {package}")
+    } else if is("fedora") {
+        format!("sudo dnf install {package}")
+    } else if is("debian") || is("ubuntu") {
+        format!("sudo apt install {package}")
+    } else if is("nixos") {
+        format!("nix profile install nixpkgs#{package}")
+    } else {
+        String::new()
+    }
+}
+
 pub(crate) fn installed(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
 }

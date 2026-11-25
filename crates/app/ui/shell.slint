@@ -520,6 +520,32 @@ export component ScrollCard inherits Card {
     }
 }
 
+/// A command to run in a terminal, with Copy (D-46): what installs a missing program.
+export component CommandBox inherits Rectangle {
+    in property <string> command;
+    callback copied();
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border2;
+    background: Theme.surface;
+    width: command-row.preferred-width;
+    height: 46px;
+    copy-field := TextInput { visible: false; text: root.command; read-only: true; }
+    command-row := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 12px;
+        Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
+        Button {
+            label: "Copy";
+            button-height: Size.button-row;
+            min-width: self.preferred-width;
+            y: (parent.height - self.height) / 2;
+            clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
+        }
+    }
+}
+
 /// What a card shows when its page has nothing to show (a service isn't running, Wi-Fi is off,
 /// no VPN yet): a 44 px icon (a spinner while `loading`), a title, why, a command that fixes it
 /// with Copy, and a button. With a command, the button is secondary: the command is the fix.
@@ -552,28 +578,7 @@ export component EmptyState inherits VerticalLayout {
     }
     if root.command != "": HorizontalLayout {
         alignment: center;
-        Rectangle {
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: Theme.border2;
-            background: Theme.surface;
-            width: command.preferred-width;
-            height: 46px;
-            copy-field := TextInput { visible: false; text: root.command; read-only: true; }
-            command := HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 8px;
-                spacing: 12px;
-                Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
-                Button {
-                    label: "Copy";
-                    button-height: Size.button-row;
-                    min-width: self.preferred-width;
-                    y: (parent.height - self.height) / 2;
-                    clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
-                }
-            }
-        }
+        CommandBox { command: root.command; copied => { root.copied(); } }
     }
     if root.action != "": HorizontalLayout {
         alignment: center;
