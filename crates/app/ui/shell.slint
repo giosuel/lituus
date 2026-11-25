@@ -3,7 +3,7 @@
 // the cards below it.
 import { Theme, Type, Size } from "theme.slint";
 import { Icon, Logo, Spinner } from "icons.slint";
-import { Button, IconButton, Switch, SectionLabel, Notice, Focusable, Scroll, Focus } from "controls.slint";
+import { Button, IconButton, Switch, SectionLabel, Notice, Focusable, Scroll, Focus, Badge } from "controls.slint";
 
 /// sub: a short status on the right ("Home", "2 on", "45%"), and `spoken`, the same as a screen
 /// reader says it ("2 connected"). open: an item showing its sub-items, on one of their pages.
@@ -520,6 +520,32 @@ export component ScrollCard inherits Card {
     }
 }
 
+/// A command to run in a terminal, with Copy (D-46): what installs a missing program.
+export component CommandBox inherits Rectangle {
+    in property <string> command;
+    callback copied();
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border2;
+    background: Theme.surface;
+    width: command-row.preferred-width;
+    height: 46px;
+    copy-field := TextInput { visible: false; text: root.command; read-only: true; }
+    command-row := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 12px;
+        Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
+        Button {
+            label: "Copy";
+            button-height: Size.button-row;
+            min-width: self.preferred-width;
+            y: (parent.height - self.height) / 2;
+            clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
+        }
+    }
+}
+
 /// What a card shows when its page has nothing to show (a service isn't running, Wi-Fi is off,
 /// no VPN yet): a 44 px icon (a spinner while `loading`), a title, why, a command that fixes it
 /// with Copy, and a button. With a command, the button is secondary: the command is the fix.
@@ -552,28 +578,7 @@ export component EmptyState inherits VerticalLayout {
     }
     if root.command != "": HorizontalLayout {
         alignment: center;
-        Rectangle {
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: Theme.border2;
-            background: Theme.surface;
-            width: command.preferred-width;
-            height: 46px;
-            copy-field := TextInput { visible: false; text: root.command; read-only: true; }
-            command := HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 8px;
-                spacing: 12px;
-                Text { text: root.command; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; vertical-alignment: center; }
-                Button {
-                    label: "Copy";
-                    button-height: Size.button-row;
-                    min-width: self.preferred-width;
-                    y: (parent.height - self.height) / 2;
-                    clicked => { copy-field.select-all(); copy-field.copy(); root.copied(); }
-                }
-            }
-        }
+        CommandBox { command: root.command; copied => { root.copied(); } }
     }
     if root.action != "": HorizontalLayout {
         alignment: center;
@@ -581,29 +586,99 @@ export component EmptyState inherits VerticalLayout {
     }
 }
 
-/// The setup dialog (D-44): what it shows, filled in by Rust when `open` is called, and the
-/// window shows it while `shown`.
+/// One change of Set up…, to a file of the user's: Hyprland's config (its load line, `comment`
+/// and `line`), hypridle.conf. `done`: made already; `chosen`: made by Set up.
+export struct SetupStep {
+    id: string,
+    title: string,
+    text: string,
+    comment: string,
+    line: string,
+    done: bool,
+    chosen: bool,
+}
+
+/// Set up… (D-44, and all of Lituus's setup in one go since K6): the changes Lituus makes once
+/// to files of the user's, each kept as a .bak first. Rust fills `steps` when it's opened, and
+/// the window shows it while `shown`.
 export global Setup {
     in-out property <bool> shown;
-    /// The user's config, as ~/.config/hypr/hyprland.lua.
-    in property <string> file;
-    /// The comment and the line added at its end.
-    in property <string> comment;
-    in property <string> line;
-    /// The copy kept first: hyprland.lua.bak.
-    in property <string> backup;
+    in property <[SetupStep]> steps;
+    /// Some step is chosen and not done: Set up does something.
+    in property <bool> ready;
     in property <string> error;
     in property <bool> working;
     callback open();
+    /// A step's switch, by its id.
+    callback toggle(string);
     callback confirm();
 }
 
+/// Set up…: the one button that opens it, the same on every page that needs it (the owner,
+/// 2026-11-25: "make sure the setup button is consistent and looks the same everywhere").
+export component SetupButton inherits Button {
+    label: "Set up…";
+    kind: "primary";
+    button-height: Size.button-row;
+    horizontal-stretch: 0;
+    min-width: self.preferred-width;
+    focus-key: "setup";
+    clicked => { Setup.open(); }
+}
+
+/// A step in the Set up… dialog: what it changes, and its switch, or Done.
+export component SetupStepRow inherits Rectangle {
+    in property <SetupStep> step;
+    callback toggled();
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border2;
+    VerticalLayout {
+        padding-top: 12px;
+        padding-bottom: 12px;
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                horizontal-stretch: 1;
+                Text { text: root.step.title; color: Theme.text; font-size: Type.body; font-weight: 600; wrap: word-wrap; }
+                Text { text: root.step.text; color: Theme.muted; font-size: Type.note; wrap: word-wrap; }
+            }
+            VerticalLayout {
+                alignment: center;
+                if root.step.done: Badge { text: "Done"; }
+                if !root.step.done: Switch { label: root.step.title; on: root.step.chosen; toggled => { root.toggled(); } }
+            }
+        }
+        // The lines added to Hyprland's config, as they'll read.
+        if !root.step.done && root.step.line != "": Rectangle {
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.ctrl-border;
+            background: Theme.input-bg;
+            VerticalLayout {
+                padding-top: 8px;
+                padding-bottom: 8px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 4px;
+                Text { text: root.step.comment; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; wrap: word-wrap; }
+                Text { text: root.step.line; color: Theme.accent; font-size: Type.note; font-family: "JetBrains Mono"; wrap: word-wrap; }
+            }
+        }
+    }
+}
+
 /// Above a page that writes Lituus's file to Hyprland's config folder, while Hyprland's own
-/// config doesn't load it: Set up… adds the line, after asking (D-44).
+/// config doesn't load it: Set up… adds the line, after asking (D-44). `text` says what's lost.
 export component LoadBanner inherits Notice {
     tone: "warn";
     title: "Your Hyprland config doesn't load Lituus's file yet";
     text: "What you change here is lost when Hyprland restarts.";
     dismissible: false;
-    Button { label: "Set up…"; kind: "primary"; button-height: Size.button-row; horizontal-stretch: 0; focus-key: "setup"; clicked => { Setup.open(); } }
+    SetupButton { }
 }

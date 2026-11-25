@@ -1,0 +1,262 @@
+// The Date & language page, as drawn in S-183 and S-184 (D-58): the time and the zone in the
+// hero; Date and time (set automatically, the zone, the date and time by hand); Language and
+// formats with a preview. Without a polkit agent, a warning with the command to install one. What
+// it shows comes from Rust (src/datetime.rs); everything the user does goes back through
+// `act(verb, number, text)`.
+import { Theme, Type, Size } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Button, Switch, CardTitle, CardFooter, Notice, Scroll, Focusable } from "controls.slint";
+import { Select, SelectButton, TextField, Modal, DialogTitle } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, CommandBox } from "shell.slint";
+
+/// A time zone in the picker, with its offset now ("UTC+1").
+export struct ZoneRow { name: string, detail: string, selected: bool }
+
+/// state: "loading", "list", or "missing" (no timedated).
+export struct DateView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    /// A change is on its way (polkit may be asking for the password).
+    working: bool,
+    /// A polkit agent runs; else the command that installs hyprpolkitagent.
+    agent: bool,
+    agent-command: string,
+    automatic: bool,
+    can-ntp: bool,
+    zone: string,
+    /// "CET, UTC+1; summer time from 29 March".
+    zone-text: string,
+    /// As the formats write them, and for the fields ("2026-11-25", "14:32").
+    date: string,
+    time: string,
+    date-input: string,
+    time-input: string,
+    languages: [string],
+    language: int,
+    formats: [string],
+    format: int,
+    preview-date: string,
+    preview-time: string,
+    preview-number: string,
+    preview-money: string,
+    /// Counts the entries refused: the fields show the values in use again.
+    refused: int,
+    /// The time-zone picker, its search and the zones it finds.
+    picking: bool,
+    search: string,
+    zones: [ZoneRow],
+}
+
+/// A row's value that can't be changed here.
+component ReadValue inherits Text {
+    color: Theme.muted;
+    font-size: Type.body;
+    vertical-alignment: center;
+    horizontal-alignment: right;
+}
+
+component TimeCard inherits ScrollCard {
+    in property <DateView> page;
+    callback act(string, int, string);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Date and time"; }
+        SettingRow {
+            label: "Set automatically";
+            description: root.page.can-ntp ? "From the internet, through systemd-timesyncd" : "systemd-timesyncd isn't installed";
+            first: true;
+            Switch { label: "Set automatically"; on: root.page.automatic; enabled: root.page.can-ntp && !root.page.working; toggled => { root.act("automatic", 0, ""); } }
+        }
+        SettingRow {
+            label: "Time zone";
+            description: root.page.zone-text;
+            SelectButton {
+                width: 260px;
+                label: "Time zone";
+                text: root.page.zone;
+                enabled: !root.page.working;
+                clicked => { root.act("zone-open", 0, ""); }
+            }
+        }
+        SettingRow {
+            label: "Date";
+            description: root.page.automatic ? "Set automatically" : "As 2026-11-25";
+            if root.page.automatic: ReadValue { text: root.page.date; }
+            if !root.page.automatic: TextField { width: 140px; label: "Date"; mono: true; enabled: !root.page.working; item: "date" + root.page.refused; value: root.page.date-input; committed => { root.act("date", 0, self.text); } }
+        }
+        SettingRow {
+            label: "Time";
+            description: root.page.automatic ? "Set automatically" : "As 14:32";
+            if root.page.automatic: ReadValue { text: root.page.time; font-family: "JetBrains Mono"; }
+            if !root.page.automatic: TextField { width: 96px; label: "Time"; mono: true; enabled: !root.page.working; item: "time" + root.page.refused; value: root.page.time-input; committed => { root.act("time", 0, self.text); } }
+        }
+        Rectangle { height: 10px; }
+        CardFooter { text: root.page.automatic ? "Turn off Set automatically to type the date and time yourself." : "Type the date or the time and press Enter to set it."; }
+        Rectangle { height: 10px; }
+    }
+}
+
+/// The formats shown: a label and its example.
+component PreviewLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 18px;
+    Text { text: root.label; color: Theme.faint; font-size: Type.body; width: 64px; }
+    Text { text: root.value; color: Theme.text; font-size: Type.body; horizontal-stretch: 1; overflow: elide; }
+}
+
+component LanguageCard inherits ScrollCard {
+    in property <DateView> page;
+    callback act(string, int, string);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Language and formats"; }
+        SettingRow {
+            label: "Language";
+            description: "Menus and messages in apps";
+            first: true;
+            Select { width: 260px; select-height: Size.field; label: "Language"; enabled: !root.page.working; options: root.page.languages; selected: max(0, root.page.language); chosen(i) => { root.act("language", i, ""); } }
+        }
+        SettingRow {
+            label: "Formats";
+            description: "Dates, times, numbers and money";
+            Select { width: 260px; select-height: Size.field; label: "Formats"; enabled: !root.page.working; options: root.page.formats; selected: max(0, root.page.format); chosen(i) => { root.act("formats", i, ""); } }
+        }
+        Rectangle {
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 14px;
+                padding-left: 16px;
+                spacing: 6px;
+                PreviewLine { label: "Date"; value: root.page.preview-date; }
+                PreviewLine { label: "Time"; value: root.page.preview-time; }
+                PreviewLine { label: "Number"; value: root.page.preview-number; }
+                PreviewLine { label: "Money"; value: root.page.preview-money; }
+            }
+        }
+        Rectangle { height: 14px; }
+        CardFooter { text: "Apps use these after your next login. Lituus sets them for the whole system (systemd-localed, /etc/locale.conf); changing them asks for your password."; }
+        Rectangle { height: 10px; }
+    }
+}
+
+/// A zone in the picker: its name, its offset, a tick on the one in use.
+component ZoneLine inherits Focusable {
+    in property <ZoneRow> zone;
+    callback chosen();
+    height: 36px;
+    border-radius: 8px;
+    focus-key: "zone:" + root.zone.name;
+    background: self.has-hover || self.has-focus ? Theme.accent-soft-bg : transparent;
+    accessible-role: list-item;
+    accessible-label: root.zone.name;
+    accessible-item-selected: root.zone.selected;
+    accessible-action-default => { root.chosen(); }
+    activated => { root.chosen(); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Text { text: root.zone.name; color: Theme.text; font-size: Type.body; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.zone.detail; color: Theme.faint; font-size: Type.note; font-family: "JetBrains Mono"; vertical-alignment: center; }
+        if root.zone.selected: Icon { name: "check"; tint: Theme.accent; size: 14px; y: (parent.height - 14px) / 2; }
+    }
+}
+
+/// The time zones, with a search (the city, the region or "UTC+1").
+export component ZonePickerDialog inherits Modal {
+    in property <DateView> page;
+    callback act(string, int, string);
+    card-width: 460px;
+    label: "Time zone";
+    dismissed => { root.act("zone-close", 0, ""); }
+    DialogTitle { text: "Time zone"; }
+    TextField {
+        label: "Search time zones";
+        placeholder: "Search: a city, a region or UTC+1";
+        icon: "search";
+        autofocus: true;
+        value: root.page.search;
+        edited => { root.act("zone-search", 0, self.text); }
+    }
+    Scroll {
+        height: 380px;
+        VerticalLayout {
+            spacing: 2px;
+            for z in root.page.zones: ZoneLine { zone: z; chosen => { root.act("zone", 0, z.name); } }
+            if root.page.zones.length == 0: Text { text: "No time zone has that in its name."; color: Theme.faint; font-size: Type.body; height: 40px; vertical-alignment: center; }
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        Button { label: "Cancel"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.act("zone-close", 0, ""); } }
+    }
+}
+
+export component DatePage inherits VerticalLayout {
+    in property <DateView> page;
+    in property <bool> compact;
+    callback act(string, int, string);
+    spacing: 14px;
+    Hero {
+        title: "Date & language";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        if root.page.state != "loading": HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0, ""); } }
+        // S-184: changes would fail without a password prompt, so this comes first.
+        if root.page.state == "list" && !root.page.agent: Notice {
+            vertical-stretch: 0;
+            tone: "warn";
+            title: "No password prompt is running";
+            text: "Changing the time, the time zone or the language asks for your password, through a polkit agent. Hyprland's is hyprpolkitagent; start it with Hyprland.";
+            dismissible: false;
+            if root.page.agent-command != "": CommandBox { command: root.page.agent-command; copied => { root.act("copied", 0, ""); } }
+        }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            TimeCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+            LanguageCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        }
+        // Stacked: each as tall as what's in it, and the page scrolls.
+        if root.page.state == "list" && !body.two-columns: TimeCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "list" && !body.two-columns: LanguageCard { whole: true; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "loading": Card {
+            vertical-stretch: 1;
+            EmptyState { loading: true; title: "Reading the time and the language…"; }
+        }
+        if root.page.state == "missing": Card {
+            vertical-stretch: 1;
+            EmptyState {
+                icon: "clock";
+                title: "systemd-timedated isn't running";
+                text: "Lituus sets the date, the time zone and the language through systemd's timedated and localed, which come with systemd. They start when asked, on the system bus.";
+            }
+        }
+    }
+}
