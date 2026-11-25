@@ -23,6 +23,7 @@ pub enum Page {
     Keyboard,
     Mouse,
     Shortcuts,
+    Appearance,
     Wallpaper,
     Apps,
     DefaultApps,
@@ -49,7 +50,8 @@ impl Page {
             "default-apps" => Self::DefaultApps,
             "system" => Self::System,
             // Lituus's own look moved to Settings.
-            "settings" | "appearance" => Self::Settings,
+            "settings" => Self::Settings,
+            "appearance" => Self::Appearance,
             _ => return None,
         })
     }
@@ -82,6 +84,7 @@ impl Page {
             Self::Keyboard => "keyboard",
             Self::Mouse => "mouse",
             Self::Shortcuts => "shortcuts",
+            Self::Appearance => "appearance",
             Self::Wallpaper => "wallpaper",
             Self::Apps => "apps",
             Self::DefaultApps => "default-apps",
@@ -404,6 +407,7 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         | Page::Keyboard
         | Page::Mouse
         | Page::Shortcuts
+        | Page::Appearance
         | Page::Wallpaper
         | Page::Apps
         | Page::DefaultApps
@@ -511,6 +515,7 @@ fn page_title(page: Page) -> &'static str {
         Page::Keyboard => "Keyboard",
         Page::Mouse => "Mouse & touchpad",
         Page::Shortcuts => "Shortcuts",
+        Page::Appearance => "Appearance",
         Page::Wallpaper => "Wallpaper",
         Page::Apps => "Apps",
         Page::DefaultApps => "Default apps",
@@ -2518,9 +2523,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn appearance_is_part_of_settings() {
-        // Lituus's own look moved to Settings; the old id still finds it.
-        assert_eq!(Page::from_id("appearance"), Some(Page::Settings));
+    fn appearance_is_the_apps_page() {
+        // Lituus's own look is Settings'; the "appearance" id, once that page's, is now the apps'
+        // Appearance page (0.5.0).
+        assert_eq!(Page::from_id("appearance"), Some(Page::Appearance));
         assert_eq!(Page::from_id("settings").map(Page::id), Some("settings"));
     }
 

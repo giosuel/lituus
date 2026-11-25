@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod airplane;
+mod appearance;
 mod apps;
 mod audio;
 mod bluetooth;
@@ -201,6 +202,7 @@ struct App {
     /// The Sound page.
     sound: sound::State,
     power: power::State,
+    appearance: appearance::State,
     /// The Input pages, and which of them was open last (for the Input item).
     input: input::State,
     input_page: Option<view::Page>,
@@ -359,6 +361,7 @@ fn main() -> Result<(), slint::PlatformError> {
         APP.with(|app| power::read_files(&mut app.borrow_mut().power, &config));
     }
     power::spawn(window.as_weak());
+    appearance::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
     input::refresh(&window.as_weak());
@@ -1086,6 +1089,11 @@ fn connect_callbacks(window: &MainWindow) {
     let weak = window.as_weak();
     window.on_power_act(move |verb, value| update(&weak, |app| power::act(&mut app.power, &verb, value)));
     let weak = window.as_weak();
+    window.on_appearance_act(move |verb, value| {
+        let w = weak.clone();
+        update(&weak, |app| appearance::act(&w, &mut app.appearance, &verb, value))
+    });
+    let weak = window.as_weak();
     window.on_sound_act(move |verb, id, value| {
         update(&weak, |app| {
             if let Some((table, key, on)) = sound::act(&mut app.sound, &verb, &id, value)
@@ -1358,6 +1366,7 @@ fn go(app: &mut App, id: &str) {
         Some(view::Page::Hotspot) => open_hotspot(app),
         Some(page @ (view::Page::Keyboard | view::Page::Mouse | view::Page::Shortcuts)) => app.input_page = Some(page),
         Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
+        Some(view::Page::Appearance) => app.appearance.reread = true,
         _ => {}
     }
 }
@@ -1795,6 +1804,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "appearance",
+            label: "Appearance",
+            icon: "palette",
+            group: "DESKTOP",
+            keywords: "appearance look style dark light theme gtk icons icon theme cursor cursor size fonts font \
+                       monospace hyprcursor xcursor gsettings",
+            status: appearance::status(&app.appearance),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "wallpaper",
             label: "Wallpaper",
             icon: "picture",
@@ -2006,6 +2026,10 @@ fn render(window: &MainWindow) {
         render_appearance(window, &app);
         sound::render(window, &app.sound);
         power::render(window, &app.power);
+        appearance::render(window, &app.appearance);
+        if std::mem::take(&mut app.appearance.reread) {
+            appearance::spawn(window.as_weak());
+        }
         displays::render(window, &app.displays);
         let state = &mut *app;
         input::render(window, &mut state.input, state.bt.snapshot.as_ref());
@@ -4282,6 +4306,41 @@ mod tests {
         assert!(ElementHandle::find_by_accessible_label(&window, "On battery").next().is_none());
         assert!(ElementHandle::find_by_accessible_label(&window, "Limit charging to 80 %").next().is_none());
         control(&window, "Power button", AccessibleRole::RadioGroup);
+    }
+
+    /// Appearance (S-176): the apps' style in the hero, the themes and fonts as lists; a choice
+    /// goes to Rust.
+    #[test]
+    fn the_appearance_page_offers_the_style_themes_and_fonts() {
+        let window = window();
+        window.set_page("appearance".into());
+        let state = super::appearance::State {
+            look: Some(super::appearance::Look { scheme: "prefer-dark".into(), ..Default::default() }),
+            installed: super::appearance::Installed {
+                gtk: vec!["Adwaita".into(), "adw-gtk3-dark".into()],
+                ..Default::default()
+            },
+            gsettings: true,
+            ..Default::default()
+        };
+        window.set_appearance(super::appearance::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_appearance_act(move |verb, value| a.borrow_mut().push(format!("{verb} {value}")));
+        let style = control(&window, "Apps' style", AccessibleRole::RadioGroup);
+        assert_eq!(style.accessible_value().as_deref().unwrap_or(""), "", "a radio group has no value of its own");
+        for label in ["Apps (GTK)", "Icons", "Cursor", "Cursor size", "Interface font", "Monospace font", "Font size"] {
+            control(&window, label, AccessibleRole::Combobox);
+        }
+        assert_eq!(
+            control(&window, "Apps (GTK)", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Adwaita")
+        );
+        ElementHandle::find_by_accessible_label(&window, "Light")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .unwrap()
+            .invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["scheme 2"]);
     }
 
     /// With Network's sub-items open, the sidebar's pages scroll in the smallest window instead

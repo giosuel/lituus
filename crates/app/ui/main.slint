@@ -20,6 +20,8 @@ import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.s
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
 import { PowerPage, PowerView, PowerDevice, PowerTakeoverDialog } from "power.slint";
+// The apps' Appearance page; Lituus's own look is Settings' (appearance.slint).
+import { AppearancePage, AppearanceView } from "look.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
 import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem, ChipLine } from "apps.slint";
 import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
@@ -29,7 +31,7 @@ import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEdit
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
 import { Editor, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi } from "editor.slint";
 
-export { Theme, Focus, Setup, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, PowerView, PowerDevice, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
+export { Theme, Focus, Setup, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, PowerView, PowerDevice, AppearanceView, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
 
 /// icon: "bars" (signal bars), or an icon name. tone: "accent", "danger", "muted", "faint".
 /// indent: a port under its bridge or bond, or a VLAN under its device.
@@ -155,6 +157,9 @@ export component MainWindow inherits Window {
     in property <PowerView> power;
     /// Everything done on the Power page: (verb, value).
     callback power-act(string, int);
+    // Appearance page, the apps' look (see look.slint).
+    in property <AppearanceView> appearance;
+    callback appearance-act(string, int);
     // The Input pages, Keyboard and Mouse & touchpad (see input.slint).
     in property <KeyboardView> keyboard;
     in property <MouseView> mouse;
@@ -846,6 +851,12 @@ export component MainWindow inherits Window {
                         page: root.sound;
                         tab <=> root.sound-tab;
                         act(verb, id, value) => { root.sound-act(verb, id, value); }
+                    }
+                    if root.page == "appearance": AppearancePage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.appearance;
+                        act(verb, value) => { root.appearance-act(verb, value); }
                     }
                     if root.page == "power": PowerPage {
                         vertical-stretch: 1;
