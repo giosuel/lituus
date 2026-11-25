@@ -183,10 +183,10 @@ struct App {
     quick: quick::Quick,
     /// The popup was just made, and needs everything once.
     quick_new: bool,
-    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume (see
-    /// `sound::quick`), as last shown.
+    /// The popup's Bluetooth (on or off, if there is any, and the devices) and volume with the
+    /// apps playing (see `sound::quick`), as last shown.
     quick_bt: (Option<bool>, Vec<bluetooth::QuickDevice>),
-    quick_sound: Option<(f32, bool, f32)>,
+    quick_sound: Option<sound::Quick>,
     notifier: Option<notify::Notifier>,
     /// The Bluetooth page.
     bt: bluetooth::State,
@@ -659,6 +659,33 @@ fn toggle_quick(window: &MainWindow) {
                 })
             }
         });
+        popup.on_app_volume_moved({
+            let main = window.as_weak();
+            move |id, v| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-volume", &id, v);
+                })
+            }
+        });
+        popup.on_app_mute_clicked({
+            let main = window.as_weak();
+            move |id| {
+                update(&main, |app| {
+                    sound::act(&mut app.sound, "app-mute", &id, 0.0);
+                })
+            }
+        });
+        popup.on_apps_more_clicked({
+            let main = window.as_weak();
+            move || {
+                let Some(window) = main.upgrade() else { return };
+                hide_quick();
+                update(&main, |app| go(app, "sound"));
+                // The first view, where the apps are.
+                window.set_sound_tab(0);
+                let _ = window.show();
+            }
+        });
         popup.on_airplane_switched({
             let main = window.as_weak();
             move || {
@@ -764,10 +791,12 @@ fn render_quick(app: &mut App, airplane: bool) {
                 .collect(),
         ));
         popup.set_sound_available(sound.is_some());
-        if let Some((volume, muted, max)) = sound {
-            popup.set_volume(volume);
-            popup.set_muted(muted);
-            popup.set_volume_max(max);
+        if let Some(sound) = &sound {
+            popup.set_volume(sound.volume);
+            popup.set_muted(sound.muted);
+            popup.set_volume_max(sound.max);
+            popup.set_apps(sound::quick_rows(&sound.apps));
+            popup.set_apps_more(sound.more as i32);
         }
         popup.set_airplane(q.airplane);
     });
@@ -4093,10 +4122,82 @@ mod tests {
         assert_eq!(control("Output device").accessible_role(), Some(AccessibleRole::Combobox));
         assert_eq!(control("Output device").accessible_value().as_deref(), Some("Samsung TV (HDMI)"));
 
-        // With no card left, the Cards tab goes and the page shows the devices.
-        window.set_sound_tab(2);
+        // With no card left, the Cards view goes and the page shows the devices.
+        window.set_sound_tab(1);
         super::sound::render(&window, &super::sound::State::default());
         assert_eq!(window.get_sound_tab(), 0);
+    }
+
+    /// The apps playing and recording sit beside Output and Input in the owner's window and
+    /// under them in a narrower one (S-157); a recording's row has its own mute, volume and
+    /// input, and its clicks go to Rust as recordings.
+    #[test]
+    fn sound_apps_sit_beside_the_devices_or_under_them() {
+        use super::SoundApp;
+        let window = window();
+        window.set_page("sound".into());
+        let names = |n: &[&str]| super::model(n.iter().map(|&n| SharedString::from(n)).collect());
+        let app = |id: &str, name: &str, output: i32| SoundApp {
+            id: id.into(),
+            name: name.into(),
+            sub: "Voice".into(),
+            volume: 0.8,
+            output,
+            ..Default::default()
+        };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            outputs_names: names(&["Speakers", "Sony WH-1000XM5"]),
+            output: 0,
+            inputs_names: names(&["Blue Yeti"]),
+            input: 0,
+            apps: super::model(vec![app("7", "Firefox", 1)]),
+            apps_line: "1 playing".into(),
+            recordings: super::model(vec![app("90", "Discord", 0), app("91", "OBS Studio", 1)]),
+            recordings_line: "2 recording".into(),
+            record_from: names(&["Blue Yeti", "Monitor of Speakers"]),
+            max: 1.0,
+            ..super::SoundView::default()
+        });
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_sound_act(move |verb, id, v| a.borrow_mut().push(format!("{verb} {id} {v:.2}")));
+        let at = |label: &str, role: AccessibleRole| control(&window, label, role).absolute_position();
+
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        // Right of the output's list, which ends its card.
+        let beside = |device: slint::LogicalPosition, firefox: slint::LogicalPosition| {
+            firefox.x > device.x + control(&window, "Output device", AccessibleRole::Combobox).size().width
+        };
+        assert!(beside(device, firefox), "beside: {device:?} {firefox:?}");
+        assert!(firefox.y < at("Input device", AccessibleRole::Combobox).y, "the apps start at the top");
+        // Recording, under the apps playing.
+        let discord = at("Discord recording volume", AccessibleRole::Slider);
+        assert!(discord.y > firefox.y && (discord.x - firefox.x).abs() < 1.0, "{discord:?} {firefox:?}");
+        assert_eq!(
+            control(&window, "Input for OBS Studio", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Monitor of Speakers")
+        );
+        control(&window, "Mute Discord recording", AccessibleRole::Button).invoke_accessible_default_action();
+        control(&window, "OBS Studio recording volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        control(&window, "Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["rec-mute 90 0.00", "rec-volume 91 0.85", "app-mute 7 0.00"]);
+
+        // A 1200 px window still has the two columns (D-55); the device cards give way first.
+        window.window().set_size(LogicalSize::new(1200.0, 760.0));
+        let (device, firefox) =
+            (at("Output device", AccessibleRole::Combobox), at("Firefox volume", AccessibleRole::Slider));
+        assert!(beside(device, firefox), "beside at 1200 px: {device:?} {firefox:?}");
+        assert!(control(&window, "Output device", AccessibleRole::Combobox).size().width >= 140.0);
+
+        // The smallest window: Output, Input, then the apps, one under the other.
+        window.window().set_size(LogicalSize::new(1040.0, 760.0));
+        let (device, input) =
+            (at("Output device", AccessibleRole::Combobox), at("Input device", AccessibleRole::Combobox));
+        let firefox = at("Firefox volume", AccessibleRole::Slider);
+        assert!(device.y < input.y && input.y < firefox.y, "stacked: {device:?} {input:?} {firefox:?}");
     }
 
     /// With Network's sub-items open, the sidebar's pages scroll in the smallest window instead
@@ -4654,6 +4755,46 @@ mod tests {
         assert_eq!(disconnect, 2);
     }
 
+    /// The quick popup's apps: a click on an app's icon mutes it, its slider sets its volume, and
+    /// the apps beyond the first three are a link to the Sound page.
+    #[test]
+    fn the_quick_popups_apps_mute_move_and_lead_to_the_page() {
+        use super::{QuickWindow, SoundApp};
+        i_slint_backend_testing::init_no_event_loop();
+        let popup = QuickWindow::new().unwrap();
+        popup.set_sound_available(true);
+        popup.set_volume(0.8);
+        let firefox = SoundApp {
+            id: "7".into(),
+            name: "Firefox".into(),
+            sub: "YouTube".into(),
+            volume: 0.5,
+            ..Default::default()
+        };
+        popup.set_apps(super::model(vec![firefox.clone()]));
+        popup.set_apps_more(2);
+        let events = Rc::new(RefCell::new(Vec::<String>::new()));
+        let e = events.clone();
+        popup.on_app_mute_clicked(move |id| e.borrow_mut().push(format!("mute {id}")));
+        let e = events.clone();
+        popup.on_app_volume_moved(move |id, v| e.borrow_mut().push(format!("volume {id} {v:.2}")));
+        let e = events.clone();
+        popup.on_apps_more_clicked(move || e.borrow_mut().push("more".into()));
+        popup.show().unwrap();
+        let find = |label: &str, role: AccessibleRole| {
+            ElementHandle::find_by_accessible_label(&popup, label)
+                .find(|e| e.accessible_role() == Some(role))
+                .expect(label)
+        };
+        find("Mute Firefox", AccessibleRole::Button).invoke_accessible_default_action();
+        find("Firefox volume", AccessibleRole::Slider).invoke_accessible_increment_action();
+        find("2 more on the Sound page", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*events.borrow(), ["mute 7", "volume 7 0.55", "more"]);
+        // Muted, its button says it unmutes.
+        popup.set_apps(super::model(vec![SoundApp { muted: true, ..firefox }]));
+        find("Unmute Firefox", AccessibleRole::Button);
+    }
+
     /// The views of a page are tabs, top right in its hero, and a card's views are tabs too; a
     /// value chosen from a few (Rotation, Mode) is a radio group.
     #[test]
@@ -4683,8 +4824,20 @@ mod tests {
         assert!(!roles("Rotation").contains(&AccessibleRole::TabList));
 
         window.set_page("sound".into());
+        // With no card to choose a profile for there's one view, and no tabs.
         window.set_sound(super::SoundView { state: "list".into(), max: 1.0, ..Default::default() });
-        assert_eq!(tabs("Sound"), ["Devices", "Apps"]);
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Sound")
+                .all(|e| e.accessible_role() != Some(AccessibleRole::TabList))
+        );
+        let card = super::SoundCard { id: "alsa_card.pci".into(), name: "Built-in Audio".into(), ..Default::default() };
+        window.set_sound(super::SoundView {
+            state: "list".into(),
+            max: 1.0,
+            cards: super::model(vec![card]),
+            ..Default::default()
+        });
+        assert_eq!(tabs("Sound"), ["Devices and apps", "Cards"]);
         let views = ElementHandle::find_by_accessible_label(&window, "Sound")
             .find(|e| e.accessible_role() == Some(AccessibleRole::TabList))
             .unwrap();
@@ -5179,7 +5332,7 @@ mod tests {
     }
 
     /// A press on a slider, a drag to `to` (a fraction of its width) and the release.
-    fn drag(window: &MainWindow, slider: &ElementHandle, from: f32, to: f32) {
+    fn drag(window: &impl ComponentHandle, slider: &ElementHandle, from: f32, to: f32) {
         let (p, s) = (slider.absolute_position(), slider.size());
         let at = |f: f32| LogicalPosition::new(p.x + s.width * f, p.y + s.height / 2.0);
         window.window().dispatch_event(WindowEvent::PointerMoved { position: at(from) });
@@ -5215,7 +5368,7 @@ mod tests {
                 ..Default::default()
             });
         });
-        window.set_sound_tab(1);
+        window.set_sound_tab(0);
         super::render(&window);
         let got = Rc::new(RefCell::new(Vec::<f32>::new()));
         let (g, w) = (got.clone(), window.as_weak());
@@ -5228,6 +5381,50 @@ mod tests {
         drag(&window, &control(&window, "Firefox volume", AccessibleRole::Slider), 0.3, 0.8);
         let last = *got.borrow().last().expect("the press moves it");
         assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+    }
+
+    /// The same for an app's slider in the quick popup: it keeps its rows from one render to the
+    /// next too.
+    #[test]
+    fn an_app_slider_in_the_quick_popup_can_be_dragged() {
+        let window = window();
+        super::APP.with(|app| {
+            app.borrow_mut().sound.snapshot = Some(lituus_sound::Snapshot {
+                default_sink: Some("speakers".into()),
+                sinks: vec![lituus_sound::Device {
+                    index: 40,
+                    name: "speakers".into(),
+                    description: "Speakers".into(),
+                    volume: volume(0.5),
+                    ..Default::default()
+                }],
+                streams: vec![lituus_sound::Stream {
+                    index: 7,
+                    app: "Firefox".into(),
+                    device: 40,
+                    volume: volume(0.2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        });
+        super::toggle_quick(&window);
+        let popup = super::QUICK.with(|q| q.borrow().as_ref().map(|p| p.clone_strong())).expect("the popup");
+        let got = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let (g, w) = (got.clone(), window.as_weak());
+        // As the app does: the change renders at once, and PulseAudio's answer does again.
+        popup.on_app_volume_moved(move |_, v| {
+            g.borrow_mut().push(v);
+            super::update(&w, |_| {});
+            super::update(&w, |app| app.sound.snapshot.as_mut().unwrap().streams[0].volume = volume(v));
+        });
+        let slider = ElementHandle::find_by_accessible_label(&popup, "Firefox volume")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Slider))
+            .expect("Firefox's slider");
+        drag(&popup, &slider, 0.3, 0.8);
+        let last = *got.borrow().last().expect("the press moves it");
+        assert!(last > 0.7, "the drag stopped at {last} ({:?})", got.borrow());
+        super::hide_quick();
     }
 
     /// The same for a slider in a row of the command palette.
