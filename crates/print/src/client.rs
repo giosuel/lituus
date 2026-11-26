@@ -391,6 +391,13 @@ impl Client {
         Ok(())
     }
 
+    /// A printer's name for people (printer-info; admins only).
+    pub async fn set_info(&self, name: &str, info: &str) -> Result<(), Error> {
+        let req = Request::new(Operation::CupsAddModifyPrinter, Some(&printer_uri(name)), &self.user)
+            .printer("printer-info", proto::text(info));
+        self.call("/admin/", &req, b"", READ).await.map(drop)
+    }
+
     /// USB printers CUPS sees (admins only), with their IEEE 1284 device IDs.
     pub async fn usb_devices(&self) -> Result<Vec<Device>, Error> {
         let req = Request::new(Operation::CupsGetDevices, None, &self.user)
@@ -592,5 +599,8 @@ mod tests {
             Printer::driver_of("Samsung ML-2160, SpliX V. 2.0.1", "usb://x"),
             Driver::Ppd("Samsung ML-2160, SpliX V. 2.0.1".into())
         );
+        let p = |m: &str| Printer { make_and_model: m.into(), ..Printer::default() };
+        assert_eq!(p("Lituus Virtual Duplex - IPP Everywhere").model_name(), "Lituus Virtual Duplex");
+        assert_eq!(p("Canon TS5300 series, driverless, cups-filters 2.0.1").model_name(), "Canon TS5300 series");
     }
 }

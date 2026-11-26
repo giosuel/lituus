@@ -313,7 +313,7 @@ fn problem(e: &Error, through_helper: bool) -> String {
         }
         Error::NotRunning => "CUPS isn't running.".into(),
         Error::Timeout => "CUPS didn't answer in time.".into(),
-        Error::Ipp { message, .. } if !message.is_empty() => format!("CUPS said: {message}."),
+        Error::Ipp { message, .. } if !message.is_empty() => format!("CUPS said: {}.", message.trim_end_matches('.')),
         other => format!("That didn't work: {other}."),
     }
 }
@@ -628,9 +628,21 @@ fn add(weak: &slint::Weak<MainWindow>, state: &mut State, row: String, new: NewP
                         .map_err(|e| problem(&e, true))
                 }
                 Err(Error::Timeout) => Err("The printer didn't answer CUPS in time, so it wasn't added.".into()),
-                Err(Error::Ipp { message, .. }) => Err(format!("CUPS couldn't set it up: {message}.")),
+                Err(Error::Ipp { message, .. }) => {
+                    Err(format!("CUPS couldn't set it up: {}.", message.trim_end_matches('.')))
+                }
                 Err(e) => Err(problem(&e, false)),
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    // Added by its address: named after the model the printer told cupsd.
+                    if probe.is_some()
+                        && let Ok(printers) = client.printers().await
+                        && let Some(p) = printers.iter().find(|p| p.name == new.name)
+                        && !p.model_name().is_empty()
+                    {
+                        let _ = client.set_info(&new.name, &p.model_name()).await;
+                    }
+                    Ok(())
+                }
             }
         })
         .unwrap_or_else(|| Err("Couldn't start adding it.".into()));
@@ -640,7 +652,11 @@ fn add(weak: &slint::Weak<MainWindow>, state: &mut State, row: String, new: NewP
                 let state = &mut app.printers;
                 state.add.adding = None;
                 match result {
-                    Ok(()) => state.selected = Some(new.name.clone()),
+                    // The dialog closes on the new printer, selected.
+                    Ok(()) => {
+                        state.selected = Some(new.name.clone());
+                        close_add(state);
+                    }
                     Err(e) => state.add.error = Some(e),
                 }
                 refresh(&w, state, false);

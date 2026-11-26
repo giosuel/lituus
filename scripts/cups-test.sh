@@ -50,6 +50,7 @@ start_cups() {
     dbus-daemon --system --fork
     ln -sf /lituus/system_bus_socket /run/dbus/system_bus_socket
     cupsd
+    mkdir -p /tmp/ippeve
     (setsid ippeveprinter -2 -k -d /tmp/ippeve -p 8631 -n localhost -r off -M Lituus -m "Virtual Duplex" \
       -f application/pdf,image/pwg-raster,image/urf,image/jpeg -s 20,10 "Virtual Duplex" >/tmp/ippeve.log 2>&1 &)
     for _ in $(seq 100); do

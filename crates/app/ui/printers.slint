@@ -316,12 +316,16 @@ export component AddPrinterDialog inherits Modal {
             vertical-alignment: center;
         }
         // D-68: without Avahi, printers on the network can't be found.
-        if root.page.add-avahi == "off": Notice {
-            tone: "warn";
-            title: "Avahi isn't running";
-            text: "Printers on the network are found through Avahi. Start it to see them here:";
-            dismissible: false;
-            CommandBox { command: root.page.avahi-command; copied => { root.act("copied", 0, ""); } }
+        // The command under the Notice: beside its text, the dialog is too narrow for both.
+        if root.page.add-avahi == "off": VerticalLayout {
+            spacing: 8px;
+            Notice {
+                tone: "warn";
+                title: "Avahi isn't running";
+                text: "Printers on the network are found through Avahi. Start it to see them here:";
+                dismissible: false;
+            }
+            HorizontalLayout { alignment: start; CommandBox { command: root.page.avahi-command; copied => { root.act("copied", 0, ""); } } }
         }
     }
     VerticalLayout {
