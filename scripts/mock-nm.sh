@@ -164,6 +164,33 @@ if [ "${MOCK_DATE:-1}" != 0 ]; then
   lc org.freedesktop.DBus.Mock.AddMethod org.freedesktop.locale1 SetLocale asb '' \
     'self.UpdateProperties("org.freedesktop.locale1", {"Locale": dbus.Array(args[0], signature="s")})'
 fi
+# MOCK_AVAHI=1: a mock Avahi with two printers on the "network" (the Printers page's Add dialog):
+# a driverless Canon and an old laser that needs a driver.
+if [ "${MOCK_AVAHI:-0}" = 1 ]; then
+  "$python" -m dbusmock --session org.freedesktop.Avahi / org.freedesktop.Avahi.Server >>"${MOCK_NM_LOG:-/dev/null}" 2>&1 &
+  avahi=$!
+  trap 'kill $mock ${bluez:-} ${hostnamed:-} ${timedated:-} ${localed:-} $avahi 2>/dev/null' EXIT
+  for _ in $(seq 100); do
+    gdbus introspect --session -d org.freedesktop.Avahi -o / >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  "$python" - <<'PY'
+import dbus
+bus = dbus.SessionBus()
+mock = dbus.Interface(bus.get_object("org.freedesktop.Avahi", "/"), "org.freedesktop.DBus.Mock")
+item = "self.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'ItemNew', 'iisssu', [2, 0, %r, '_ipp._tcp', 'local', dbus.UInt32(0)])"
+start = "if self.__dbus_object_path__ == '/b/ipp':\n    " + "\n    ".join(item % n for n in ["Canon TS5300 series", "Old Laser"]) + \
+    "\nself.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'AllForNow', '', [])"
+for path in ["/b/ipp", "/b/ipps"]:
+    mock.AddObject(path, "org.freedesktop.Avahi.ServiceBrowser", {}, [("Start", "", "", start)])
+mock.AddMethod("org.freedesktop.Avahi.Server", "ServiceBrowserPrepare", "iissu", "o",
+               "ret = dbus.ObjectPath('/b/ipp' if args[2] == '_ipp._tcp' else '/b/ipps')")
+mock.AddMethod("org.freedesktop.Avahi.Server", "ResolveService", "iisssiu", "iissssisqaayu",
+               "txt = [b'ty=Canon TS5300 series', b'URF=V1.4', b'UUID=c1'] if args[2].startswith('Canon') else [b'ty=Old Laser', b'pdl=application/postscript']\n"
+               "ret = (args[0], args[1], args[2], args[3], args[4], args[2].split()[0].lower() + '.local', 0, '192.168.1.50', dbus.UInt16(631), "
+               "[dbus.ByteArray(t) for t in txt], dbus.UInt32(0))")
+PY
+fi
 mock_bus="$DBUS_SESSION_BUS_ADDRESS"
 [ -n "${MOCK_NM_ADDRESS_FILE:-}" ] && echo "$mock_bus" > "$MOCK_NM_ADDRESS_FILE"
 if [ -n "$MOCK_NM_SESSION" ]; then export DBUS_SESSION_BUS_ADDRESS="$MOCK_NM_SESSION"; else unset DBUS_SESSION_BUS_ADDRESS; fi
