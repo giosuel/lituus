@@ -152,6 +152,24 @@ pub(crate) fn quality_name(v: i32) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn quality_value(name: &str) -> Option<i32> {
+    match name {
+        "draft" => Some(3),
+        "normal" => Some(4),
+        "high" => Some(5),
+        _ => None,
+    }
+}
+
+/// New defaults for a printer: only what's set changes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Defaults {
+    pub media: Option<String>,
+    pub sides: Option<String>,
+    pub color: Option<String>,
+    pub quality: Option<String>,
+}
+
 /// Everything the page shows, read at once.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Snapshot {

@@ -2813,6 +2813,7 @@ version = "0.0.0-dev"
 dependencies = [
  "futures-util",
  "ipp",
+ "serde",
  "thiserror 2.0.21",
  "tokio",
  "zbus",

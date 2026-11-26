@@ -6,9 +6,12 @@
 mod client;
 mod http;
 pub mod lpoptions;
+pub mod media;
 mod model;
+pub mod pkhelper;
+pub mod ppd;
 mod proto;
 pub mod user;
 
 pub use client::{Client, Error, SOCKET, elsewhere, installed, printer_uri};
-pub use model::{Choices, Driver, Job, JobState, Options, Printer, Snapshot, State};
+pub use model::{Choices, Defaults, Driver, Job, JobState, Options, Printer, Snapshot, State};

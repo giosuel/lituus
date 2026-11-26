@@ -9,7 +9,8 @@ use ipp::prelude::IppValue;
 
 use crate::http;
 use crate::lpoptions;
-use crate::model::{Job, JobState, Options, Printer, Snapshot, State, quality_name};
+use crate::model::{Defaults, Job, JobState, Options, Printer, Snapshot, State, quality_name, quality_value};
+use crate::ppd;
 use crate::proto::{self, Answer, Group, Request};
 use crate::user;
 
@@ -315,6 +316,53 @@ impl Client {
     pub async fn remove(&self, name: &str) -> Result<(), Error> {
         let req = Request::new(Operation::CupsDeletePrinter, Some(&printer_uri(name)), &self.user);
         self.call("/admin/", &req, b"", READ).await.map(drop)
+    }
+
+    /// The printer's PPD (CUPS 2), if it has one: driverless queues have one cupsd made, raw ones none.
+    pub async fn ppd(&self, name: &str) -> Result<Option<String>, Error> {
+        let path = format!("/printers/{}.ppd", encode_path(name));
+        let resp = http::send(&self.socket, &http::encode("GET", &path, "", None, b""), READ).await?;
+        match resp.status {
+            200 => Ok(Some(String::from_utf8_lossy(&resp.body).into_owned())),
+            404 => Ok(None),
+            s => Err(Error::Http(s)),
+        }
+    }
+
+    /// The PPD's choices for new defaults, where it has them.
+    pub async fn ppd_choices(
+        &self,
+        name: &str,
+        d: &Defaults,
+    ) -> Result<(Option<String>, Vec<(String, String)>), Error> {
+        let Some(file) = self.ppd(name).await? else { return Ok((None, Vec::new())) };
+        let set =
+            ppd::choices_for(&file, d.media.as_deref(), d.sides.as_deref(), d.color.as_deref(), d.quality.as_deref());
+        Ok((Some(file), set))
+    }
+
+    /// New defaults for what the printer prints (admins only): the IPP `*-default` attributes and
+    /// the PPD's defaults in one request, so apps that read either agree.
+    pub async fn set_options(&self, name: &str, d: &Defaults) -> Result<(), Error> {
+        let mut req = Request::new(Operation::CupsAddModifyPrinter, Some(&printer_uri(name)), &self.user);
+        if let Some(m) = &d.media {
+            req = req.printer("media-default", proto::keyword(m));
+        }
+        if let Some(s) = &d.sides {
+            req = req.printer("sides-default", proto::keyword(s));
+        }
+        if let Some(c) = &d.color {
+            req = req.printer("print-color-mode-default", proto::keyword(c));
+        }
+        if let Some(q) = d.quality.as_deref().and_then(quality_value) {
+            req = req.printer("print-quality-default", IppValue::Enum(q));
+        }
+        let (file, set) = self.ppd_choices(name, d).await?;
+        let document = match file {
+            Some(f) if !set.is_empty() => ppd::with_defaults(&f, &set).into_bytes(),
+            _ => Vec::new(),
+        };
+        self.call("/admin/", &req, &document, READ).await.map(drop)
     }
 
     /// Makes `name` this user's default printer (~/.cups/lpoptions); other users keep theirs.

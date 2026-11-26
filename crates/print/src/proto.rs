@@ -62,6 +62,11 @@ impl Request {
         self
     }
 
+    pub fn printer(mut self, n: &str, value: IppValue) -> Self {
+        self.msg.attributes_mut().add(DelimiterTag::PrinterAttributes, attr(n, value));
+        self
+    }
+
     pub fn wanted(self, names: &[&str]) -> Self {
         let list = names.iter().map(|n| keyword(n)).collect();
         self.op("requested-attributes", IppValue::Array(list))

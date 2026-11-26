@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use lituus_print::{Client, Driver, Error, JobState, State};
+use lituus_print::{Client, Defaults, Driver, Error, JobState, State, ppd};
 
 fn client() -> Option<Client> {
     let Ok(socket) = std::env::var("LITUUS_CUPS_SOCKET") else {
@@ -96,4 +96,46 @@ async fn an_unknown_printer_is_an_ipp_error() {
     let Some(c) = client() else { return };
     let got = c.options("Nothing-here").await;
     assert!(matches!(got, Err(Error::Ipp { .. })), "{got:?}");
+}
+
+#[tokio::test]
+async fn new_defaults_reach_both_ipp_and_the_ppd() {
+    let Some(c) = client() else { return };
+    let d = Defaults {
+        media: Some("iso_a4_210x297mm".into()),
+        sides: Some("two-sided-long-edge".into()),
+        color: Some("monochrome".into()),
+        quality: Some("high".into()),
+    };
+    let got = c.set_options("Virtual", &d).await;
+    if !admin() {
+        assert!(matches!(got, Err(Error::NotAllowed(_))), "{got:?}");
+        return;
+    }
+    got.unwrap();
+    let o = c.options("Virtual").await.unwrap();
+    assert_eq!(
+        (o.media.default.as_str(), o.sides.default.as_str(), o.color.default.as_str(), o.quality.default.as_str()),
+        ("iso_a4_210x297mm", "two-sided-long-edge", "monochrome", "high")
+    );
+    let file = c.ppd("Virtual").await.unwrap().expect("a driverless queue has a PPD");
+    for (key, want) in [
+        ("PageSize", "A4"),
+        ("PageRegion", "A4"),
+        ("Duplex", "DuplexNoTumble"),
+        ("ColorModel", "Gray"),
+        ("cupsPrintQuality", "High"),
+    ] {
+        assert_eq!(ppd::default(&file, key).as_deref(), Some(want), "{key}");
+    }
+    // Only what's given changes.
+    c.set_options("Virtual", &Defaults { sides: Some("one-sided".into()), ..Defaults::default() }).await.unwrap();
+    let o = c.options("Virtual").await.unwrap();
+    assert_eq!((o.media.default.as_str(), o.sides.default.as_str()), ("iso_a4_210x297mm", "one-sided"));
+}
+
+#[tokio::test]
+async fn a_raw_queue_has_no_ppd() {
+    let Some(c) = client() else { return };
+    assert!(c.ppd("Nothing-here").await.unwrap().is_none());
 }
