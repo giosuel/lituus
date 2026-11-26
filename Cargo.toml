@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/app", "crates/bt", "crates/cli", "crates/fs", "crates/hypr", "crates/keyring", "crates/nm", "crates/sound", "crates/system", "crates/wallpaper", "crates/xdg", "xtask"]
+members = ["crates/app", "crates/bt", "crates/cli", "crates/fs", "crates/hypr", "crates/keyring", "crates/nm", "crates/power", "crates/print", "crates/sound", "crates/system", "crates/wallpaper", "crates/xdg", "xtask"]
 
 [workspace.package]
 version = "0.0.0-dev"
@@ -22,12 +22,16 @@ slint = "1.18.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 serde = "1.0.229"
 thiserror = "2.0.21"
+# IPP's message format only (CUPS's protocol); Lituus sends it over cupsd's socket itself.
+ipp = { version = "8.0.0", default-features = false }
 tokio = "1.53.2"
 lituus-bt = { path = "crates/bt" }
 lituus-fs = { path = "crates/fs" }
 lituus-hypr = { path = "crates/hypr" }
 lituus-keyring = { path = "crates/keyring" }
 lituus-nm = { path = "crates/nm" }
+lituus-power = { path = "crates/power" }
+lituus-print = { path = "crates/print" }
 lituus-sound = { path = "crates/sound" }
 lituus-system = { path = "crates/system" }
 lituus-wallpaper = { path = "crates/wallpaper" }
