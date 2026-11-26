@@ -169,7 +169,12 @@ fn read_all(probe: bool) -> Read {
         }
         if probe {
             let system = zbus::Connection::system().await.ok();
-            r.access = pkhelper::access(system.as_ref()).await;
+            r.access = match pkhelper::access(system.as_ref()).await {
+                Access::Admin => Access::Admin,
+                // Not by the usual groups: cupsd may still say yes (another SystemGroup, root).
+                _ if !r.not_running && Client::local().can_admin().await => Access::Admin,
+                other => other,
+            };
         }
     });
     r
@@ -284,7 +289,9 @@ fn tick(weak: &slint::Weak<MainWindow>, state: &mut State) {
     let waited = |s| state.last.is_none_or(|t| t.elapsed() >= Duration::from_secs(s));
     // In a Flatpak, cupsd's signals don't come through (it has no name on the bus to allow).
     let flatpak = std::env::var_os("FLATPAK_ID").is_some();
-    if busy || (state.read.not_running && waited(5)) || (flatpak && waited(3)) {
+    // cupsd's signals are the trigger; a read every 10 s while the page shows covers one that
+    // never came (cupsd built without D-Bus, another bus).
+    if busy || (state.read.not_running && waited(5)) || (flatpak && waited(3)) || waited(10) {
         refresh(weak, state, false);
     }
 }

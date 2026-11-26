@@ -92,6 +92,12 @@ async fn removing_a_printer_needs_an_admin() {
 }
 
 #[tokio::test]
+async fn cupsd_says_who_may_change_printers() {
+    let Some(c) = client() else { return };
+    assert_eq!(c.can_admin().await, admin());
+}
+
+#[tokio::test]
 async fn an_unknown_printer_is_an_ipp_error() {
     let Some(c) = client() else { return };
     let got = c.options("Nothing-here").await;

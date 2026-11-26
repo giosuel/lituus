@@ -190,6 +190,9 @@ component DetailsCard inherits ScrollCard {
                 label: "Cancel";
                 focus-key: "job:" + j.id;
                 button-height: Size.button-row;
+                horizontal-stretch: 0;
+                min-width: self.preferred-width;
+                max-width: self.preferred-width;
                 enabled: j.can-cancel;
                 accessible-label: "Cancel " + j.name;
                 clicked => { root.act("cancel", j.id, ""); }

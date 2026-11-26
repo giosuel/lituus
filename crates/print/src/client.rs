@@ -423,6 +423,16 @@ impl Client {
         }
     }
 
+    /// cupsd lets this user make admin changes: asked with an admin-only request that does
+    /// nothing (a device list for a scheme no backend has). For CUPS admin groups besides wheel,
+    /// sys, root and lpadmin, or for root.
+    pub async fn can_admin(&self) -> bool {
+        let req = Request::new(Operation::CupsGetDevices, None, &self.user)
+            .op("include-schemes", IppValue::Array(vec![proto::name("lituus-none")]))
+            .op("timeout", IppValue::Integer(1));
+        self.call("/", &req, b"", READ).await.is_ok()
+    }
+
     /// Makes `name` this user's default printer (~/.cups/lpoptions); other users keep theirs.
     pub fn set_default(&self, name: &str) -> Result<(), Error> {
         Ok(lpoptions::write_default(name)?)
