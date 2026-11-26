@@ -18,6 +18,8 @@ pub const SOCKET: &str = "/run/cups/cups.sock";
 const READ: Duration = Duration::from_secs(10);
 /// cupsd waits 30 s for a printer that doesn't answer before it gives up adding it.
 const ADD: Duration = Duration::from_secs(40);
+/// IPP's client-error-not-found.
+const NOT_FOUND: u16 = 0x0406;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -220,8 +222,20 @@ impl Client {
     }
 
     /// Sends a request; on a PeerCred challenge, once more with the user's name. Returns the
-    /// answer and the server's name.
+    /// answer and the server's name, or the error the answer reports.
     async fn call(
+        &self,
+        path: &str,
+        req: &Request,
+        document: &[u8],
+        limit: Duration,
+    ) -> Result<(Answer, String), Error> {
+        let (a, server) = self.answer(path, req, document, limit).await?;
+        Ok((a.checked()?, server))
+    }
+
+    /// As [`Self::call`], with the answer unchecked: IPP's errors are the caller's to read.
+    async fn answer(
         &self,
         path: &str,
         req: &Request,
@@ -242,12 +256,18 @@ impl Client {
             s => return Err(Error::Http(s)),
         }
         let server = resp.header("Server").map(server_name).unwrap_or_default();
-        Ok((proto::parse(&resp.body)?.checked()?, server))
+        Ok((proto::parse(&resp.body)?, server))
     }
 
     async fn printers_and_server(&self) -> Result<(Vec<Printer>, String), Error> {
         let req = Request::new(Operation::CupsGetPrinters, None, &self.user).wanted(PRINTER_ATTRS);
-        let (a, server) = self.call("/", &req, b"", READ).await?;
+        let (a, server) = self.answer("/", &req, b"", READ).await?;
+        // With no printers, cupsd answers "not found" ("No destinations added.") rather than with
+        // an empty list.
+        if a.status == NOT_FOUND {
+            return Ok((Vec::new(), server));
+        }
+        let a = a.checked()?;
         let mut list: Vec<Printer> = a.of(DelimiterTag::PrinterAttributes).filter_map(printer_from).collect();
         list.sort_by_key(|p| p.title().to_lowercase());
         Ok((list, server))
@@ -262,7 +282,7 @@ impl Client {
         let req = Request::new(Operation::CupsGetDefault, None, &self.user).wanted(&["printer-name"]);
         match self.call("/", &req, b"", READ).await {
             Ok((a, _)) => Ok(a.of(DelimiterTag::PrinterAttributes).find_map(|g| g.text("printer-name"))),
-            Err(Error::Ipp { status: 0x0406, .. }) => Ok(None),
+            Err(Error::Ipp { status: NOT_FOUND, .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -425,7 +445,7 @@ impl Client {
             .wanted(&["ppd-name"]);
         match self.call("/", &req, b"", READ).await {
             Ok((a, _)) => Ok(a.of(DelimiterTag::PrinterAttributes).find_map(|g| g.text("ppd-name"))),
-            Err(Error::Ipp { status: 0x0406, .. }) => Ok(None),
+            Err(Error::Ipp { status: NOT_FOUND, .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -551,6 +571,62 @@ pub fn elsewhere() -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::Driver;
+
+    /// A request's head and the body its Content-Length gives have all come.
+    fn whole(got: &[u8]) -> bool {
+        let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else { return false };
+        let length = String::from_utf8_lossy(&got[..end])
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: ").and_then(|v| v.trim().parse::<usize>().ok()))
+            .unwrap_or(0);
+        got.len() >= end + 4 + length
+    }
+
+    /// A cupsd on a socket of its own that answers every request with `ipp`.
+    async fn fake_cupsd(name: &str, ipp: Vec<u8>) -> PathBuf {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = std::env::temp_dir().join(format!("lituus-print-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("cups.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                // The whole request first, so the answer isn't cut off by an unread body.
+                let mut got = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while let Ok(n @ 1..) = stream.read(&mut chunk).await {
+                    got.extend_from_slice(&chunk[..n]);
+                    if whole(&got) {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nServer: CUPS/2.4 IPP/2.1\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\n\r\n",
+                    ipp.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&ipp).await;
+            }
+        });
+        socket
+    }
+
+    #[tokio::test]
+    async fn no_printers_is_an_empty_list_not_an_error() {
+        // What cupsd answers CUPS-Get-Printers before any printer is added.
+        let none = proto::tests::response(
+            NOT_FOUND,
+            vec![(DelimiterTag::OperationAttributes, vec![("status-message", proto::text("No destinations added."))])],
+        );
+        let socket = fake_cupsd("no-printers", none).await;
+        let c = Client::new(&socket, "anna");
+        let (printers, server) = c.printers_and_server().await.unwrap();
+        assert!(printers.is_empty(), "{printers:?}");
+        assert_eq!(server, "CUPS 2.4");
+        assert_eq!(c.server_default().await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+    }
 
     #[test]
     fn names_and_uris_round_trip() {

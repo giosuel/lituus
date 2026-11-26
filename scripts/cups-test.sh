@@ -3,7 +3,8 @@
 # (ippeveprinter), its socket shared with the host. Run with --userns=keep-id, so cupsd sees the
 # host's uid on the socket, as PeerCred needs: the host's user is an admin while it's in wheel.
 #
-#   scripts/cups-test.sh            crates/print/tests/cups.rs, as an admin and as a plain user
+#   scripts/cups-test.sh            crates/print/tests/cups.rs, as an admin, as a plain user and with
+#                                   no printers
 #   scripts/cups-test.sh up DIR     start it and leave it running; then CUPS_SERVER=DIR/cups.sock
 #                                   (and DBUS_SYSTEM_BUS_ADDRESS=unix:path=DIR/system_bus_socket);
 #                                   PUBLISH=1 also puts the virtual printer on 127.0.0.1:8631
@@ -77,6 +78,11 @@ reset_printers() {
   '
 }
 
+# No printers at all, as on a system where none was ever added.
+no_printers() {
+  inside 'for p in $(lpstat -e 2>/dev/null); do lpadmin -x "$p"; done'
+}
+
 # Puts the user in wheel (CUPS's SystemGroup on Arch) or takes them out of it.
 admin() { # user on|off
   inside '
@@ -126,6 +132,8 @@ case "${1:-test}" in
     reset_printers
     admin "$me" off
     LITUUS_CUPS_ADMIN=0 cargo test -p lituus-print --test cups "$@" -- --test-threads 1
+    no_printers
+    LITUUS_CUPS_EMPTY=1 cargo test -p lituus-print --test cups "$@" no_printers
     ;;
   ci)
     # As root in CI's container: root is one of CUPS's admins; "plain" isn't.
@@ -140,6 +148,8 @@ case "${1:-test}" in
       sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
     install -m 755 "$bin" /tmp/cups-tests
     runuser -u plain -- env LITUUS_CUPS_SOCKET=/lituus/cups.sock LITUUS_CUPS_ADMIN=0 /tmp/cups-tests --test-threads 1
+    no_printers
+    LITUUS_CUPS_EMPTY=1 /tmp/cups-tests no_printers
     ;;
   *) echo "usage: $0 [test [cargo args] | up DIR | down DIR | ci]" >&2; exit 2 ;;
 esac
