@@ -45,6 +45,7 @@ export component Icon inherits Path {
         : name == "bug" ? "M4.5 8.5a3.5 3.5 0 0 1 7 0v1.5a3.5 3.5 0 0 1 -7 0zM6 5V4a2 2 0 0 1 4 0v1M8 8v5.5M1.8 9h2.7M11.5 9h2.7M2.5 5.5l2.2 1.3M13.5 5.5l-2.2 1.3M2.5 13l2.2-1.5M13.5 13l-2.2-1.5"
         : name == "package" ? "M8 1.8l5.7 3.1v6.2L8 14.2l-5.7-3.1V4.9zM2.4 5L8 8.1 13.6 5M8 8.1v6"
         : name == "battery" ? "M2 5h10.5v6H2zM12.5 7h1.5v2h-1.5M3.5 6.5h4v3h-4z"
+        : name == "plug" ? "M6 1.5v3M10 1.5v3M4 4.5h8v2.5a4 4 0 0 1-8 0zM8 11v3.5"
         : name == "chevron" ? "M4.5 6l3.5 3.5 3.5-3.5"
         : name == "back" ? "M10 3l-5 5 5 5"
         : name == "close" ? "M4 4l8 8M12 4l-8 8"
@@ -64,6 +65,11 @@ export component Icon inherits Path {
         : name == "globe" ? "M2 8a6 6 0 1 0 12 0a6 6 0 1 0 -12 0M2 8h12M8 2c1.8 1.7 2.6 3.8 2.6 6S9.8 12.3 8 14c-1.8-1.7-2.6-3.8-2.6-6S6.2 3.7 8 2z"
         : name == "upload" ? "M8 11V2.5M4.8 5.7L8 2.5l3.2 3.2M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"
         : name == "file" ? "M4 1.8h5l3 3v9.4H4zM9 1.8v3h3"
+        : name == "moon" ? "M13.4 9.9A5.8 5.8 0 0 1 6.1 2.6a5.8 5.8 0 1 0 7.3 7.3z"
+        // A clock's face at ten past… (Date & language).
+        : name == "clock" ? "M2 8a6 6 0 1 0 12 0a6 6 0 1 0 -12 0M8 4.6V8l2.4 1.5"
+        // A figure in a circle, arms out (Accessibility).
+        : name == "access" ? "M2 8a6 6 0 1 0 12 0a6 6 0 1 0 -12 0M7.3 4.7a0.7 0.7 0 1 0 1.4 0a0.7 0.7 0 1 0 -1.4 0M4.9 6.5L8 7.1l3.1-0.6M8 7.1v2.3M8 9.4l-1.5 2.4M8 9.4l1.5 2.4"
         : name == "palette" ? "M8 2a6 6 0 1 0 0 12c0.9 0 1.4-0.6 1.4-1.3 0-0.8-0.7-1.2-0.7-2 0-0.7 0.6-1.2 1.3-1.2H12a2 2 0 0 0 2-2C14 4.5 11.3 2 8 2zM4.4 7.6a0.7 0.7 0 1 0 1.4 0a0.7 0.7 0 1 0 -1.4 0M6.6 4.9a0.7 0.7 0 1 0 1.4 0a0.7 0.7 0 1 0 -1.4 0M9.8 5.3a0.7 0.7 0 1 0 1.4 0a0.7 0.7 0 1 0 -1.4 0"
         : name == "minus" ? "M3 8h10"
         : name == "folder" ? "M2 4.5h4l1.5 1.5H14v6.5H2z"

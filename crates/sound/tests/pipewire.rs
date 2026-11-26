@@ -5,11 +5,19 @@
 
 use lituus_sound::Session;
 
+/// The tests share one PipeWire, and one's devices and recordings would be in another's way (the
+/// failing input among the devices a recording is moved to), so they take turns.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static PIPEWIRE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PIPEWIRE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn reads_and_changes_a_real_server() {
     if std::env::var_os("LITUUS_SOUND_TEST").is_none() {
         return;
     }
+    let _turn = one_at_a_time();
     let mut session = Session::connect().expect("pipewire-pulse");
     let snap = session.snapshot().unwrap();
     assert!(snap.server.contains("PipeWire") || snap.server.contains("pulse"), "{}", snap.server);
@@ -50,6 +58,7 @@ fn a_watcher_hears_changes() {
     if std::env::var_os("LITUUS_SOUND_TEST").is_none() {
         return;
     }
+    let _turn = one_at_a_time();
     let (tx, rx) = std::sync::mpsc::channel();
     let watcher = Session::connect().unwrap();
     std::thread::spawn(move || watcher.watch(move || tx.send(()).is_ok()));
@@ -60,4 +69,124 @@ fn a_watcher_hears_changes() {
     session.set_sink_mute(sink.index, !sink.muted).unwrap();
     rx.recv_timeout(std::time::Duration::from_secs(3)).expect("an event");
     session.set_sink_mute(sink.index, sink.muted).unwrap();
+}
+
+/// An app recording (pw-record, when it's installed) is listed with its name, and its volume,
+/// mute and input change.
+#[test]
+fn reads_and_changes_a_recording() {
+    if std::env::var_os("LITUUS_SOUND_TEST").is_none() {
+        return;
+    }
+    let _turn = one_at_a_time();
+    let file = std::env::temp_dir().join(format!("lituus-recording-{}.wav", std::process::id()));
+    let Ok(mut recorder) = std::process::Command::new("pw-record")
+        .args(["-P", "{ application.name = \"Lituus test recorder\" }"])
+        .arg(&file)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        eprintln!("no pw-record: skipped");
+        return;
+    };
+    let recorder_pid = recorder.id();
+    let mut session = Session::connect().unwrap();
+    let find = |session: &mut Session| {
+        session.snapshot().unwrap().recordings.into_iter().find(|r| r.app == "Lituus test recorder")
+    };
+    // Listed as soon as it starts, and linked to an input or a monitor once the session manager
+    // gets to it (a moment later on Ubuntu 24.04's PipeWire 1.0).
+    let mut found = None;
+    for _ in 0..100 {
+        let snap = session.snapshot().unwrap();
+        found = snap.recordings.iter().find(|r| r.app == "Lituus test recorder").cloned();
+        if found.as_ref().is_some_and(|r| snap.sources.iter().chain(&snap.monitors).any(|d| d.index == r.device)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let rec = found.expect("the recording is listed");
+        assert_eq!(rec.pid, Some(recorder_pid), "its process, from its client");
+        let snap = session.snapshot().unwrap();
+        assert!(
+            snap.sources.iter().chain(&snap.monitors).any(|d| d.index == rec.device),
+            "it records from an input or a monitor, not {}",
+            rec.device
+        );
+        session.set_recording_volume(rec.index, &rec.volume.with_percent(37)).unwrap();
+        session.set_recording_mute(rec.index, true).unwrap();
+        let after = find(&mut session).unwrap();
+        assert_eq!(after.volume.percent(), 37);
+        assert!(after.muted);
+        // To another input, or an output's monitor; the session manager moves it a moment later.
+        let Some(other) = snap.sources.iter().chain(&snap.monitors).find(|d| d.index != rec.device) else { return };
+        session.move_recording(rec.index, other.index).unwrap();
+        let mut device = rec.device;
+        for _ in 0..40 {
+            device = find(&mut session).unwrap().device;
+            if device == other.index {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(device, other.index);
+        // The session manager keeps an app's volume, mute and input for its next recordings
+        // (WirePlumber's restore-stream, by media.role), so they go back as they were.
+        session.move_recording(rec.index, rec.device).unwrap();
+        session.set_recording_volume(rec.index, &rec.volume).unwrap();
+        session.set_recording_mute(rec.index, rec.muted).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }));
+    let _ = recorder.kill();
+    let _ = recorder.wait();
+    let _ = std::fs::remove_file(&file);
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// An input PipeWire fails to start doesn't hide the others: the snapshot still reads. A plain
+/// null source fails when an app records from it (PipeWire 1.6), and pipewire-pulse then gives
+/// it state -3, which pulseaudio 0.3.1 can't read. Needs pw-cli and pw-record, which reach
+/// PipeWire through PIPEWIRE_RUNTIME_DIR (scripts/test.sh sets it).
+#[test]
+fn an_input_that_fails_doesnt_hide_the_others() {
+    if std::env::var_os("LITUUS_SOUND_TEST").is_none() || std::env::var_os("PIPEWIRE_RUNTIME_DIR").is_none() {
+        return;
+    }
+    let _turn = one_at_a_time();
+    let pw_cli =
+        |args: &[&str]| std::process::Command::new("pw-cli").args(args).output().is_ok_and(|o| o.status.success());
+    let node = "{ factory.name=support.null-audio-sink node.name=lituus-broken-mic node.description=Broken \
+                media.class=Audio/Source audio.position=[FL FR] object.linger=true }";
+    if !pw_cli(&["create-node", "adapter", node]) {
+        eprintln!("no pw-cli: skipped");
+        return;
+    }
+    let recorder = std::process::Command::new("pw-record")
+        .args([
+            "--raw",
+            "--target",
+            "lituus-broken-mic",
+            "-P",
+            "{ application.name = \"Lituus test caller\" }",
+            "/dev/null",
+        ])
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    // Whether or not this PipeWire fails it, every snapshot meanwhile reads.
+    let mut failures = Vec::new();
+    for _ in 0..30 {
+        if let Err(e) = Session::connect().and_then(|mut s| s.snapshot()) {
+            failures.push(format!("{e:?}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if let Ok(mut recorder) = recorder {
+        let _ = recorder.kill();
+        let _ = recorder.wait();
+    }
+    pw_cli(&["destroy", "lituus-broken-mic"]);
+    assert!(failures.is_empty(), "{failures:?}");
 }

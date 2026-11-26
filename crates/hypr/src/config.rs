@@ -69,7 +69,7 @@ impl ConfigFile {
     /// The comment and the line Set up… adds at the end of the user's config (D-44).
     pub fn load_lines(&self) -> (String, String) {
         let comment = if self.lua { "--" } else { "#" };
-        (format!("{comment} Lituus's settings (Displays, Input, Shortcuts)"), self.load_line())
+        (format!("{comment} Lituus's settings, from the pages that change Hyprland"), self.load_line())
     }
 
     /// Where Set up… keeps a copy of the user's config first: hyprland.lua.bak, or .bak.1 and on
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "hl.config({ general = { gaps_in = 4 } })");
         assert_eq!(
             std::fs::read_to_string(file.main_path()).unwrap(),
-            "hl.config({ general = { gaps_in = 4 } })\n\n-- Lituus's settings (Displays, Input, Shortcuts)\nrequire(\"lituus\")\n"
+            "hl.config({ general = { gaps_in = 4 } })\n\n-- Lituus's settings, from the pages that change Hyprland\nrequire(\"lituus\")\n"
         );
         assert!(file.loaded());
         // A copy that's already there is kept.
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(file.main_path()).unwrap(),
             format!(
-                "monitor = , preferred, auto, 1\n\n# Lituus's settings (Displays, Input, Shortcuts)\nsource = {}\n",
+                "monitor = , preferred, auto, 1\n\n# Lituus's settings, from the pages that change Hyprland\nsource = {}\n",
                 d.join("lituus.conf").display()
             )
         );
