@@ -16,6 +16,8 @@ use crate::user;
 
 pub const SOCKET: &str = "/run/cups/cups.sock";
 const READ: Duration = Duration::from_secs(10);
+/// cupsd waits 30 s for a printer that doesn't answer before it gives up adding it.
+const ADD: Duration = Duration::from_secs(40);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -365,10 +367,167 @@ impl Client {
         self.call("/admin/", &req, &document, READ).await.map(drop)
     }
 
+    /// Adds a printer (admins only): `ppd` is a driver's name, or "everywhere" for a driverless
+    /// one, which cupsd asks the printer about itself. Not shared on the network; the paper is
+    /// the one this computer's locale uses, when the printer has it.
+    pub async fn add(&self, new: &NewPrinter, paper: &str) -> Result<(), Error> {
+        let req = Request::new(Operation::CupsAddModifyPrinter, Some(&printer_uri(&new.name)), &self.user)
+            .printer("device-uri", proto::uri(&new.uri))
+            // A name, not a keyword: as a keyword cupsd quietly makes a raw queue.
+            .printer("ppd-name", proto::name(&new.ppd))
+            .printer("printer-info", proto::text(&new.info))
+            .printer("printer-location", proto::text(&new.location))
+            .printer("printer-is-accepting-jobs", IppValue::Boolean(true))
+            .printer("printer-state", IppValue::Enum(3))
+            .printer("printer-is-shared", IppValue::Boolean(false));
+        self.call("/admin/", &req, b"", ADD).await?;
+        if let Ok(o) = self.options(&new.name).await
+            && o.media.supported.iter().any(|m| m == paper)
+            && o.media.default != paper
+        {
+            let _ =
+                self.set_options(&new.name, &Defaults { media: Some(paper.to_string()), ..Defaults::default() }).await;
+        }
+        Ok(())
+    }
+
+    /// A printer's name for people (printer-info; admins only).
+    pub async fn set_info(&self, name: &str, info: &str) -> Result<(), Error> {
+        let req = Request::new(Operation::CupsAddModifyPrinter, Some(&printer_uri(name)), &self.user)
+            .printer("printer-info", proto::text(info));
+        self.call("/admin/", &req, b"", READ).await.map(drop)
+    }
+
+    /// USB printers CUPS sees (admins only), with their IEEE 1284 device IDs.
+    pub async fn usb_devices(&self) -> Result<Vec<Device>, Error> {
+        let req = Request::new(Operation::CupsGetDevices, None, &self.user)
+            .op("include-schemes", IppValue::Array(vec![proto::name("usb")]))
+            .op("timeout", IppValue::Integer(5));
+        let (a, _) = self.call("/", &req, b"", READ).await?;
+        Ok(a.of(DelimiterTag::PrinterAttributes)
+            .filter_map(|g| {
+                Some(Device {
+                    uri: g.text("device-uri")?,
+                    id: g.text("device-id").unwrap_or_default(),
+                    make_and_model: g.text("device-make-and-model").unwrap_or_default(),
+                    info: g.text("device-info").unwrap_or_default(),
+                })
+            })
+            .filter(|d| d.uri.starts_with("usb://"))
+            .collect())
+    }
+
+    /// An installed driver for a device ID, by its PPD name.
+    pub async fn ppd_for(&self, device_id: &str) -> Result<Option<String>, Error> {
+        let req = Request::new(Operation::CupsGetPPDs, None, &self.user)
+            .op("ppd-device-id", proto::text(device_id))
+            .op("limit", IppValue::Integer(1))
+            .wanted(&["ppd-name"]);
+        match self.call("/", &req, b"", READ).await {
+            Ok((a, _)) => Ok(a.of(DelimiterTag::PrinterAttributes).find_map(|g| g.text("ppd-name"))),
+            Err(Error::Ipp { status: 0x0406, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// cupsd lets this user make admin changes: asked with an admin-only request that does
+    /// nothing (a device list for a scheme no backend has). For CUPS admin groups besides wheel,
+    /// sys, root and lpadmin, or for root.
+    pub async fn can_admin(&self) -> bool {
+        let req = Request::new(Operation::CupsGetDevices, None, &self.user)
+            .op("include-schemes", IppValue::Array(vec![proto::name("lituus-none")]))
+            .op("timeout", IppValue::Integer(1));
+        self.call("/", &req, b"", READ).await.is_ok()
+    }
+
     /// Makes `name` this user's default printer (~/.cups/lpoptions); other users keep theirs.
     pub fn set_default(&self, name: &str) -> Result<(), Error> {
         Ok(lpoptions::write_default(name)?)
     }
+}
+
+/// A printer to add.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewPrinter {
+    /// The queue's name: letters, digits, `_` and `-` (see `queue_name`).
+    pub name: String,
+    pub uri: String,
+    /// "everywhere" (driverless), or an installed driver's PPD name.
+    pub ppd: String,
+    pub info: String,
+    pub location: String,
+}
+
+/// A USB printer as CUPS's usb backend sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Device {
+    pub uri: String,
+    /// IEEE 1284: "MFG:Samsung;MDL:ML-2160 Series;CMD:SPL;".
+    pub id: String,
+    pub make_and_model: String,
+    pub info: String,
+}
+
+/// A queue name from a printer's name ("Canon_TS5300_series"): letters, digits, `_` and `-`, at
+/// most 127; `_2` and on when it's taken.
+pub fn queue_name(title: &str, taken: &[String]) -> String {
+    let mut base = String::new();
+    for c in title.chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' };
+        if !(c == '_' && base.ends_with('_')) {
+            base.push(c);
+        }
+    }
+    let base: String = base.trim_matches('_').chars().take(120).collect();
+    let base = if base.is_empty() { "Printer".to_string() } else { base };
+    let free = |n: &str| !taken.iter().any(|t| t.eq_ignore_ascii_case(n));
+    if free(&base) {
+        return base;
+    }
+    (2..).map(|i| format!("{base}_{i}")).find(|n| free(n)).expect("a free name")
+}
+
+/// What was typed for "Add by its address": an IP or a name ("192.168.1.40", "printer.local",
+/// "printer:8631"), or a whole ipp:// or ipps:// URI. Returns the URI, and the host and port to
+/// check it answers.
+pub fn address(typed: &str) -> Option<(String, String, u16)> {
+    let t = typed.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    let (scheme, rest) = match t.split_once("://") {
+        Some((s, r)) if s == "ipp" || s == "ipps" => (s, r),
+        Some(_) => return None,
+        None => ("ipp", t),
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((a, p)) if !p.is_empty() => (a, format!("/{p}")),
+        Some((a, _)) => (a, "/ipp/print".to_string()),
+        None => (rest, "/ipp/print".to_string()),
+    };
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (h, after) = v6.split_once(']')?;
+        (h.to_string(), after.strip_prefix(':').map(|p| p.parse().ok()).unwrap_or(Some(631))?)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse().ok()?),
+            None => (authority.to_string(), 631),
+        }
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let shown = if host.contains(':') { format!("[{host}]") } else { host.clone() };
+    let port_part = if port == 631 { String::new() } else { format!(":{port}") };
+    Some((format!("{scheme}://{shown}{port_part}{path}"), host, port))
+}
+
+/// Something answers at the printer's address within 5 seconds (before cupsd's 30 s try).
+pub async fn answers(host: &str, port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect((host, port))).await,
+        Ok(Ok(_))
+    )
 }
 
 /// cupsd is installed here, so starting it is enough (else it's to install).
@@ -403,6 +562,31 @@ mod tests {
     }
 
     #[test]
+    fn queue_names_are_cupss_and_free() {
+        assert_eq!(queue_name("Canon TS5300 series", &[]), "Canon_TS5300_series");
+        assert_eq!(queue_name("Büro (2. Stock)", &[]), "B_ro_2_Stock");
+        assert_eq!(queue_name("Office", &["office".into(), "Office_2".into()]), "Office_3");
+        assert_eq!(queue_name("???", &[]), "Printer");
+    }
+
+    #[test]
+    fn typed_addresses_become_uris() {
+        assert_eq!(address("192.168.1.40"), Some(("ipp://192.168.1.40/ipp/print".into(), "192.168.1.40".into(), 631)));
+        assert_eq!(
+            address("printer.local:8631"),
+            Some(("ipp://printer.local:8631/ipp/print".into(), "printer.local".into(), 8631))
+        );
+        assert_eq!(
+            address("ipps://p.local/ipp/print"),
+            Some(("ipps://p.local/ipp/print".into(), "p.local".into(), 631))
+        );
+        assert_eq!(address("[fe80::1]"), Some(("ipp://[fe80::1]/ipp/print".into(), "fe80::1".into(), 631)));
+        assert_eq!(address("http://x"), None);
+        assert_eq!(address("a b"), None);
+        assert_eq!(address(""), None);
+    }
+
+    #[test]
     fn drivers_are_told_apart_by_the_make_and_model() {
         assert_eq!(Printer::driver_of("Brother HL-L2350DW - IPP Everywhere", "ipp://x"), Driver::Driverless);
         assert_eq!(
@@ -415,5 +599,8 @@ mod tests {
             Printer::driver_of("Samsung ML-2160, SpliX V. 2.0.1", "usb://x"),
             Driver::Ppd("Samsung ML-2160, SpliX V. 2.0.1".into())
         );
+        let p = |m: &str| Printer { make_and_model: m.into(), ..Printer::default() };
+        assert_eq!(p("Lituus Virtual Duplex - IPP Everywhere").model_name(), "Lituus Virtual Duplex");
+        assert_eq!(p("Canon TS5300 series, driverless, cups-filters 2.0.1").model_name(), "Canon TS5300 series");
     }
 }

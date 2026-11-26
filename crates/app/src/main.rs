@@ -33,6 +33,7 @@ mod openvpn;
 mod palette;
 mod portal;
 mod power;
+mod printers;
 mod profiles;
 mod qr;
 mod quick;
@@ -124,6 +125,8 @@ pub enum Confirmed {
     Bluetooth(bluetooth::Command),
     /// A Displays profile change ("profile-update", "profile-delete") and the profile's name.
     Displays(&'static str, String),
+    /// Removing a printer (its queue's name).
+    Printer(String),
 }
 
 /// The password dialog's three forms.
@@ -211,6 +214,7 @@ struct App {
     /// The Sound page.
     sound: sound::State,
     power: power::State,
+    printers: printers::State,
     appearance: appearance::State,
     date: datetime::State,
     access: accessibility::State,
@@ -391,6 +395,8 @@ fn main() -> Result<(), slint::PlatformError> {
     appearance::spawn(window.as_weak());
     datetime::spawn(window.as_weak());
     datetime::spawn_clock(window.as_weak());
+    printers::spawn(window.as_weak());
+    printers::spawn_watch(window.as_weak());
     accessibility::spawn(window.as_weak());
     files::spawn(window.as_weak(), config::load(&config::path()).bluetooth.accept_files_from);
     displays::refresh(&window.as_weak());
@@ -1147,6 +1153,25 @@ fn connect_callbacks(window: &MainWindow) {
         update(&weak, |app| appearance::act(&w, &mut app.appearance, &verb, value))
     });
     let weak = window.as_weak();
+    window.on_printers_act(move |verb, value, text| {
+        let w = weak.clone();
+        update(&weak, |app| {
+            if verb == "remove" {
+                if let Some((title, text, name)) = printers::remove_question(&app.printers) {
+                    app.confirm = Some(Confirm {
+                        title,
+                        text,
+                        button: "Remove".into(),
+                        destructive: true,
+                        then: Confirmed::Printer(name),
+                    });
+                }
+            } else {
+                printers::act(&w, &mut app.printers, &verb, value, &text);
+            }
+        })
+    });
+    let weak = window.as_weak();
     window.on_date_act(move |verb, value, text| {
         let w = weak.clone();
         update(&weak, |app| datetime::act(&w, &mut app.date, &verb, value, &text))
@@ -1362,6 +1387,7 @@ fn connect_callbacks(window: &MainWindow) {
             Some(Confirmed::Network(command)) => send(app, command),
             Some(Confirmed::Bluetooth(command)) => app.bt.send(command),
             Some(Confirmed::Displays(verb, name)) => displays::confirmed(&mut app.displays, verb, &name),
+            Some(Confirmed::Printer(name)) => printers::remove(&weak, &mut app.printers, name),
             None => {}
         })
     });
@@ -1438,6 +1464,7 @@ fn go(app: &mut App, id: &str) {
         Some(view::Page::Power) => power::read_files(&mut app.power, &config::load(&config::path())),
         Some(view::Page::Appearance) => app.appearance.reread = true,
         Some(view::Page::DateLanguage) => app.date.reread = true,
+        Some(view::Page::Printers) => app.printers.reread = true,
         Some(view::Page::Accessibility) => app.access.reread = true,
         Some(view::Page::NightLight) => night::read(&mut app.night, &config::load(&config::path()).night_light),
         _ => {}
@@ -1877,6 +1904,17 @@ fn nav_entries(app: &App) -> Vec<nav::Entry> {
             off: "",
         },
         nav::Entry {
+            id: "printers",
+            label: "Printers",
+            icon: "printer",
+            group: "DEVICES",
+            keywords: "printer printers print printing queue jobs cups paper a4 letter two-sided duplex colour color \
+                       greyscale quality test page driverless airprint ipp default printer",
+            status: printers::status(&app.printers),
+            parent: None,
+            off: "",
+        },
+        nav::Entry {
             id: "appearance",
             label: "Appearance",
             icon: "palette",
@@ -2140,6 +2178,14 @@ fn render(window: &MainWindow) {
         datetime::render(window, &app.date);
         if std::mem::take(&mut app.date.reread) {
             datetime::spawn(window.as_weak());
+        }
+        app.printers.open = window.get_page() == "printers";
+        if app.printers.open {
+            printers::render(window, &app.printers);
+        }
+        if std::mem::take(&mut app.printers.reread) {
+            let open = app.printers.open;
+            printers::refresh(&window.as_weak(), &mut app.printers, open);
         }
         accessibility::render(window, &app.access, &app.appearance);
         if std::mem::take(&mut app.access.reread) {
@@ -4481,6 +4527,49 @@ mod tests {
         assert!(ElementHandle::find_by_accessible_label(&window, "Hold to compare").next().is_none());
         window.set_night(super::night::view(&super::night::State { installed: false, ..Default::default() }));
         assert!(ElementHandle::find_by_accessible_label(&window, "Temperature").next().is_none());
+    }
+
+    /// Printers (S-186, S-217, S-218): the list, the queue with Cancel, the defaults; Make default on
+    /// a printer that isn't the default; without CUPS, the command that starts it.
+    #[test]
+    fn the_printers_page_shows_the_queue_and_the_defaults() {
+        let window = window();
+        window.set_page("printers".into());
+        let mut state = super::printers::tests::sample();
+        window.set_printers(super::printers::view(&state));
+        let acts = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a = acts.clone();
+        window.on_printers_act(move |verb, value, text| a.borrow_mut().push(format!("{verb} {value} {text}")));
+        window.window().set_size(LogicalSize::new(2000.0, 1070.0));
+        assert_eq!(control(&window, "Paper", AccessibleRole::Combobox).accessible_value().as_deref(), Some("A4"));
+        assert_eq!(
+            control(&window, "Two-sided", AccessibleRole::Combobox).accessible_value().as_deref(),
+            Some("Long edge (book)")
+        );
+        control(&window, "Quality", AccessibleRole::Combobox);
+        assert!(ElementHandle::find_by_accessible_label(&window, "Make default").next().is_none());
+        control(&window, "Cancel invoice-2026-11.pdf", AccessibleRole::Button).invoke_accessible_default_action();
+        control(&window, "Print a test page", AccessibleRole::Button).invoke_accessible_default_action();
+        control(&window, "Remove", AccessibleRole::Button).invoke_accessible_default_action();
+        ElementHandle::find_by_accessible_label(&window, "HP OfficeJet Pro 8020, Not found on the network")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::ListItem))
+            .unwrap()
+            .invoke_accessible_default_action();
+        // A printer that isn't the user's default: Make default in its header (D-69).
+        state.selected = Some("HP".into());
+        window.set_printers(super::printers::view(&state));
+        control(&window, "Make default", AccessibleRole::Button).invoke_accessible_default_action();
+        assert_eq!(*acts.borrow(), ["cancel 4 ", "test-page 0 ", "remove 0 ", "select 0 HP", "make-default 0 "]);
+        // No CUPS: the command that starts it.
+        let mut none = super::printers::State { loaded: true, ..Default::default() };
+        none.read.not_running = true;
+        none.read.installed = true;
+        window.set_printers(super::printers::view(&none));
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "sudo systemctl enable --now cups.socket")
+                .next()
+                .is_some()
+        );
     }
 
     /// Date & language (S-183, S-184): set automatically, the zone and its picker, the language and

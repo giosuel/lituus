@@ -20,6 +20,7 @@ pub enum Page {
     Displays,
     Sound,
     Power,
+    Printers,
     Keyboard,
     Mouse,
     Shortcuts,
@@ -45,6 +46,7 @@ impl Page {
             "displays" => Self::Displays,
             "sound" => Self::Sound,
             "power" => Self::Power,
+            "printers" => Self::Printers,
             "keyboard" => Self::Keyboard,
             "mouse" => Self::Mouse,
             "shortcuts" => Self::Shortcuts,
@@ -87,6 +89,7 @@ impl Page {
             Self::Displays => "displays",
             Self::Sound => "sound",
             Self::Power => "power",
+            Self::Printers => "printers",
             Self::Keyboard => "keyboard",
             Self::Mouse => "mouse",
             Self::Shortcuts => "shortcuts",
@@ -413,6 +416,7 @@ pub fn build(snapshot: Option<&Snapshot>, error: Option<&lituus_nm::Error>, stat
         | Page::Displays
         | Page::Sound
         | Page::Power
+        | Page::Printers
         | Page::Keyboard
         | Page::Mouse
         | Page::Shortcuts
@@ -524,6 +528,7 @@ fn page_title(page: Page) -> &'static str {
         Page::Displays => "Displays",
         Page::Sound => "Sound",
         Page::Power => "Power",
+        Page::Printers => "Printers",
         Page::Keyboard => "Keyboard",
         Page::Mouse => "Mouse & touchpad",
         Page::Shortcuts => "Shortcuts",

@@ -21,7 +21,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 slint.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 zbus.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
@@ -33,6 +33,7 @@ lituus-hypr.workspace = true
 lituus-keyring.workspace = true
 lituus-nm.workspace = true
 lituus-power.workspace = true
+lituus-print.workspace = true
 lituus-sound.workspace = true
 lituus-system.workspace = true
 lituus-xdg.workspace = true

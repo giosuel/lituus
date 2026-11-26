@@ -56,6 +56,15 @@ impl Printer {
         if self.info.is_empty() { &self.name } else { &self.info }
     }
 
+    /// The model, without the driver CUPS names after it ("Brother HL-L2350DW series" from
+    /// "Brother HL-L2350DW series - IPP Everywhere").
+    pub fn model_name(&self) -> String {
+        let m = self.make_and_model.as_str();
+        let m = m.split(" - IPP Everywhere").next().unwrap_or(m);
+        let m = m.split(", driverless").next().unwrap_or(m);
+        m.trim().to_string()
+    }
+
     /// A printer on the network (not USB, not a file writer): the ones that can go missing.
     pub fn networked(&self) -> bool {
         ["ipp://", "ipps://", "dnssd://", "socket://", "lpd://", "http://", "https://"]

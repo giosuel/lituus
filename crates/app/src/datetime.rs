@@ -480,7 +480,7 @@ fn days(y: i64, m: u32, d: i64) -> i64 {
 }
 
 /// A polkit agent runs for this user: hyprpolkitagent, polkit-gnome, KDE's, lxqt-policykit, soteria…
-fn agent_running() -> bool {
+pub(crate) fn agent_running() -> bool {
     let me = std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
     let Ok(dir) = std::fs::read_dir("/proc") else { return false };
     dir.flatten().any(|e| {
