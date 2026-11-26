@@ -21,6 +21,12 @@ finish-args:
   - --talk-name=org.freedesktop.secrets
   - --talk-name=org.kde.kwalletd6
   - --talk-name=org.kde.kwalletd5
+  # Printers: CUPS's socket, your own default printer (~/.cups/lpoptions), Avahi for printers on
+  # the network, and cups-pk-helper for changes by users who aren't CUPS's admins.
+  - --socket=cups
+  - --filesystem=~/.cups:create
+  - --system-talk-name=org.freedesktop.Avahi
+  - --system-talk-name=org.opensuse.CupsPkHelper.Mechanism
   # Connected / disconnected / failed notifications.
   - --talk-name=org.freedesktop.Notifications
   # The tray icon (StatusNotifierItem), registered with the bar's tray.

@@ -41,6 +41,7 @@ export default defineConfig({
             'guide/displays',
             'guide/sound',
             'guide/input',
+            'guide/printers',
             'guide/wallpaper',
             'guide/apps',
             'guide/default-apps',

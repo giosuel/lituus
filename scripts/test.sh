@@ -35,10 +35,26 @@ fi
 if command -v pipewire >/dev/null && command -v wireplumber >/dev/null && command -v pipewire-pulse >/dev/null; then
   # A short path: PipeWire's socket paths must fit in 108 bytes.
   pw=$(mktemp -d /tmp/lpw.XXXXXX)
-  pwenv=(env XDG_RUNTIME_DIR="$pw" PIPEWIRE_RUNTIME_DIR="$pw" PULSE_RUNTIME_PATH="$pw/pulse" XDG_CONFIG_HOME="$pw/config"
-    XDG_STATE_HOME="$pw/state" DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent)
-  "${pwenv[@]}" pipewire >"$pw/pipewire.log" 2>&1 &
+  # A session bus of its own: WirePlumber 0.4 (Ubuntu 24.04) quits without one, and then nothing
+  # links an app to a device or sets the defaults. It starts no services (no servicedir), such
+  # as the gvfs daemon GLib would ask for.
+  cat >"$pw/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path=$pw/bus</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy>
+</busconfig>
+EOF
+  dbus-daemon --config-file="$pw/bus.conf" --nofork --nopidfile &
   pids="$!"
+  for _ in $(seq 100); do [ -S "$pw/bus" ] && break; sleep 0.05; done
+  pwenv=(env XDG_RUNTIME_DIR="$pw" PIPEWIRE_RUNTIME_DIR="$pw" PULSE_RUNTIME_PATH="$pw/pulse" XDG_CONFIG_HOME="$pw/config"
+    XDG_STATE_HOME="$pw/state" DBUS_SESSION_BUS_ADDRESS="unix:path=$pw/bus")
+  "${pwenv[@]}" pipewire >"$pw/pipewire.log" 2>&1 &
+  pids="$pids $!"
   for _ in $(seq 100); do [ -S "$pw/pipewire-0" ] && break; sleep 0.05; done
   "${pwenv[@]}" wireplumber >"$pw/wireplumber.log" 2>&1 &
   pids="$pids $!"
@@ -51,8 +67,10 @@ if command -v pipewire >/dev/null && command -v wireplumber >/dev/null && comman
   }
   node speakers Speakers Audio/Sink
   node tv TV Audio/Sink
-  node mic Microphone Audio/Source
-  export PULSE_SERVER="unix:$pw/pulse/native" LITUUS_SOUND_TEST=1
+  # Virtual: a plain null source fails to start when an app records from it (PipeWire 1.6).
+  node mic Microphone Audio/Source/Virtual
+  # PIPEWIRE_RUNTIME_DIR: the recording test's pw-record joins the same PipeWire.
+  export PULSE_SERVER="unix:$pw/pulse/native" PIPEWIRE_RUNTIME_DIR="$pw" LITUUS_SOUND_TEST=1
 else
   echo "test.sh: no PipeWire (pipewire, wireplumber, pipewire-pulse), so the sound tests are skipped" >&2
 fi

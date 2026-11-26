@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs a command against a mock NetworkManager on a private bus, with the networks from the
 # mockups (connected to "Lumen Home", a few others in range, an unplugged Ethernet port), a mock
-# BlueZ with the mockups' Bluetooth devices (MOCK_BLUEZ=0 leaves it out), and a mock hostnamed:
+# BlueZ with the mockups' Bluetooth devices (MOCK_BLUEZ=0 leaves it out), a mock hostnamed,
+# timedated and localed:
 #   scripts/mock-nm.sh lituus-cli list
 #   scripts/mock-nm.sh target/debug/lituus
 # The command sees the mock as its system bus; the real one is never touched. Needs dbus-daemon
@@ -142,6 +143,53 @@ if [ "${MOCK_HOSTNAMED:-1}" != 0 ]; then
     'self.UpdateProperties("org.freedesktop.hostname1", {"StaticHostname": args[0], "Hostname": args[0]})'
   hn org.freedesktop.DBus.Mock.AddMethod org.freedesktop.hostname1 SetPrettyHostname sb '' \
     'self.UpdateProperties("org.freedesktop.hostname1", {"PrettyHostname": args[0]})'
+fi
+# systemd-timedated (python-dbusmock's template) and a localed that keeps the locale it's given
+# (MOCK_DATE=0 leaves them out), for Date & language.
+if [ "${MOCK_DATE:-1}" != 0 ]; then
+  "$python" -m dbusmock --session --template timedated -p '{"Timezone": "Europe/Zurich"}' \
+    >>"${MOCK_NM_LOG:-/dev/null}" 2>&1 &
+  timedated=$!
+  "$python" -m dbusmock --session org.freedesktop.locale1 /org/freedesktop/locale1 org.freedesktop.locale1 \
+    >>"${MOCK_NM_LOG:-/dev/null}" 2>&1 &
+  localed=$!
+  trap 'kill $mock ${bluez:-} ${hostnamed:-} $timedated $localed 2>/dev/null' EXIT
+  for _ in $(seq 100); do
+    gdbus introspect --session -d org.freedesktop.locale1 -o /org/freedesktop/locale1 >/dev/null 2>&1 \
+      && gdbus introspect --session -d org.freedesktop.timedate1 -o /org/freedesktop/timedate1 >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  lc() { gdbus call --session -d org.freedesktop.locale1 -o /org/freedesktop/locale1 -m "$@" >/dev/null; }
+  lc org.freedesktop.DBus.Mock.AddProperties org.freedesktop.locale1 "{'Locale': <['LANG=en_US.UTF-8']>}"
+  lc org.freedesktop.DBus.Mock.AddMethod org.freedesktop.locale1 SetLocale asb '' \
+    'self.UpdateProperties("org.freedesktop.locale1", {"Locale": dbus.Array(args[0], signature="s")})'
+fi
+# MOCK_AVAHI=1: a mock Avahi with two printers on the "network" (the Printers page's Add dialog):
+# a driverless Canon and an old laser that needs a driver.
+if [ "${MOCK_AVAHI:-0}" = 1 ]; then
+  "$python" -m dbusmock --session org.freedesktop.Avahi / org.freedesktop.Avahi.Server >>"${MOCK_NM_LOG:-/dev/null}" 2>&1 &
+  avahi=$!
+  trap 'kill $mock ${bluez:-} ${hostnamed:-} ${timedated:-} ${localed:-} $avahi 2>/dev/null' EXIT
+  for _ in $(seq 100); do
+    gdbus introspect --session -d org.freedesktop.Avahi -o / >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  "$python" - <<'PY'
+import dbus
+bus = dbus.SessionBus()
+mock = dbus.Interface(bus.get_object("org.freedesktop.Avahi", "/"), "org.freedesktop.DBus.Mock")
+item = "self.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'ItemNew', 'iisssu', [2, 0, %r, '_ipp._tcp', 'local', dbus.UInt32(0)])"
+start = "if self.__dbus_object_path__ == '/b/ipp':\n    " + "\n    ".join(item % n for n in ["Canon TS5300 series", "Old Laser"]) + \
+    "\nself.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'AllForNow', '', [])"
+for path in ["/b/ipp", "/b/ipps"]:
+    mock.AddObject(path, "org.freedesktop.Avahi.ServiceBrowser", {}, [("Start", "", "", start)])
+mock.AddMethod("org.freedesktop.Avahi.Server", "ServiceBrowserPrepare", "iissu", "o",
+               "ret = dbus.ObjectPath('/b/ipp' if args[2] == '_ipp._tcp' else '/b/ipps')")
+mock.AddMethod("org.freedesktop.Avahi.Server", "ResolveService", "iisssiu", "iissssisqaayu",
+               "txt = [b'ty=Canon TS5300 series', b'URF=V1.4', b'UUID=c1'] if args[2].startswith('Canon') else [b'ty=Old Laser', b'pdl=application/postscript']\n"
+               "ret = (args[0], args[1], args[2], args[3], args[4], args[2].split()[0].lower() + '.local', 0, '192.168.1.50', dbus.UInt16(631), "
+               "[dbus.ByteArray(t) for t in txt], dbus.UInt32(0))")
+PY
 fi
 mock_bus="$DBUS_SESSION_BUS_ADDRESS"
 [ -n "${MOCK_NM_ADDRESS_FILE:-}" ] && echo "$mock_bus" > "$MOCK_NM_ADDRESS_FILE"
