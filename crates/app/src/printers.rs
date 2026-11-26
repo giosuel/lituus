@@ -277,8 +277,10 @@ fn tick(weak: &slint::Weak<MainWindow>, state: &mut State) {
         return;
     }
     let busy = state.read.snapshot.jobs.iter().any(|j| matches!(j.state, JobState::Pending | JobState::Processing));
-    let waited = state.last.is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
-    if busy || (state.read.not_running && waited) {
+    let waited = |s| state.last.is_none_or(|t| t.elapsed() >= Duration::from_secs(s));
+    // In a Flatpak, cupsd's signals don't come through (it has no name on the bus to allow).
+    let flatpak = std::env::var_os("FLATPAK_ID").is_some();
+    if busy || (state.read.not_running && waited(5)) || (flatpak && waited(3)) {
         refresh(weak, state, false);
     }
 }
