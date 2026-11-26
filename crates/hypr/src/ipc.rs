@@ -100,6 +100,17 @@ impl Hyprland {
         ok(self.request(&format!("eval {lua}"))?)
     }
 
+    /// Starts a program as Hyprland's `exec` does, so it runs on beside Hyprland (a daemon):
+    /// with a Lua config through `hl.dsp.exec_cmd`, since there `dispatch X` is `hl.dispatch(X)`
+    /// and hyprlang's `dispatch exec hyprsunset` isn't Lua (Hyprland 0.57, `dispatchRequest`).
+    pub fn exec(&self, command: &str, lua: bool) -> Result<(), Error> {
+        if lua {
+            self.eval(&format!("hl.dispatch(hl.dsp.exec_cmd({}))", crate::binds::lua_string(command)))
+        } else {
+            ok(self.request(&format!("dispatch exec {command}"))?)
+        }
+    }
+
     /// Sets a hyprlang keyword live (before 0.55): `keyword monitor DP-1, preferred, auto, 1`.
     pub fn keyword(&self, keyword: &str, value: &str) -> Result<(), Error> {
         ok(self.request(&format!("keyword {keyword} {value}"))?)
@@ -183,5 +194,24 @@ mod tests {
         .unwrap();
         assert_eq!(seen, ["workspace:2", "monitoradded:DP-1", "monitorremoved:HDMI-A-3"]);
         assert_eq!(server.join().unwrap()[1], r#"eval hl.monitor({ output = "DP-1", disabled = true })"#);
+    }
+
+    #[test]
+    fn a_program_starts_as_each_config_has_it() {
+        let (h, server) = fake(
+            |r| match r {
+                r if r.starts_with("eval hl.dispatch(hl.dsp.exec_cmd(") => "ok".to_owned(),
+                "dispatch exec hyprsunset" => "ok".to_owned(),
+                // What Hyprland 0.57 answers to hyprlang's form under Lua.
+                _ => "[string \"return hl.dispatch(exec hyprsunset)\"]:1: ')' expected near 'hyprsunset'".to_owned(),
+            },
+            "",
+        );
+        h.exec("hyprsunset", true).unwrap();
+        h.exec("hyprsunset", false).unwrap();
+        assert!(matches!(h.exec("hyprsunset -t 4000", false), Err(Error::Refused(_))));
+        let seen = server.join().unwrap();
+        assert_eq!(seen[0], r#"eval hl.dispatch(hl.dsp.exec_cmd("hyprsunset"))"#);
+        assert_eq!(seen[1], "dispatch exec hyprsunset");
     }
 }

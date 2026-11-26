@@ -144,10 +144,26 @@ jobs:
         env:
           LITUUS_REQUIRE_HYPRLAND: 1
 
+  cups:
+    # lituus-print against a real cupsd with virtual printers (ippeveprinter), as root (one of
+    # CUPS's admins) and as a plain user; scripts/cups-test.sh does the same locally in podman.
+    name: cups (printers)
+    runs-on: ubuntu-24.04
+    container: docker.io/library/archlinux:latest
+    timeout-minutes: 30
+    steps:
+      - name: CUPS and a Rust toolchain
+        run: pacman -Syu --noconfirm --needed cups cups-filters cups-pdf dbus rustup gcc git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: test lituus-print against cupsd
+        run: scripts/cups-test.sh ci
+
   ci-result:
     name: CI result
     if: always()
-    needs: [lint, test, deps, metadata, nix, hyprland]
+    needs: [lint, test, deps, metadata, nix, hyprland, cups]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

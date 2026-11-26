@@ -1549,6 +1549,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/enum-as-inner/enum-as-inner-0.7.0.crate",
+        "sha256": "0359ee92f81184d7985519e474bda2a5738476334edd3746c9b1265c067afe70",
+        "dest": "cargo/vendor/enum-as-inner-0.7.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"0359ee92f81184d7985519e474bda2a5738476334edd3746c9b1265c067afe70\", \"files\": {}}",
+        "dest": "cargo/vendor/enum-as-inner-0.7.0",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/enum-primitive-derive/enum-primitive-derive-0.3.0.crate",
         "sha256": "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c",
         "dest": "cargo/vendor/enum-primitive-derive-0.3.0"
@@ -2420,6 +2433,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/http/http-1.5.0.crate",
+        "sha256": "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0",
+        "dest": "cargo/vendor/http-1.5.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0\", \"files\": {}}",
+        "dest": "cargo/vendor/http-1.5.0",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/i-slint-backend-linuxkms/i-slint-backend-linuxkms-1.18.1.crate",
         "sha256": "0f519a8611a4982921e46e391015e5e40ceac5cc63813333ef91ada77df180d8",
         "dest": "cargo/vendor/i-slint-backend-linuxkms-1.18.1"
@@ -2909,6 +2935,19 @@
         "type": "inline",
         "contents": "{\"package\": \"eae7b9aee968036d54dce06cebaefd919e4472e753296daccd6d344e3e2df0c2\", \"files\": {}}",
         "dest": "cargo/vendor/io-lifetimes-1.0.11",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/ipp/ipp-8.0.0.crate",
+        "sha256": "0b845ac766857ac8a0746a488c40e1727b99c21ab5707ae83856630ba698cf7e",
+        "dest": "cargo/vendor/ipp-8.0.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"0b845ac766857ac8a0746a488c40e1727b99c21ab5707ae83856630ba698cf7e\", \"files\": {}}",
+        "dest": "cargo/vendor/ipp-8.0.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {

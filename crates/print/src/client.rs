@@ -1,0 +1,371 @@
+//! cupsd through its domain socket. Reads need nothing; changes need CUPS's SystemGroup, proved by
+//! PeerCred: the name sent must be the one the socket's peer uid has.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use ipp::model::{DelimiterTag, Operation};
+use ipp::prelude::IppValue;
+
+use crate::http;
+use crate::lpoptions;
+use crate::model::{Job, JobState, Options, Printer, Snapshot, State, quality_name};
+use crate::proto::{self, Answer, Group, Request};
+use crate::user;
+
+pub const SOCKET: &str = "/run/cups/cups.sock";
+const READ: Duration = Duration::from_secs(10);
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Nothing listens on the socket.
+    #[error("CUPS isn't running")]
+    NotRunning,
+    /// Only CUPS's admins (or root, through cups-pk-helper) may.
+    #[error("not allowed{}", if .0.is_empty() { String::new() } else { format!(": {}", .0) })]
+    NotAllowed(String),
+    #[error("{message} (IPP status {status:#06x})")]
+    Ipp { status: u16, message: String },
+    #[error("CUPS answered HTTP {0}")]
+    Http(u16),
+    #[error("CUPS didn't answer in time")]
+    Timeout,
+    #[error("{0}")]
+    Parse(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    DBus(#[from] zbus::Error),
+}
+
+/// What printers' attributes are read for the list.
+const PRINTER_ATTRS: &[&str] = &[
+    "printer-name",
+    "printer-info",
+    "printer-location",
+    "printer-make-and-model",
+    "printer-state",
+    "printer-state-reasons",
+    "printer-state-message",
+    "printer-type",
+    "printer-is-accepting-jobs",
+    "printer-is-shared",
+    "printer-is-temporary",
+    "device-uri",
+    "queued-job-count",
+];
+
+const JOB_ATTRS: &[&str] = &[
+    "job-id",
+    "job-name",
+    "job-state",
+    "job-originating-user-name",
+    "job-printer-uri",
+    "job-impressions",
+    "job-impressions-completed",
+    "job-media-sheets-completed",
+    "time-at-creation",
+];
+
+const OPTION_ATTRS: &[&str] = &[
+    "media-supported",
+    "media-default",
+    "sides-supported",
+    "sides-default",
+    "print-color-mode-supported",
+    "print-color-mode-default",
+    "print-quality-supported",
+    "print-quality-default",
+    "color-supported",
+];
+
+/// CUPS's own test page: the banner file cupsd's filters turn into a page with the printer's
+/// details. Sent as it is, so a Flatpak needs no access to /usr/share/cups.
+const TEST_PAGE: &str = "#PDF-BANNER\nTemplate default-testpage.pdf\nShow printer-name printer-info printer-location printer-make-and-model printer-driver-name printer-driver-version paper-size imageable-area\n";
+
+/// "CUPS 2.4" from "CUPS/2.4 IPP/2.1".
+fn server_name(header: &str) -> String {
+    header.split_whitespace().next().unwrap_or(header).replace('/', " ")
+}
+
+pub fn printer_uri(name: &str) -> String {
+    format!("ipp://localhost/printers/{}", encode_path(name))
+}
+
+fn encode_path(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The queue's name in a job's or printer's URI.
+fn name_in(uri: &str) -> String {
+    let last = uri.rsplit('/').next().unwrap_or(uri);
+    let bytes = last.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(b) = last.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub(crate) fn printer_from(g: &Group) -> Option<Printer> {
+    let name = g.text("printer-name")?;
+    let kind = g.int("printer-type").unwrap_or(0);
+    // Classes (groups of printers) and the queues CUPS makes on its own while an app prints to a
+    // printer on the network aren't printers to manage.
+    if kind & 0x1 != 0 || g.bool("printer-is-temporary").unwrap_or(false) {
+        return None;
+    }
+    let make_and_model = g.text("printer-make-and-model").unwrap_or_default();
+    let device_uri = g.text("device-uri").unwrap_or_default();
+    Some(Printer {
+        info: g.text("printer-info").unwrap_or_default(),
+        location: g.text("printer-location").unwrap_or_default(),
+        driver: Printer::driver_of(&make_and_model, &device_uri),
+        make_and_model,
+        device_uri,
+        state: State::from_ipp(g.int("printer-state").unwrap_or(3)),
+        reasons: g.texts("printer-state-reasons").into_iter().filter(|r| r != "none").collect(),
+        message: g.text("printer-state-message").unwrap_or_default(),
+        accepting: g.bool("printer-is-accepting-jobs").unwrap_or(true),
+        shared: g.bool("printer-is-shared").unwrap_or(false),
+        queued: g.int("queued-job-count").unwrap_or(0).max(0) as u32,
+        name,
+    })
+}
+
+pub(crate) fn job_from(g: &Group, me: &str) -> Option<Job> {
+    let id = g.int("job-id")?;
+    let user = g.text("job-originating-user-name").unwrap_or_default();
+    let done = g.int("job-impressions-completed").unwrap_or(0).max(g.int("job-media-sheets-completed").unwrap_or(0));
+    Some(Job {
+        id,
+        printer: g.text("job-printer-uri").map(|u| name_in(&u)).unwrap_or_default(),
+        name: g.text("job-name").unwrap_or_default(),
+        mine: user == me,
+        user,
+        state: JobState::from_ipp(g.int("job-state").unwrap_or(3)),
+        pages_done: done.max(0) as u32,
+        pages: g.int("job-impressions").filter(|n| *n > 0).map(|n| n as u32),
+        created: g.int("time-at-creation").unwrap_or(0) as i64,
+    })
+}
+
+pub(crate) fn options_from(g: &Group) -> Options {
+    let choices = |sup: &str, def: &str| crate::model::Choices {
+        supported: g.texts(sup),
+        default: g.text(def).unwrap_or_default(),
+    };
+    let quality = crate::model::Choices {
+        supported: g.ints("print-quality-supported").into_iter().filter_map(quality_name).map(String::from).collect(),
+        default: g.int("print-quality-default").and_then(quality_name).unwrap_or_default().to_string(),
+    };
+    let color = choices("print-color-mode-supported", "print-color-mode-default");
+    Options {
+        color_supported: g.bool("color-supported").unwrap_or_else(|| color.supported.iter().any(|c| c == "color")),
+        media: choices("media-supported", "media-default"),
+        sides: choices("sides-supported", "sides-default"),
+        color,
+        quality,
+    }
+}
+
+/// A local cupsd: its socket, and the user the requests are made as.
+#[derive(Debug, Clone)]
+pub struct Client {
+    socket: PathBuf,
+    user: String,
+}
+
+impl Client {
+    /// cupsd's usual socket, or the one CUPS_SERVER names when it's a path.
+    pub fn local() -> Self {
+        let socket = std::env::var("CUPS_SERVER")
+            .ok()
+            .filter(|s| s.starts_with('/'))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| SOCKET.into());
+        Self { socket, user: user::name() }
+    }
+
+    pub fn new(socket: impl Into<PathBuf>, user: impl Into<String>) -> Self {
+        Self { socket: socket.into(), user: user.into() }
+    }
+
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    /// Sends a request; on a PeerCred challenge, once more with the user's name. Returns the
+    /// answer and the server's name.
+    async fn call(
+        &self,
+        path: &str,
+        req: &Request,
+        document: &[u8],
+        limit: Duration,
+    ) -> Result<(Answer, String), Error> {
+        let body = req.bytes(document);
+        let mut resp =
+            http::send(&self.socket, &http::encode("POST", path, "application/ipp", None, &body), limit).await?;
+        if resp.status == 401 && resp.header("WWW-Authenticate").is_some_and(|h| h.contains("PeerCred")) {
+            let auth = format!("PeerCred {}", self.user);
+            resp = http::send(&self.socket, &http::encode("POST", path, "application/ipp", Some(&auth), &body), limit)
+                .await?;
+        }
+        match resp.status {
+            200 => {}
+            401 | 403 => return Err(Error::NotAllowed(String::new())),
+            s => return Err(Error::Http(s)),
+        }
+        let server = resp.header("Server").map(server_name).unwrap_or_default();
+        Ok((proto::parse(&resp.body)?.checked()?, server))
+    }
+
+    async fn printers_and_server(&self) -> Result<(Vec<Printer>, String), Error> {
+        let req = Request::new(Operation::CupsGetPrinters, None, &self.user).wanted(PRINTER_ATTRS);
+        let (a, server) = self.call("/", &req, b"", READ).await?;
+        let mut list: Vec<Printer> = a.of(DelimiterTag::PrinterAttributes).filter_map(printer_from).collect();
+        list.sort_by_key(|p| p.title().to_lowercase());
+        Ok((list, server))
+    }
+
+    pub async fn printers(&self) -> Result<Vec<Printer>, Error> {
+        Ok(self.printers_and_server().await?.0)
+    }
+
+    /// The system's default printer.
+    pub async fn server_default(&self) -> Result<Option<String>, Error> {
+        let req = Request::new(Operation::CupsGetDefault, None, &self.user).wanted(&["printer-name"]);
+        match self.call("/", &req, b"", READ).await {
+            Ok((a, _)) => Ok(a.of(DelimiterTag::PrinterAttributes).find_map(|g| g.text("printer-name"))),
+            Err(Error::Ipp { status: 0x0406, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Every printer's jobs that aren't done.
+    pub async fn jobs(&self) -> Result<Vec<Job>, Error> {
+        let req = Request::new(Operation::GetJobs, Some("ipp://localhost/"), &self.user)
+            .op("which-jobs", proto::keyword("not-completed"))
+            .wanted(JOB_ATTRS);
+        let (a, _) = self.call("/", &req, b"", READ).await?;
+        let mut jobs: Vec<Job> = a.of(DelimiterTag::JobAttributes).filter_map(|g| job_from(g, &self.user)).collect();
+        jobs.sort_by_key(|j| j.id);
+        Ok(jobs)
+    }
+
+    /// A printer's options: what it can do and its defaults.
+    pub async fn options(&self, name: &str) -> Result<Options, Error> {
+        let req =
+            Request::new(Operation::GetPrinterAttributes, Some(&printer_uri(name)), &self.user).wanted(OPTION_ATTRS);
+        let (a, _) = self.call("/", &req, b"", READ).await?;
+        Ok(a.of(DelimiterTag::PrinterAttributes).next().map(options_from).unwrap_or_default())
+    }
+
+    /// The printers, the user's default and the jobs, read afresh.
+    pub async fn snapshot(&self) -> Result<Snapshot, Error> {
+        let (printers, server) = self.printers_and_server().await?;
+        let own = lpoptions::read_default().filter(|d| printers.iter().any(|p| &p.name == d));
+        let default = match own {
+            Some(d) => Some(d),
+            None => self.server_default().await?,
+        };
+        let jobs = self.jobs().await?;
+        Ok(Snapshot { server, printers, default, jobs })
+    }
+
+    /// Cancels a job: the user's own always; others' only as an admin.
+    pub async fn cancel(&self, job: i32) -> Result<(), Error> {
+        let req = Request::new(Operation::CancelJob, Some("ipp://localhost/"), &self.user)
+            .op("job-id", IppValue::Integer(job));
+        self.call("/jobs/", &req, b"", READ).await.map(drop)
+    }
+
+    /// Prints CUPS's test page. Returns the job's id.
+    pub async fn print_test_page(&self, name: &str) -> Result<i32, Error> {
+        let req = Request::new(Operation::PrintJob, Some(&printer_uri(name)), &self.user)
+            .op("job-name", proto::name("Test page"))
+            .op("document-format", IppValue::new_mime_media_type("application/octet-stream").expect("short"));
+        let (a, _) = self.call(&format!("/printers/{}", encode_path(name)), &req, TEST_PAGE.as_bytes(), READ).await?;
+        Ok(a.of(DelimiterTag::JobAttributes).find_map(|g| g.int("job-id")).unwrap_or(0))
+    }
+
+    /// Removes a printer (admins only).
+    pub async fn remove(&self, name: &str) -> Result<(), Error> {
+        let req = Request::new(Operation::CupsDeletePrinter, Some(&printer_uri(name)), &self.user);
+        self.call("/admin/", &req, b"", READ).await.map(drop)
+    }
+
+    /// Makes `name` this user's default printer (~/.cups/lpoptions); other users keep theirs.
+    pub fn set_default(&self, name: &str) -> Result<(), Error> {
+        Ok(lpoptions::write_default(name)?)
+    }
+}
+
+/// cupsd is installed here, so starting it is enough (else it's to install).
+pub fn installed() -> bool {
+    ["/usr/bin/cupsd", "/usr/sbin/cupsd"].iter().any(|p| Path::new(p).exists())
+}
+
+/// Lituus manages only the local cupsd; when apps are told to print through another server
+/// (CUPS_SERVER or ~/.cups/client.conf), its name.
+pub fn elsewhere() -> Option<String> {
+    let named = std::env::var("CUPS_SERVER").ok().or_else(|| {
+        let home = std::env::var_os("HOME")?;
+        let conf = std::fs::read_to_string(PathBuf::from(home).join(".cups/client.conf")).ok()?;
+        conf.lines().find_map(|l| l.trim().strip_prefix("ServerName").map(|v| v.trim().to_string()))
+    })?;
+    let host = named.split(':').next().unwrap_or(&named).to_string();
+    (!named.starts_with('/') && !["localhost", "127.0.0.1", "::1", ""].contains(&host.as_str())).then_some(named)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Driver;
+
+    #[test]
+    fn names_and_uris_round_trip() {
+        assert_eq!(printer_uri("Office"), "ipp://localhost/printers/Office");
+        assert_eq!(printer_uri("Büro 2"), "ipp://localhost/printers/B%C3%BCro%202");
+        assert_eq!(name_in("ipp://localhost/printers/B%C3%BCro%202"), "Büro 2");
+        assert_eq!(name_in("ipp://host:631/printers/Office"), "Office");
+        assert_eq!(server_name("CUPS/2.4 IPP/2.1"), "CUPS 2.4");
+    }
+
+    #[test]
+    fn drivers_are_told_apart_by_the_make_and_model() {
+        assert_eq!(Printer::driver_of("Brother HL-L2350DW - IPP Everywhere", "ipp://x"), Driver::Driverless);
+        assert_eq!(
+            Printer::driver_of("Canon TS5300 series, driverless, cups-filters 2.0.1", "ipp://x"),
+            Driver::Driverless
+        );
+        assert_eq!(Printer::driver_of("Generic CUPS-PDF Printer (w/ options)", "cups-pdf:/"), Driver::Pdf);
+        assert_eq!(Printer::driver_of("Local Raw Printer", "socket://x"), Driver::Raw);
+        assert_eq!(
+            Printer::driver_of("Samsung ML-2160, SpliX V. 2.0.1", "usb://x"),
+            Driver::Ppd("Samsung ML-2160, SpliX V. 2.0.1".into())
+        );
+    }
+}
