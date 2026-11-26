@@ -1,0 +1,208 @@
+// The Accessibility page, as drawn in S-185 (D-58): Seeing (text size, high contrast, reduce motion,
+// the cursor size), Zoom (Hyprland's cursor zoom and its keys), the Screen reader (Orca). What it
+// shows comes from Rust (src/accessibility.rs); everything the user does goes back through
+// `act(verb, number)`.
+import { Theme, Type, Size } from "theme.slint";
+import { Switch, CardTitle, CardFooter, Notice, Scroll } from "controls.slint";
+import { Select } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, LoadBanner, CommandBox } from "shell.slint";
+import { Slider } from "sound.slint";
+
+/// state: "loading" or "list".
+export struct AccessView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    /// gsettings is there (text size, contrast, the apps' animations).
+    gsettings: bool,
+    texts: [string],
+    text: int,
+    contrast: bool,
+    motion: bool,
+    /// The cursor size, as Appearance has it.
+    cursor-sizes: [string],
+    cursor-size: int,
+    zoom: float,
+    zoom-text: string,
+    /// Orca is installed, and runs; else the command that installs it.
+    orca: bool,
+    reader: bool,
+    install: string,
+    not-loaded: bool,
+}
+
+/// Keys, as "Super" "+" "=" caps.
+component Keys inherits HorizontalLayout {
+    in property <[string]> keys;
+    spacing: 4px;
+    alignment: end;
+    for k[i] in root.keys: HorizontalLayout {
+        spacing: 4px;
+        if i > 0: Text { text: "+"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+        Rectangle {
+            border-radius: 5px;
+            border-width: 1px;
+            border-color: Theme.border2;
+            background: Theme.ctrl-bg;
+            height: 24px;
+            width: max(24px, key-text.preferred-width + 14px);
+            key-text := Text { text: k; color: Theme.text; font-size: Type.label; font-family: "JetBrains Mono"; }
+        }
+    }
+}
+
+component SeeingCard inherits ScrollCard {
+    in property <AccessView> page;
+    callback act(string, float);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Seeing"; }
+        SettingRow {
+            label: "Text size";
+            description: "GTK and Qt apps' text, without changing the screens' scale";
+            first: true;
+            Select { width: 140px; select-height: Size.field; label: "Text size"; enabled: root.page.gsettings; options: root.page.texts; selected: root.page.text; chosen(i) => { root.act("text", i); } }
+        }
+        SettingRow {
+            label: "High contrast";
+            description: "GTK apps' high-contrast style";
+            Switch { label: "High contrast"; on: root.page.contrast; enabled: root.page.gsettings; toggled => { root.act("contrast", 0); } }
+        }
+        SettingRow {
+            label: "Reduce motion";
+            description: "Turns off Hyprland's animations and apps' own";
+            Switch { label: "Reduce motion"; on: root.page.motion; toggled => { root.act("motion", 0); } }
+        }
+        SettingRow {
+            label: "Cursor size";
+            description: "The same as on Appearance";
+            Select { width: 140px; select-height: Size.field; label: "Cursor size"; options: root.page.cursor-sizes; selected: max(0, root.page.cursor-size); chosen(i) => { root.act("cursor-size", i); } }
+        }
+        Rectangle { height: 10px; }
+        CardFooter { text: "Repeat keys and their speed are on Input › Keyboard. Hyprland has no sticky or slow keys."; }
+        Rectangle { height: 10px; }
+    }
+}
+
+component ZoomCard inherits Card {
+    in property <AccessView> page;
+    callback act(string, float);
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        CardTitle { text: "Zoom"; }
+        SettingRow {
+            label: "Zoom";
+            description: "Around the pointer, from 1× to 4× (Hyprland's cursor zoom)";
+            first: true;
+            HorizontalLayout {
+                spacing: 12px;
+                Slider {
+                    width: 200px;
+                    label: "Zoom";
+                    minimum: 1;
+                    maximum: 4;
+                    step: 0.1;
+                    value: root.page.zoom;
+                    value-text: root.page.zoom-text;
+                    moved(v) => { root.act("zoom", v); }
+                }
+                Text { text: root.page.zoom-text; width: 40px; color: Theme.text; font-size: Type.body; font-family: "JetBrains Mono"; horizontal-alignment: right; vertical-alignment: center; }
+            }
+        }
+        SettingRow {
+            label: "Zoom in";
+            Keys { keys: ["Super", "="]; }
+        }
+        SettingRow {
+            label: "Zoom out";
+            Keys { keys: ["Super", "-"]; }
+        }
+    }
+}
+
+component ReaderCard inherits ScrollCard {
+    in property <AccessView> page;
+    callback act(string, float);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Screen reader"; }
+        SettingRow {
+            label: "Screen reader";
+            description: "Orca reads out apps that support it: GTK, Qt, Firefox";
+            first: true;
+            Switch { label: "Screen reader"; on: root.page.reader; toggled => { root.act("reader", 0); } }
+        }
+        SettingRow {
+            label: "Turn on and off";
+            Keys { keys: ["Super", "Alt", "S"]; }
+        }
+        if !root.page.orca: VerticalLayout {
+            spacing: 10px;
+            Rectangle { height: 10px; }
+            CardFooter { text: "Orca isn't installed. This installs it:"; }
+            if root.page.install != "": HorizontalLayout { alignment: start; CommandBox { command: root.page.install; copied => { root.act("copied", 0); } } }
+            Rectangle { height: 4px; }
+        }
+    }
+}
+
+export component AccessPage inherits VerticalLayout {
+    in property <AccessView> page;
+    in property <bool> compact;
+    callback act(string, float);
+    spacing: 14px;
+    Hero {
+        title: "Accessibility";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        if root.page.state == "list": HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+    }
+    if root.page.not-loaded && root.page.state == "list": LoadBanner {
+        text: "Reduce motion, the zoom and their keys are lost when Hyprland restarts.";
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0); } }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            SeeingCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x) => { root.act(v, x); } }
+            VerticalLayout {
+                preferred-width: 420px;
+                horizontal-stretch: 1;
+                spacing: 14px;
+                ZoomCard { page: root.page; act(v, x) => { root.act(v, x); } }
+                ReaderCard { page: root.page; act(v, x) => { root.act(v, x); } }
+            }
+        }
+        if root.page.state == "list" && !body.two-columns: SeeingCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: ZoomCard { page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: ReaderCard { whole: true; page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state != "list": Card {
+            vertical-stretch: 1;
+            EmptyState { loading: true; title: "Reading the accessibility settings…"; }
+        }
+    }
+}

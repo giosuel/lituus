@@ -1,0 +1,161 @@
+// The Appearance page, as drawn in S-176 (D-57): the apps' style in the hero; the themes (GTK 3,
+// icons, cursor) and the fonts, with a preview in the fonts chosen. What it shows comes from Rust
+// (src/appearance.rs); everything the user does goes back through `act(verb, value)`.
+import { Theme, Type, Size } from "theme.slint";
+import { CardTitle, Notice, Scroll } from "controls.slint";
+import { Select, Segmented } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, LoadBanner } from "shell.slint";
+
+/// state: "loading" or "list". Each list with the choice in use (-1: none).
+export struct AppearanceView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    gsettings: bool,
+    /// Hyprland runs and doesn't load Lituus's file (the cursor's part).
+    not-loaded: bool,
+    /// 0 Default, 1 Dark, 2 Light.
+    scheme: int,
+    gtk-themes: [string], gtk: int,
+    icon-themes: [string], icons: int,
+    cursor-themes: [string], cursor: int,
+    cursor-sizes: [string], cursor-size: int,
+    fonts: [string], font: int,
+    monos: [string], mono: int,
+    font-sizes: [string], font-size: int,
+    /// The families in use, for the preview.
+    font-family: string,
+    mono-family: string,
+}
+
+component ThemesCard inherits ScrollCard {
+    in property <AppearanceView> page;
+    callback act(string, int);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Themes"; }
+        SettingRow {
+            label: "Apps (GTK)";
+            description: "GTK 3 apps; GTK 4 apps follow the style above";
+            first: true;
+            Select { min-width: 160px; preferred-width: 260px; horizontal-stretch: 0; select-height: Size.field; label: "Apps (GTK)"; options: root.page.gtk-themes; selected: root.page.gtk; chosen(i) => { root.act("gtk", i); } }
+        }
+        SettingRow {
+            label: "Icons";
+            Select { min-width: 160px; preferred-width: 260px; horizontal-stretch: 0; select-height: Size.field; label: "Icons"; options: root.page.icon-themes; selected: root.page.icons; chosen(i) => { root.act("icons", i); } }
+        }
+        SettingRow {
+            label: "Cursor";
+            description: "For Hyprland (hyprcursor) and for apps (XCursor)";
+            Select { min-width: 160px; preferred-width: 260px; horizontal-stretch: 0; select-height: Size.field; label: "Cursor"; options: root.page.cursor-themes; selected: root.page.cursor; chosen(i) => { root.act("cursor", i); } }
+        }
+        SettingRow {
+            label: "Cursor size";
+            Select { min-width: 100px; preferred-width: 120px; horizontal-stretch: 0; select-height: Size.field; label: "Cursor size"; options: root.page.cursor-sizes; selected: root.page.cursor-size; chosen(i) => { root.act("cursor-size", i); } }
+        }
+    }
+}
+
+component FontsCard inherits ScrollCard {
+    in property <AppearanceView> page;
+    callback act(string, int);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        CardTitle { text: "Fonts"; }
+        SettingRow {
+            label: "Interface";
+            first: true;
+            Select { min-width: 160px; preferred-width: 260px; horizontal-stretch: 0; select-height: Size.field; label: "Interface font"; options: root.page.fonts; selected: root.page.font; chosen(i) => { root.act("font", i); } }
+        }
+        SettingRow {
+            label: "Monospace";
+            Select { min-width: 160px; preferred-width: 260px; horizontal-stretch: 0; select-height: Size.field; label: "Monospace font"; options: root.page.monos; selected: root.page.mono; chosen(i) => { root.act("mono", i); } }
+        }
+        SettingRow {
+            label: "Size";
+            description: "Of the interface font";
+            Select { min-width: 100px; preferred-width: 120px; horizontal-stretch: 0; select-height: Size.field; label: "Font size"; options: root.page.font-sizes; selected: root.page.font-size; chosen(i) => { root.act("font-size", i); } }
+        }
+        // The fonts chosen, as the apps will show them.
+        Rectangle {
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            height: preview.preferred-height;
+            preview := VerticalLayout {
+                padding: 14px;
+                padding-left: 16px;
+                spacing: 6px;
+                Text { text: "The quick brown fox jumps over the lazy dog"; color: Theme.text; font-size: Type.card-title; font-family: root.page.font-family; }
+                Text { text: "fn main() { println!(\"O0 1lI\"); }"; color: Theme.muted; font-size: Type.body; font-family: root.page.mono-family; }
+            }
+        }
+    }
+}
+
+export component AppearancePage inherits VerticalLayout {
+    in property <AppearanceView> page;
+    in property <bool> compact;
+    callback act(string, int);
+    spacing: 14px;
+    Hero {
+        title: "Appearance";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        if root.page.state == "list": HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+        // The apps' style, level with the subject's last line (bottom right).
+        if root.page.state == "list": Segmented {
+            x: parent.width - self.width - 24px;
+            y: parent.height - self.height - 26px;
+            width: self.preferred-width;
+            height: 34px;
+            label: "Apps' style";
+            options: ["Default", "Dark", "Light"];
+            selected: root.page.scheme;
+            changed(i) => { root.act("scheme", i); }
+        }
+    }
+    if root.page.not-loaded && root.page.state == "list": LoadBanner {
+        text: "The cursor goes back to Hyprland's own when Hyprland restarts.";
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0); } }
+        if root.page.state == "list" && !root.page.gsettings: Notice {
+            vertical-stretch: 0;
+            tone: "info";
+            dismissible: false;
+            text: "gsettings isn't installed, so GTK 4 apps and the style can't be set; Lituus writes GTK 3's settings.ini instead.";
+        }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            ThemesCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x) => { root.act(v, x); } }
+            FontsCard { preferred-width: 420px; horizontal-stretch: 1; page: root.page; act(v, x) => { root.act(v, x); } }
+        }
+        if root.page.state == "list" && !body.two-columns: ThemesCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state == "list" && !body.two-columns: FontsCard { whole: true; page: root.page; act(v, x) => { root.act(v, x); } }
+        if root.page.state != "list": Card {
+            vertical-stretch: 1;
+            EmptyState { loading: true; title: "Reading your themes and fonts…"; }
+        }
+    }
+}

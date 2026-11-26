@@ -13,12 +13,19 @@ import { Button, IconButton, AddButton, Switch, PillSwitch, SectionLabel, Notice
 import { JoinDialog, TextField, Segmented, FormRow, Modal, DialogTitle, DialogButtons } from "dialogs.slint";
 import { QuickWindow, QuickRow } from "quick.slint";
 import { Action, Toggle, DetailItem, Chip, ChipRow, Details, DetailsPane } from "details.slint";
-import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo, Setup, Highlight } from "shell.slint";
+import { Sidebar, Tooltip, Hero, HeroSubject, Card, ScrollCard, SettingRow, EmptyState, NavItem, NavGroup, HeroInfo, Setup, SetupStep, SetupStepRow, Highlight } from "shell.slint";
 import { CommandPalette, PaletteRow, PaletteView } from "palette.slint";
 import { SettingsHero, AppearanceSettings, ColourFiles, ThemeSwatch, ColourChip, SourceRow } from "appearance.slint";
 import { SendFilesDialog, IncomingFileDialog, FilesView, FileRow } from "files.slint";
 import { DisplaysPage, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeepDialog, ConfigDialog } from "displays.slint";
 import { SoundPage, SoundView, SoundApp, SoundCard } from "sound.slint";
+import { PowerPage, PowerView, PowerDevice } from "power.slint";
+import { PrintersPage, PrintersView, PrinterRow, JobRow, FoundRow, AddPrinterDialog } from "printers.slint";
+// The apps' Appearance page; Lituus's own look is Settings' (appearance.slint).
+import { AppearancePage, AppearanceView } from "look.slint";
+import { NightPage, NightView } from "night.slint";
+import { DatePage, DateView, ZoneRow, ZonePickerDialog } from "date.slint";
+import { AccessPage, AccessView } from "access.slint";
 import { KeyboardPage, MousePage, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, AddLayoutDialog, OwnSettingsDialog } from "input.slint";
 import { AppsPage, AddAppDialog, IconDialog, AppsView, AppRow, AppSection, AppFilter, AppAction, AppChange, AppFix, AppProblem, ChipLine } from "apps.slint";
 import { DefaultAppsPage, DefaultAppsView, AppChoice, KindRow, TypeRow, DaSource, AppPickerDialog, SourcesDialog } from "defaultapps.slint";
@@ -28,7 +35,7 @@ import { ShortcutsPage, ShortcutsView, ShortcutRow, ShortcutDialog, ShortcutEdit
 import { BluetoothPage, BtPage, BtSection, BtRow, BtPair, BtPairDialog, BtAdapterDialog, BtRenameDialog } from "bluetooth.slint";
 import { Editor, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi } from "editor.slint";
 
-export { Theme, Focus, Setup, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
+export { Theme, Focus, Setup, SetupStep, Highlight, ChipLine, PaletteRow, PaletteView, Hint, FilesView, FileRow, SystemView, SystemFact, SystemFs, SystemDrive, SystemSoftware, WallpaperView, WallpaperTile, WallpaperMonitor, ShortcutsView, ShortcutRow, ShortcutDialog, DisplaysView, DragSnap, LayoutMonitor, WorkspaceRow, ProfileRow, KeyboardView, MouseView, InputRow, InputSection, PointerSetting, LayoutRow, InputBar, SoundView, SoundApp, SoundCard, PowerView, PowerDevice, PrintersView, PrinterRow, JobRow, FoundRow, AppearanceView, NightView, DateView, ZoneRow, AccessView, ThemeSwatch, ColourChip, SourceRow, NavItem, NavGroup, HeroInfo, Action, Toggle, DetailItem, Chip, ChipRow, Details, BtPage, BtSection, BtRow, BtPair, QuickWindow, QuickRow, EditorForm, EditorErrors, EditorOptions, EditorTab, AddressRow, RouteRow, IpFormUi, EapFormUi, PeerRow, WgFormUi, OvpnFormUi, VirtFormUi, PortRowUi, PortCandidateUi }
 
 /// icon: "bars" (signal bars), or an icon name. tone: "accent", "danger", "muted", "faint".
 /// indent: a port under its bridge or bond, or a VLAN under its device.
@@ -150,6 +157,25 @@ export component MainWindow inherits Window {
     in-out property <int> sound-tab;
     /// Everything done on the Sound page: (verb, id, value).
     callback sound-act(string, string, float);
+    // Power page (see power.slint).
+    in property <PowerView> power;
+    /// Everything done on the Power page: (verb, value).
+    callback power-act(string, int);
+    // Printers page (printers.slint): (verb, number, text).
+    in property <PrintersView> printers;
+    callback printers-act(string, int, string);
+    // Appearance page, the apps' look (see look.slint).
+    in property <AppearanceView> appearance;
+    callback appearance-act(string, int);
+    // Night light page (night.slint): (verb, number, text).
+    in property <NightView> night;
+    callback night-act(string, float, string);
+    // Date & language page (date.slint): (verb, number, text).
+    in property <DateView> date;
+    callback date-act(string, int, string);
+    // Accessibility page (access.slint): (verb, number).
+    in property <AccessView> access;
+    callback access-act(string, float);
     // The Input pages, Keyboard and Mouse & touchpad (see input.slint).
     in property <KeyboardView> keyboard;
     in property <MouseView> mouse;
@@ -842,6 +868,42 @@ export component MainWindow inherits Window {
                         tab <=> root.sound-tab;
                         act(verb, id, value) => { root.sound-act(verb, id, value); }
                     }
+                    if root.page == "night-light": NightPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.night;
+                        act(verb, value, text) => { root.night-act(verb, value, text); }
+                    }
+                    if root.page == "date-language": DatePage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.date;
+                        act(verb, value, text) => { root.date-act(verb, value, text); }
+                    }
+                    if root.page == "accessibility": AccessPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.access;
+                        act(verb, value) => { root.access-act(verb, value); }
+                    }
+                    if root.page == "appearance": AppearancePage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.appearance;
+                        act(verb, value) => { root.appearance-act(verb, value); }
+                    }
+                    if root.page == "power": PowerPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.power;
+                        act(verb, value) => { root.power-act(verb, value); }
+                    }
+                    if root.page == "printers": PrintersPage {
+                        vertical-stretch: 1;
+                        compact: root.compact;
+                        page: root.printers;
+                        act(verb, value, text) => { root.printers-act(verb, value, text); }
+                    }
                     if root.page == "settings": SettingsHero {
                         compact: root.compact;
                         sub: "Saved to " + root.config-path;
@@ -1001,6 +1063,8 @@ export component MainWindow inherits Window {
         || (root.page == "keyboard" && root.keyboard.add-open) || (root.page == "mouse" && root.mouse.own-open)
         || (root.page == "shortcuts" && (root.shortcuts.dialog.open || root.shortcuts.deleting != ""))
         || (root.page == "wallpaper" && root.wallpaper.takeover)
+        || (root.page == "date-language" && root.date.picking)
+        || (root.page == "printers" && root.printers.add-open)
         || (root.page == "default-apps" && (root.default-apps.picker-open || root.default-apps.sources-open))
         || (root.page == "apps" && (root.apps.add-open || root.apps.icon-open))
         || root.palette-view.open;
@@ -1061,56 +1125,31 @@ export component MainWindow inherits Window {
         }
     }
 
-    // Set up… (D-44): the line Lituus adds to the user's config, and where, before it does.
+    // Set up… (D-44; all of it in one go since K6, the owner on 2026-11-25: "so we can do the
+    // whole lituus setup in one go"): each change to a file of the user's, ticked when done.
     if Setup.shown: Modal {
-        card-width: 560px;
+        card-width: 600px;
         card-spacing: 16px;
-        label: "Let Hyprland load Lituus's settings";
+        label: "Set up Lituus";
         dismissed => { Setup.shown = false; keys.focus(); }
-        DialogTitle { text: "Let Hyprland load Lituus's settings"; }
+        DialogTitle { text: "Set up Lituus"; }
         Text {
-            text: "Lituus keeps what you change here in its own file. Your config needs one line at its end to load it, after your own settings and shortcuts, so Lituus's come last.";
+            text: "Lituus keeps what you change in its own files. For them to be used, these files of yours need a change once; each is kept as a .bak first.";
             color: Theme.muted;
             font-size: Type.body;
             wrap: word-wrap;
         }
-        VerticalLayout {
-            spacing: 6px;
-            Text { text: "Added at the end of " + Setup.file; color: Theme.muted; font-size: Type.note; font-weight: 500; }
-            Rectangle {
-                border-radius: 10px;
-                border-width: 1px;
-                border-color: Theme.ctrl-border;
-                background: Theme.input-bg;
-                VerticalLayout {
-                    padding-top: 10px;
-                    padding-bottom: 10px;
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    spacing: 4px;
-                    Text { text: Setup.comment; color: Theme.faint; font-size: Type.body; font-family: "JetBrains Mono"; wrap: word-wrap; }
-                    Text { text: Setup.line; color: Theme.accent; font-size: Type.body; font-family: "JetBrains Mono"; wrap: word-wrap; }
-                }
-            }
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            VerticalLayout { alignment: start; padding-top: 1px; Icon { name: "info"; tint: Theme.faint; size: 14px; } }
-            Text {
-                text: "Your file is kept as " + Setup.backup + " first. Hyprland reloads its config after.";
-                color: Theme.faint;
-                font-size: Type.note;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-            }
+        for step in Setup.steps: SetupStepRow {
+            step: step;
+            toggled => { Setup.toggle(step.id); }
         }
         if Setup.error != "": Notice { tone: "danger"; compact: true; text: Setup.error; dismissible: false; }
         DialogButtons {
             Button { label: "Not now"; button-height: Size.button-dialog; clicked => { Setup.shown = false; keys.focus(); } }
             Button {
-                label: Setup.working ? "Adding…" : "Add the line";
+                label: Setup.working ? "Setting up…" : "Set up";
                 kind: "primary";
-                enabled: !Setup.working;
+                enabled: !Setup.working && Setup.ready;
                 button-height: Size.button-dialog;
                 clicked => { Setup.confirm(); }
             }
@@ -1394,6 +1433,14 @@ export component MainWindow inherits Window {
         view: root.default-apps;
         act(verb, arg) => { root.default-apps-act(verb, arg); keys.focus(); }
     }
+    if root.page == "printers" && root.printers.add-open: AddPrinterDialog {
+        page: root.printers;
+        act(verb, value, text) => { root.printers-act(verb, value, text); }
+    }
+    if root.page == "date-language" && root.date.picking: ZonePickerDialog {
+        page: root.date;
+        act(verb, value, text) => { root.date-act(verb, value, text); }
+    }
     if root.page == "wallpaper" && root.wallpaper.takeover: WallpaperTakeoverDialog {
         backup: root.wallpaper.takeover-backup;
         act(verb, arg, value) => { root.wallpaper-act(verb, arg, value); }
@@ -1450,6 +1497,7 @@ export component MainWindow inherits Window {
         saved => { root.bt-act("rename-save", ""); keys.focus(); }
         cancelled => { root.bt-act("rename-cancel", ""); keys.focus(); }
     }
+
 
     copy-field := TextInput { visible: false; width: 0; height: 0; }
     // Over everything, the dialogs included: an action it runs closes it first.
