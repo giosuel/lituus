@@ -2719,6 +2719,7 @@ dependencies = [
  "lituus-keyring",
  "lituus-nm",
  "lituus-power",
+ "lituus-print",
  "lituus-sound",
  "lituus-system",
  "lituus-wallpaper",

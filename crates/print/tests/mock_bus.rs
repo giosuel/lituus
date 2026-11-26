@@ -1,4 +1,4 @@
-//! The cups-pk-helper fallback against python-dbusmock on a private bus. Needs dbus-daemon and
+//! The cups-pk-helper fallback and cupsd's change signals against python-dbusmock on a private bus. Needs dbus-daemon and
 //! python-dbusmock, so it runs only with LITUUS_DBUSMOCK=1 (scripts/test.sh and CI set it).
 
 use std::process::Stdio;
@@ -131,4 +131,20 @@ async fn changes_go_through_cups_pk_helper() {
 async fn without_cups_pk_helper_nothing_is_offered() {
     let Some(b) = bus(false).await else { return };
     assert!(!pkhelper::available(&b.connect().await).await);
+}
+
+#[tokio::test]
+async fn cupsds_signals_are_changes() {
+    use futures_util::StreamExt;
+    let Some(b) = bus(true).await else { return };
+    let mut changes = lituus_print::changes(&b.connect().await).await.unwrap();
+    let _: () = b
+        .call(
+            MOCK,
+            "EmitSignal",
+            &(lituus_print::SPOOLER, "QueueChanged", "s", vec![zbus::zvariant::Value::from("Office")]),
+        )
+        .await;
+    let got = tokio::time::timeout(Duration::from_secs(5), changes.next()).await;
+    assert!(matches!(got, Ok(Some(()))), "{got:?}");
 }

@@ -1,0 +1,302 @@
+// The Printers page, as drawn in S-186 to S-188 and updated in S-217 and S-218 (D-59, D-65 to D-69):
+// the printers, and the selected one's queue, what it prints by default, its address and driver;
+// Make default (when it isn't), Print a test page, Remove. Without CUPS, the command that starts
+// it. What it shows comes from Rust (src/printers.rs); everything the user does goes back through
+// `act(verb, number, text)`.
+import { Theme, Type, Size } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Button, CardTitle, Notice, Scroll, Focusable, Focus, SectionLabel, Badge } from "controls.slint";
+import { Select, Segmented } from "dialogs.slint";
+import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, CommandBox } from "shell.slint";
+
+/// tone: "accent" (ready, printing) or "warn" (not found, paused, out of paper).
+export struct PrinterRow { id: string, name: string, meta: string, tone: string, selected: bool }
+/// can-cancel: the user's own job, or they may change printers.
+export struct JobRow { id: int, name: string, meta: string, can-cancel: bool }
+
+/// state: "loading", "list", "empty" (no printers) or "no-cups".
+/// access: "admin" (changes through the socket), "password" (cups-pk-helper asks), "no-agent"
+/// (cups-pk-helper, but no polkit agent to ask) or "none" (changes can't be made, D-68).
+export struct PrintersView {
+    state: string,
+    sub: string,
+    hero: HeroInfo,
+    error: string,
+    working: bool,
+    /// Apps print through another CUPS server, which Lituus doesn't manage.
+    elsewhere: string,
+    /// No CUPS: whether it's installed, and the command that starts or installs it.
+    installed: bool,
+    command: string,
+    access: string,
+    can-change: bool,
+    pk-command: string,
+    agent-command: string,
+    printers: [PrinterRow],
+    /// The selected printer.
+    id: string,
+    name: string,
+    is-default: bool,
+    jobs: [JobRow],
+    has-options: bool,
+    papers: [string],
+    paper: int,
+    sides: [string],
+    side: int,
+    qualities: [string],
+    quality: int,
+    /// Colour (0) or greyscale (1); not a choice on a printer that prints in black only.
+    color: int,
+    color-enabled: bool,
+    color-note: string,
+    address: string,
+    driver: string,
+    can-test: bool,
+}
+
+// Space or Enter selects it; the arrow keys move the selection, taking the focus along.
+component PrinterListRow inherits Focusable {
+    in property <PrinterRow> entry;
+    callback clicked();
+    height: 52px;
+    border-radius: 9px;
+    ring-gap: -2px;
+    focus-key: "printer:" + entry.id;
+    selected-key: entry.selected ? "list:selected" : "";
+    background: entry.selected ? Theme.accent-soft-bg : self.has-hover ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: entry.name + ", " + entry.meta;
+    accessible-item-selected: entry.selected;
+    accessible-action-default => { clicked(); }
+    activated => { root.clicked(); }
+    key(event) => {
+        if event.text == Key.Return { root.clicked(); return accept; }
+        if event.text == Key.UpArrow || event.text == Key.DownArrow { Focus.key = "list:selected"; }
+        reject
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        Icon { name: "printer"; tint: root.entry.selected ? Theme.accent : Theme.muted; y: (parent.height - 16px) / 2; width: 20px; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text { text: root.entry.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+            Text {
+                text: root.entry.meta;
+                color: root.entry.tone == "warn" ? Theme.warn-text : root.entry.selected ? Theme.accent : Theme.muted;
+                font-size: Type.note;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component ListCard inherits ScrollCard {
+    in property <PrintersView> page;
+    callback act(string, int, string);
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        spacing: 4px;
+        alignment: start;
+        CardTitle { text: "Printers"; }
+        for p in root.page.printers: PrinterListRow { entry: p; clicked => { root.act("select", 0, p.id); } }
+    }
+}
+
+/// A row's value that can't be changed here.
+component ReadValue inherits Text {
+    in property <bool> mono;
+    color: Theme.muted;
+    font-size: Type.body;
+    font-family: root.mono ? "JetBrains Mono" : "";
+    vertical-alignment: center;
+    horizontal-alignment: right;
+    overflow: elide;
+}
+
+component DetailsCard inherits ScrollCard {
+    in property <PrintersView> page;
+    callback act(string, int, string);
+    property <bool> busy: root.page.working;
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 14px;
+        padding-bottom: 8px;
+        spacing: 0;
+        alignment: start;
+        HorizontalLayout {
+            spacing: 10px;
+            height: 36px;
+            HorizontalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
+                alignment: start;
+                Text { text: root.page.name; color: Theme.text; font-size: Type.card-title; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                // D-69: the user's own default has a badge where the others have Make default.
+                if root.page.is-default: VerticalLayout { alignment: center; Badge { text: "Your default"; } }
+            }
+            if !root.page.is-default: Button {
+                label: "Make default";
+                focus-key: "printer-default";
+                button-height: Size.button-row;
+                horizontal-stretch: 0;
+                enabled: !root.busy;
+                clicked => { root.act("make-default", 0, ""); }
+            }
+            Button {
+                label: "Print a test page";
+                focus-key: "printer-test";
+                button-height: Size.button-row;
+                horizontal-stretch: 0;
+                enabled: root.page.can-test && !root.busy;
+                clicked => { root.act("test-page", 0, ""); }
+            }
+            Button {
+                label: "Remove";
+                focus-key: "printer-remove";
+                button-height: Size.button-row;
+                horizontal-stretch: 0;
+                enabled: root.page.can-change && !root.busy;
+                clicked => { root.act("remove", 0, ""); }
+            }
+        }
+        Rectangle { height: 12px; }
+        SectionLabel { text: "QUEUE"; }
+        for j[i] in root.page.jobs: SettingRow {
+            label: j.name;
+            description: j.meta;
+            first: i == 0;
+            Button {
+                label: "Cancel";
+                focus-key: "job:" + j.id;
+                button-height: Size.button-row;
+                enabled: j.can-cancel;
+                accessible-label: "Cancel " + j.name;
+                clicked => { root.act("cancel", j.id, ""); }
+            }
+        }
+        if root.page.jobs.length == 0: Text { text: "Nothing in the queue"; color: Theme.faint; font-size: Type.body; height: 40px; vertical-alignment: center; }
+        if root.page.has-options: VerticalLayout {
+            Rectangle { height: 16px; }
+            SectionLabel { text: "WHAT IT PRINTS BY DEFAULT"; }
+            SettingRow {
+                label: "Paper";
+                first: true;
+                Select { width: 220px; select-height: Size.field; label: "Paper"; enabled: root.page.can-change && !root.busy; options: root.page.papers; selected: root.page.paper; chosen(i) => { root.act("paper", i, ""); } }
+            }
+            if root.page.sides.length > 1: SettingRow {
+                label: "Two-sided";
+                Select { width: 220px; select-height: Size.field; label: "Two-sided"; enabled: root.page.can-change && !root.busy; options: root.page.sides; selected: root.page.side; chosen(i) => { root.act("sides", i, ""); } }
+            }
+            SettingRow {
+                label: "Colour";
+                description: root.page.color-note;
+                Segmented {
+                    width: self.preferred-width;
+                    height: 34px;
+                    label: "Colour";
+                    options: ["Colour", "Greyscale"];
+                    selected: root.page.color;
+                    enabled: root.page.color-enabled && root.page.can-change && !root.busy;
+                    changed(i) => { root.act("color", i, ""); }
+                }
+            }
+            if root.page.qualities.length > 1: SettingRow {
+                label: "Quality";
+                Select { width: 220px; select-height: Size.field; label: "Quality"; enabled: root.page.can-change && !root.busy; options: root.page.qualities; selected: root.page.quality; chosen(i) => { root.act("quality", i, ""); } }
+            }
+        }
+        Rectangle { height: 16px; }
+        SectionLabel { text: "PRINTER"; }
+        SettingRow {
+            label: "Address";
+            first: true;
+            ReadValue { text: root.page.address; mono: true; }
+        }
+        SettingRow {
+            label: "Driver";
+            ReadValue { text: root.page.driver; }
+        }
+        Rectangle { height: 10px; }
+    }
+}
+
+export component PrintersPage inherits VerticalLayout {
+    in property <PrintersView> page;
+    in property <bool> compact;
+    callback act(string, int, string);
+    spacing: 14px;
+    Hero {
+        title: "Printers";
+        sub: root.page.sub;
+        hero-height: root.compact ? 136px : 206px;
+        compact: root.compact;
+        if root.page.state != "loading": HeroSubject {
+            compact: root.compact;
+            info: root.page.hero;
+        }
+    }
+    body := Scroll {
+        property <bool> two-columns: self.width >= 880px;
+        min-width: 0;
+        vertical-stretch: 1;
+        fill: true;
+        spacing: 14px;
+        bar-inset: -16px;
+        if root.page.error != "": Notice { vertical-stretch: 0; tone: "danger"; text: root.page.error; dismissed => { root.act("dismiss", 0, ""); } }
+        if root.page.elsewhere != "": Notice { vertical-stretch: 0; text: root.page.elsewhere; dismissible: false; }
+        // D-68: not one of CUPS's admins, and no cups-pk-helper.
+        if root.page.state == "list" && root.page.access == "none": Notice {
+            vertical-stretch: 0;
+            tone: "warn";
+            title: "You can't change printers";
+            text: "Only CUPS's administrators (the wheel or lpadmin group) can. cups-pk-helper lets you, with your password. You can still print, make a printer your default, and cancel your own jobs.";
+            dismissible: false;
+            if root.page.pk-command != "": CommandBox { command: root.page.pk-command; copied => { root.act("copied", 0, ""); } }
+        }
+        if root.page.state == "list" && root.page.access == "no-agent": Notice {
+            vertical-stretch: 0;
+            tone: "warn";
+            title: "No password prompt is running";
+            text: "Changing printers asks for your password, through a polkit agent. Hyprland's is hyprpolkitagent; start it with Hyprland.";
+            dismissible: false;
+            if root.page.agent-command != "": CommandBox { command: root.page.agent-command; copied => { root.act("copied", 0, ""); } }
+        }
+        if root.page.state == "list" && body.two-columns: HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+            ListCard { width: 420px; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+            DetailsCard { horizontal-stretch: 1; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        }
+        if root.page.state == "list" && !body.two-columns: ListCard { whole: true; vertical-stretch: 0; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "list" && !body.two-columns: DetailsCard { whole: true; page: root.page; act(v, x, t) => { root.act(v, x, t); } }
+        if root.page.state == "loading": Card {
+            vertical-stretch: 1;
+            EmptyState { loading: true; title: "Reading the printers…"; }
+        }
+        if root.page.state == "empty": Card {
+            vertical-stretch: 1;
+            EmptyState {
+                icon: "printer";
+                title: "No printers yet";
+                text: "Printers on your network that need no driver, and USB printers, can be added from here.";
+            }
+        }
+        if root.page.state == "no-cups": Card {
+            vertical-stretch: 1;
+            EmptyState {
+                icon: "printer";
+                title: root.page.installed ? "CUPS isn't running" : "CUPS isn't installed";
+                text: root.page.installed
+                    ? "Lituus manages printers through CUPS, the printing service. Start it with this command; it then starts by itself when something prints."
+                    : "Lituus manages printers through CUPS, the printing service. Install it with this command, then start it with sudo systemctl enable --now cups.socket.";
+                command: root.page.command;
+                copied => { root.act("copied", 0, ""); }
+            }
+        }
+    }
+}
