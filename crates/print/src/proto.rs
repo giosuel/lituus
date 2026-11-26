@@ -197,7 +197,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<Answer, Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A response as cupsd writes it, made with the same codec.

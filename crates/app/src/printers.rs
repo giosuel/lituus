@@ -1177,6 +1177,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn with_no_printers_the_page_says_none_yet() {
+        let mut state = State { loaded: true, ..State::default() };
+        state.read.snapshot.server = "CUPS 2.4".into();
+        let v = view(&state);
+        assert_eq!((v.state.as_str(), v.sub.as_str()), ("empty", "No printers"));
+        assert_eq!((v.hero.name.as_str(), v.hero.detail.as_str()), ("No printers yet", "CUPS 2.4"));
+        assert_eq!(v.printers.row_count(), 0);
+        assert!(v.error.is_empty(), "{}", v.error);
+        assert_eq!(status(&state), "");
+    }
+
+    #[test]
     fn without_cups_the_page_says_how_to_start_or_install_it() {
         let mut state = State { loaded: true, ..State::default() };
         state.read.not_running = true;

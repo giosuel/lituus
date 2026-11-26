@@ -4,6 +4,9 @@
 //!
 //! The printers (scripts/cups-test.sh's reset_printers): Virtual (driverless, the system's
 //! default), Held (stopped, so jobs wait), PDF (cups-pdf), Spare (to remove).
+//!
+//! LITUUS_CUPS_EMPTY=1: cupsd has no printers at all (scripts/cups-test.sh's no_printers), and
+//! only the tests that say so run.
 
 use std::time::Duration;
 
@@ -19,6 +22,24 @@ fn client() -> Option<Client> {
 
 fn admin() -> bool {
     std::env::var("LITUUS_CUPS_ADMIN").map(|v| v != "0").unwrap_or(true)
+}
+
+fn empty() -> bool {
+    std::env::var("LITUUS_CUPS_EMPTY").is_ok_and(|v| v == "1")
+}
+
+#[tokio::test]
+async fn no_printers_is_an_empty_list_not_an_error() {
+    let Some(c) = client() else { return };
+    if !empty() {
+        eprintln!("LITUUS_CUPS_EMPTY isn't 1: skipped");
+        return;
+    }
+    // cupsd answers "No destinations added." (not found) here, not an empty list.
+    let s = c.snapshot().await.unwrap();
+    assert!(s.printers.is_empty(), "{:?}", s.printers);
+    assert_eq!((s.default, s.jobs.len()), (None, 0));
+    assert!(s.server.starts_with("CUPS "), "{}", s.server);
 }
 
 #[tokio::test]
