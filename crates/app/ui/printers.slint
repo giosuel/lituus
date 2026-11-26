@@ -242,13 +242,13 @@ component DetailsCard inherits ScrollCard {
 }
 
 component FoundLine inherits Rectangle {
-    in property <FoundRow> row;
+    in property <FoundRow> found;
     in property <bool> first;
     in property <bool> busy;
     callback add();
     height: 52px;
     accessible-role: list-item;
-    accessible-label: root.row.name + ", " + root.row.meta;
+    accessible-label: root.found.name + ", " + root.found.meta;
     // A colour rather than an `if`: there's one per row.
     Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
     HorizontalLayout {
@@ -258,28 +258,28 @@ component FoundLine inherits Rectangle {
             alignment: center;
             spacing: 2px;
             horizontal-stretch: 1;
-            Text { text: root.row.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
-            Text { text: root.row.meta; color: Theme.muted; font-size: Type.note; overflow: elide; }
+            Text { text: root.found.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+            Text { text: root.found.meta; color: Theme.muted; font-size: Type.note; overflow: elide; }
         }
-        if root.row.busy: HorizontalLayout {
+        if root.found.busy: HorizontalLayout {
             spacing: 6px;
             horizontal-stretch: 0;
             Spinner { y: (parent.height - 12px) / 2; }
             Text { text: "Adding…"; color: Theme.muted; font-size: Type.note; vertical-alignment: center; }
         }
-        if !root.row.busy && root.row.action == "add": Button {
+        if !root.found.busy && root.found.action == "add": Button {
             label: "Add";
-            accessible-label: "Add " + root.row.name;
-            kind: root.row.primary ? "primary" : "secondary";
-            focus-key: "found:" + root.row.id;
+            accessible-label: "Add " + root.found.name;
+            kind: root.found.primary ? "primary" : "secondary";
+            focus-key: "found:" + root.found.id;
             button-height: Size.button-row;
             horizontal-stretch: 0;
             enabled: !root.busy;
             y: (parent.height - self.height) / 2;
             clicked => { root.add(); }
         }
-        if root.row.action == "added": Text { text: "Added"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
-        if root.row.action == "install": Text { text: root.row.note; color: Theme.warn-text; font-size: Type.note; vertical-alignment: center; }
+        if root.found.action == "added": Text { text: "Added"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+        if root.found.action == "install": Text { text: root.found.note; color: Theme.warn-text; font-size: Type.note; vertical-alignment: center; }
     }
 }
 
@@ -297,12 +297,7 @@ export component AddPrinterDialog inherits Modal {
     VerticalLayout {
         spacing: 4px;
         SectionLabel { text: "FOUND ON YOUR NETWORK AND USB"; }
-        Scroll {
-            height: min(self.preferred-height, 300px);
-            VerticalLayout {
-                for r[i] in root.page.add-rows: FoundLine { row: r; first: i == 0; busy: root.page.add-busy; add => { root.act("add-found", 0, r.id); } }
-            }
-        }
+        for r[i] in root.page.add-rows: FoundLine { found: r; first: i == 0; busy: root.page.add-busy; add => { root.act("add-found", 0, r.id); } }
         if root.page.add-rows.length == 0 && root.page.add-searching: HorizontalLayout {
             spacing: 8px;
             height: 44px;

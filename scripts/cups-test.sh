@@ -5,7 +5,8 @@
 #
 #   scripts/cups-test.sh            crates/print/tests/cups.rs, as an admin and as a plain user
 #   scripts/cups-test.sh up DIR     start it and leave it running; then CUPS_SERVER=DIR/cups.sock
-#                                   (and DBUS_SYSTEM_BUS_ADDRESS=unix:path=DIR/system_bus_socket)
+#                                   (and DBUS_SYSTEM_BUS_ADDRESS=unix:path=DIR/system_bus_socket);
+#                                   PUBLISH=1 also puts the virtual printer on 127.0.0.1:8631
 #   scripts/cups-test.sh down DIR   stop it
 #   scripts/cups-test.sh ci         the same tests in CI's Arch container, as root and as a plain user
 #
@@ -94,7 +95,10 @@ up() {
   build_image
   mkdir -p "$dir"
   chmod 755 "$dir"
-  podman run -d --rm --name "$c" --memory 1500m --userns=keep-id --user 0 -v "$dir:/lituus" "$image" sleep infinity >/dev/null
+  # PUBLISH=1: the virtual printer also on the host's 127.0.0.1:8631, for adding it by its address.
+  local publish=()
+  [ "${PUBLISH:-0}" = 1 ] && publish=(-p 127.0.0.1:8631:8631)
+  podman run -d --rm --name "$c" --memory 1500m --userns=keep-id --user 0 "${publish[@]}" -v "$dir:/lituus" "$image" sleep infinity >/dev/null
   start_cups
   admin "$me" on
   reset_printers

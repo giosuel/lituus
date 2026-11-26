@@ -115,14 +115,14 @@ pub fn refresh(weak: &slint::Weak<MainWindow>, state: &mut State, probe: bool) {
         let _ = weak.upgrade_in_event_loop(move |_| {
             update(&w.clone(), |app| {
                 let state = &mut app.printers;
-                let missing = std::mem::take(&mut state.read.missing);
-                state.read = read;
+                let old = std::mem::replace(&mut state.read, read);
                 if !probe {
-                    // Kept from the last check, for the printers still there.
-                    state.read.missing = missing
-                        .into_iter()
-                        .filter(|n| state.read.snapshot.printers.iter().any(|p| &p.name == n))
-                        .collect();
+                    // Kept from the last time the page opened: who may change printers, and the
+                    // network printers that didn't answer (those still there).
+                    let r = &mut state.read;
+                    (r.access, r.agent) = (old.access, old.agent);
+                    r.missing =
+                        old.missing.into_iter().filter(|n| r.snapshot.printers.iter().any(|p| &p.name == n)).collect();
                 }
                 state.loaded = true;
                 state.reading = false;
@@ -142,7 +142,7 @@ fn read_all(probe: bool) -> Read {
         pk_command: crate::power::install_line(&os, "cups-pk-helper"),
         agent_command: crate::power::install_line(&os, "hyprpolkitagent"),
         elsewhere: lituus_print::elsewhere(),
-        agent: crate::datetime::agent_running(),
+        agent: probe && crate::datetime::agent_running(),
         offset: local_offset(),
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -167,8 +167,10 @@ fn read_all(probe: bool) -> Read {
             Err(Error::NotRunning) => r.not_running = true,
             Err(e) => r.error = Some(format!("Couldn't read the printers: {e}.")),
         }
-        let system = zbus::Connection::system().await.ok();
-        r.access = pkhelper::access(system.as_ref()).await;
+        if probe {
+            let system = zbus::Connection::system().await.ok();
+            r.access = pkhelper::access(system.as_ref()).await;
+        }
     });
     r
 }
@@ -258,6 +260,8 @@ pub fn spawn_watch(weak: slint::Weak<MainWindow>) {
                         return;
                     }
                 }
+                // The bus went away: try again in a while, not at once.
+                tokio::time::sleep(Duration::from_secs(10)).await;
             }
         });
     });
@@ -505,19 +509,19 @@ fn open_add(weak: &slint::Weak<MainWindow>, state: &mut State) {
                     let package = lituus_print::drivers::package(&lituus_print::drivers::device_id(&d.id));
                     usb.push((d, ppd, package));
                 }
-                if !post(&weak, Box::new(move |a| a.usb = usb)) {
+                if !post(&weak, Box::new(move |a: &mut Add| a.usb = usb)) {
                     return;
                 }
             }
             let Ok(conn) = zbus::Connection::system().await else {
-                post(&weak, Box::new(|a| (a.avahi, a.searching) = (Some(false), false)));
+                post(&weak, Box::new(|a: &mut Add| (a.avahi, a.searching) = (Some(false), false)));
                 return;
             };
             let running = avahi::running(&conn).await;
-            post(&weak, Box::new(move |a| a.avahi = Some(running)));
+            post(&weak, Box::new(move |a: &mut Add| a.avahi = Some(running)));
             let events = if running { avahi::browse(&conn).await.ok() } else { None };
             let Some(mut events) = events else {
-                post(&weak, Box::new(|a| a.searching = false));
+                post(&weak, Box::new(|a: &mut Add| a.searching = false));
                 return;
             };
             let started = Instant::now();
@@ -528,23 +532,23 @@ fn open_add(weak: &slint::Weak<MainWindow>, state: &mut State) {
                 }
                 let event = tokio::time::timeout(Duration::from_millis(400), events.next()).await;
                 let change: Box<dyn FnOnce(&mut Add) + Send> = match event {
-                    Ok(Some(Event::Found(s))) => Box::new(move |a| {
+                    Ok(Some(Event::Found(s))) => Box::new(move |a: &mut Add| {
                         a.services.retain(|o| !(o.name == s.name && o.kind == s.kind));
                         a.services.push(s);
                     }),
                     Ok(Some(Event::Gone { name, kind })) => {
-                        Box::new(move |a| a.services.retain(|o| !(o.name == name && o.kind == kind)))
+                        Box::new(move |a: &mut Add| a.services.retain(|o| !(o.name == name && o.kind == kind)))
                     }
                     Ok(Some(Event::AllForNow)) => {
                         all_for_now += 1;
                         if all_for_now < avahi::TYPES.len() {
                             continue;
                         }
-                        Box::new(|a| a.searching = false)
+                        Box::new(|a: &mut Add| a.searching = false)
                     }
                     Ok(None) => return,
                     // Printers answer within a few seconds; after that it's "none found".
-                    Err(_) if started.elapsed() > Duration::from_secs(4) => Box::new(|a| a.searching = false),
+                    Err(_) if started.elapsed() > Duration::from_secs(4) => Box::new(|a: &mut Add| a.searching = false),
                     Err(_) => continue,
                 };
                 if !post(&weak, change) {
