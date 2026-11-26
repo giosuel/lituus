@@ -1,4 +1,5 @@
-//! The cups-pk-helper fallback and cupsd's change signals against python-dbusmock on a private bus. Needs dbus-daemon and
+//! The cups-pk-helper fallback, cupsd's change signals and Avahi's printers against python-dbusmock on
+//! a private bus. Needs dbus-daemon and
 //! python-dbusmock, so it runs only with LITUUS_DBUSMOCK=1 (scripts/test.sh and CI set it).
 
 use std::process::Stdio;
@@ -147,4 +148,97 @@ async fn cupsds_signals_are_changes() {
         .await;
     let got = tokio::time::timeout(Duration::from_secs(5), changes.next()).await;
     assert!(matches!(got, Ok(Some(()))), "{got:?}");
+}
+
+/// A mock Avahi: ServiceBrowserPrepare gives a browser whose Start announces one printer.
+#[tokio::test]
+async fn avahi_finds_printers_and_resolves_them() {
+    use futures_util::StreamExt;
+    if std::env::var("LITUUS_DBUSMOCK").as_deref() != Ok("1") {
+        return;
+    }
+    let mut daemon = Command::new("dbus-daemon")
+        .args(["--session", "--nofork", "--print-address=1"])
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("dbus-daemon runs");
+    let mut line = String::new();
+    BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut line).await.unwrap();
+    let address = line.trim().to_owned();
+    let python = std::env::var("LITUUS_PYTHON").unwrap_or_else(|_| "python3".into());
+    let _mock = Command::new(python)
+        .args(["-m", "dbusmock", "--session", "org.freedesktop.Avahi", "/", "org.freedesktop.Avahi.Server"])
+        .env("DBUS_SESSION_BUS_ADDRESS", &address)
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("python-dbusmock runs");
+    let conn = zbus::connection::Builder::address(address.as_str()).unwrap().build().await.unwrap();
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await.unwrap();
+    for _ in 0..100 {
+        if dbus.name_has_owner("org.freedesktop.Avahi".try_into().unwrap()).await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let call = |method: &'static str, body: (String, String, String, String, String)| {
+        let conn = conn.clone();
+        async move {
+            conn.call_method(Some("org.freedesktop.Avahi"), "/", Some(MOCK), method, &body).await.unwrap();
+        }
+    };
+    // Each type's browser: one path; Start announces the printer on it (only for _ipp).
+    let start = "if self.__dbus_object_path__ == '/b/ipp':\n    self.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'ItemNew', 'iisssu', [2, 0, 'Canon TS5300 series', '_ipp._tcp', 'local', dbus.UInt32(0)])\n    self.EmitSignal('org.freedesktop.Avahi.ServiceBrowser', 'AllForNow', '', [])";
+    for path in ["/b/ipp", "/b/ipps"] {
+        conn.call_method(
+            Some("org.freedesktop.Avahi"),
+            "/",
+            Some(MOCK),
+            "AddObject",
+            &(
+                path,
+                "org.freedesktop.Avahi.ServiceBrowser",
+                std::collections::HashMap::<String, zbus::zvariant::Value>::new(),
+                vec![("Start", "", "", start)],
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    call(
+        "AddMethod",
+        (
+            "org.freedesktop.Avahi.Server".into(),
+            "ServiceBrowserPrepare".into(),
+            "iissu".into(),
+            "o".into(),
+            "ret = dbus.ObjectPath('/b/ipp' if args[2] == '_ipp._tcp' else '/b/ipps')".into(),
+        ),
+    )
+    .await;
+    call(
+        "AddMethod",
+        (
+            "org.freedesktop.Avahi.Server".into(),
+            "ResolveService".into(),
+            "iisssiu".into(),
+            "iissssisqaayu".into(),
+            "ret = (args[0], args[1], args[2], args[3], args[4], 'canon.local', 0, '192.168.1.50', dbus.UInt16(631), \
+             [dbus.ByteArray(b'ty=Canon TS5300 series'), dbus.ByteArray(b'URF=V1.4'), dbus.ByteArray(b'UUID=u1')], dbus.UInt32(0))"
+                .into(),
+        ),
+    )
+    .await;
+    let mut events = lituus_print::avahi::browse(&conn).await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(5), events.next()).await.unwrap().unwrap();
+    let lituus_print::avahi::Event::Found(s) = first else { panic!("{first:?}") };
+    assert_eq!(
+        (s.name.as_str(), s.kind.as_str(), s.host.as_str(), s.port),
+        ("Canon TS5300 series", "_ipp._tcp", "canon.local", 631)
+    );
+    let found = lituus_print::avahi::printers(&[s], &[], 1);
+    assert!(found[0].driverless && found[0].uri == "ipp://Canon%20TS5300%20series._ipp._tcp.local/", "{found:?}");
+    let next = tokio::time::timeout(Duration::from_secs(5), events.next()).await.unwrap();
+    assert_eq!(next, Some(lituus_print::avahi::Event::AllForNow));
 }

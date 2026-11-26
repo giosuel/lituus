@@ -8,14 +8,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use lituus_print::avahi::{self, Event, Found, Link, Service};
 use lituus_print::pkhelper::{self, Access, PkHelper};
-use lituus_print::{Client, Defaults, Driver, Error, Job, JobState, Options, Printer, Snapshot, State as PrinterState};
+use lituus_print::{
+    Client, Defaults, Device, Driver, Error, Job, JobState, NewPrinter, Options, Printer, Snapshot,
+    State as PrinterState,
+};
 use slint::{SharedString, VecModel};
 
-use crate::{HeroInfo, JobRow, MainWindow, PrinterRow, PrintersView, input, model, update};
+use crate::{FoundRow, HeroInfo, JobRow, MainWindow, PrinterRow, PrintersView, input, model, update};
 
 /// What a read found.
 #[derive(Debug, Clone, Default)]
@@ -44,9 +50,29 @@ pub struct Read {
     pub error: Option<String>,
 }
 
+/// The Add dialog (S-187): Avahi's printers as they come, USB printers CUPS sees, or an address.
+#[derive(Default)]
+pub struct Add {
+    pub open: bool,
+    /// Avahi answers on the bus; None until it's known.
+    pub avahi: Option<bool>,
+    pub services: Vec<Service>,
+    /// USB printers that need a driver (admins only): the device, an installed driver for it,
+    /// else the package that has one.
+    pub usb: Vec<(Device, Option<String>, Option<&'static str>)>,
+    /// Still looking: the first few seconds.
+    pub searching: bool,
+    /// The row being added ("address" for the address).
+    pub adding: Option<String>,
+    pub error: Option<String>,
+    /// Tells the dialog's thread to stop looking.
+    stop: Option<Arc<AtomicBool>>,
+}
+
 #[derive(Default)]
 pub struct State {
     pub loaded: bool,
+    pub add: Add,
     pub read: Read,
     /// The printer the details are of (its queue name).
     pub selected: Option<String>,
@@ -429,8 +455,219 @@ pub fn act(weak: &slint::Weak<MainWindow>, state: &mut State, verb: &str, value:
             refresh(weak, state, false);
         }
         "dismiss" | "copied" => state.error = None,
+        "add-open" => open_add(weak, state),
+        "add-close" => close_add(state),
+        "add-dismiss" => state.add.error = None,
+        "add-found" => add_found(weak, state, text),
+        "add-address" => add_address(weak, state, text),
         _ => {}
     }
+}
+
+// ---- adding --------------------------------------------------------------------------------------
+
+fn close_add(state: &mut State) {
+    if let Some(stop) = state.add.stop.take() {
+        stop.store(true, Ordering::Relaxed);
+    }
+    state.add = Add::default();
+}
+
+/// Opens the dialog and looks for printers until it closes.
+fn open_add(weak: &slint::Weak<MainWindow>, state: &mut State) {
+    close_add(state);
+    let stop = Arc::new(AtomicBool::new(false));
+    state.add = Add { open: true, searching: true, stop: Some(stop.clone()), ..Add::default() };
+    let admin = state.read.access == Access::Admin;
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        let post = |weak: &slint::Weak<MainWindow>, change: Box<dyn FnOnce(&mut Add) + Send>| {
+            let w = weak.clone();
+            weak.upgrade_in_event_loop(move |_| {
+                update(&w, |app| {
+                    if app.printers.add.open {
+                        change(&mut app.printers.add);
+                    }
+                })
+            })
+            .is_ok()
+        };
+        let _ = block_on(async {
+            // USB printers that need a driver: CUPS lists them for admins only (anyone else would
+            // be asked for the password just to open the dialog).
+            if admin {
+                let client = Client::local();
+                let mut usb = Vec::new();
+                for d in client.usb_devices().await.unwrap_or_default() {
+                    let ppd = client.ppd_for(&d.id).await.ok().flatten();
+                    let package = lituus_print::drivers::package(&lituus_print::drivers::device_id(&d.id));
+                    usb.push((d, ppd, package));
+                }
+                if !post(&weak, Box::new(move |a| a.usb = usb)) {
+                    return;
+                }
+            }
+            let Ok(conn) = zbus::Connection::system().await else {
+                post(&weak, Box::new(|a| (a.avahi, a.searching) = (Some(false), false)));
+                return;
+            };
+            let running = avahi::running(&conn).await;
+            post(&weak, Box::new(move |a| a.avahi = Some(running)));
+            let events = if running { avahi::browse(&conn).await.ok() } else { None };
+            let Some(mut events) = events else {
+                post(&weak, Box::new(|a| a.searching = false));
+                return;
+            };
+            let started = Instant::now();
+            let mut all_for_now = 0;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let event = tokio::time::timeout(Duration::from_millis(400), events.next()).await;
+                let change: Box<dyn FnOnce(&mut Add) + Send> = match event {
+                    Ok(Some(Event::Found(s))) => Box::new(move |a| {
+                        a.services.retain(|o| !(o.name == s.name && o.kind == s.kind));
+                        a.services.push(s);
+                    }),
+                    Ok(Some(Event::Gone { name, kind })) => {
+                        Box::new(move |a| a.services.retain(|o| !(o.name == name && o.kind == kind)))
+                    }
+                    Ok(Some(Event::AllForNow)) => {
+                        all_for_now += 1;
+                        if all_for_now < avahi::TYPES.len() {
+                            continue;
+                        }
+                        Box::new(|a| a.searching = false)
+                    }
+                    Ok(None) => return,
+                    // Printers answer within a few seconds; after that it's "none found".
+                    Err(_) if started.elapsed() > Duration::from_secs(4) => Box::new(|a| a.searching = false),
+                    Err(_) => continue,
+                };
+                if !post(&weak, change) {
+                    return;
+                }
+            }
+        });
+    });
+}
+
+/// The dialog's rows: Avahi's printers and USB ones, each once.
+fn found(state: &State) -> Vec<Found> {
+    let queues = &state.read.snapshot.printers;
+    let mut rows = avahi::printers(&state.add.services, queues, avahi::loopback_index());
+    for (d, ppd, package) in &state.add.usb {
+        let id = lituus_print::drivers::device_id(&d.id);
+        let title =
+            lituus_print::drivers::title(&id, if d.make_and_model.is_empty() { &d.info } else { &d.make_and_model });
+        // ipp-usb already shows it as a USB printer that needs no driver.
+        if rows.iter().any(|r| r.link == Link::Usb && r.name.to_lowercase().contains(&title.to_lowercase())) {
+            continue;
+        }
+        rows.push(Found {
+            id: d.uri.clone(),
+            name: title.clone(),
+            link: Link::Usb,
+            uri: d.uri.clone(),
+            driverless: false,
+            added: queues.iter().any(|q| q.device_uri == d.uri),
+            ppd: ppd.clone(),
+            needs: if ppd.is_none() { package.map(String::from) } else { None },
+            make_and_model: title,
+        });
+    }
+    rows
+}
+
+fn taken(state: &State) -> Vec<String> {
+    state.read.snapshot.printers.iter().map(|p| p.name.clone()).collect()
+}
+
+fn local_paper() -> String {
+    let lc = ["LC_ALL", "LC_PAPER", "LANG"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+    lituus_print::media::local_paper(lc.as_deref()).to_string()
+}
+
+/// Adds on a thread: through the socket, else cups-pk-helper; then selects the new printer.
+fn add(weak: &slint::Weak<MainWindow>, state: &mut State, row: String, new: NewPrinter, probe: Option<(String, u16)>) {
+    state.add.adding = Some(row);
+    state.add.error = None;
+    let weak = weak.clone();
+    std::thread::spawn(move || {
+        let result = block_on(async {
+            if let Some((host, port)) = &probe
+                && !lituus_print::answers(host, *port).await
+            {
+                return Err(format!("Nothing answers at {host}. Is the printer on, and on this network?"));
+            }
+            let client = Client::local();
+            let paper = local_paper();
+            match client.add(&new, &paper).await {
+                Err(Error::NotAllowed(_)) => {
+                    let conn = zbus::Connection::system().await.map_err(|e| e.to_string())?;
+                    if !pkhelper::available(&conn).await {
+                        return Err(problem(&Error::NotAllowed(String::new()), false));
+                    }
+                    PkHelper::new(conn)
+                        .add(&new.name, &new.uri, &new.ppd, &new.info, &new.location)
+                        .await
+                        .map_err(|e| problem(&e, true))
+                }
+                Err(Error::Timeout) => Err("The printer didn't answer CUPS in time, so it wasn't added.".into()),
+                Err(Error::Ipp { message, .. }) => Err(format!("CUPS couldn't set it up: {message}.")),
+                Err(e) => Err(problem(&e, false)),
+                Ok(()) => Ok(()),
+            }
+        })
+        .unwrap_or_else(|| Err("Couldn't start adding it.".into()));
+        let w = weak.clone();
+        let _ = weak.upgrade_in_event_loop(move |_| {
+            update(&w.clone(), |app| {
+                let state = &mut app.printers;
+                state.add.adding = None;
+                match result {
+                    Ok(()) => state.selected = Some(new.name.clone()),
+                    Err(e) => state.add.error = Some(e),
+                }
+                refresh(&w, state, false);
+            })
+        });
+    });
+}
+
+fn add_found(weak: &slint::Weak<MainWindow>, state: &mut State, id: &str) {
+    let Some(f) = found(state).into_iter().find(|f| f.id == id) else { return };
+    let ppd = match (&f.ppd, f.driverless) {
+        (_, true) => "everywhere".to_string(),
+        (Some(p), false) => p.clone(),
+        (None, false) => return,
+    };
+    let new = NewPrinter {
+        name: lituus_print::queue_name(&f.name, &taken(state)),
+        uri: f.uri.clone(),
+        ppd,
+        info: f.name.clone(),
+        location: String::new(),
+    };
+    add(weak, state, f.id, new, None);
+}
+
+fn add_address(weak: &slint::Weak<MainWindow>, state: &mut State, typed: &str) {
+    let Some((uri, host, port)) = lituus_print::address(typed) else {
+        state.add.error = Some(
+            "Type the printer's address, such as 192.168.1.40, printer.local or ipp://printer.local/ipp/print.".into(),
+        );
+        return;
+    };
+    let new = NewPrinter {
+        name: lituus_print::queue_name(&host, &taken(state)),
+        uri,
+        ppd: "everywhere".into(),
+        info: host.clone(),
+        location: String::new(),
+    };
+    add(weak, state, "address".into(), new, Some((host, port)));
 }
 
 // ---- the page ------------------------------------------------------------------------------------
@@ -596,6 +833,59 @@ fn address(uri: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn add_view(state: &State, v: &mut PrintersView) {
+    let a = &state.add;
+    v.add_open = a.open;
+    if !a.open {
+        return;
+    }
+    let rows = found(state);
+    let mut primary = true;
+    v.add_rows = model(
+        rows.iter()
+            .map(|f| {
+                let link = if f.link == Link::Usb { "USB" } else { "Network" };
+                let (meta, action, note) = if f.added {
+                    (format!("{link} · already added"), "added", String::new())
+                } else if f.driverless {
+                    (format!("{link} · driverless, nothing to install"), "add", String::new())
+                } else if f.ppd.is_some() {
+                    (format!("{link} · its driver is installed"), "add", String::new())
+                } else if let Some(p) = &f.needs {
+                    (format!("{link} · needs a driver: {p}"), "install", format!("Install {p} first"))
+                } else {
+                    (format!("{link} · needs a driver"), "install", "Needs a driver".to_string())
+                };
+                let row = FoundRow {
+                    id: s(&f.id),
+                    name: s(&f.name),
+                    meta: s(meta),
+                    action: s(action),
+                    note: s(note),
+                    primary: primary && action == "add",
+                    busy: a.adding.as_deref() == Some(f.id.as_str()),
+                };
+                if action == "add" {
+                    primary = false;
+                }
+                row
+            })
+            .collect(),
+    );
+    v.add_searching = a.searching;
+    v.add_avahi = s(match a.avahi {
+        Some(false) => "off",
+        Some(true) => "on",
+        None => "",
+    });
+    v.avahi_command = s("sudo systemctl enable --now avahi-daemon");
+    v.add_error = s(a.error.clone().unwrap_or_default());
+    v.add_busy = a.adding.is_some();
+    v.add_address_busy = a.adding.as_deref() == Some("address");
+    let needs_driver = rows.iter().any(|f| !f.added && !f.driverless && f.ppd.is_none());
+    v.driver_link = s(if needs_driver { lituus_print::drivers::OPENPRINTING } else { "" });
+}
+
 pub fn view(state: &State) -> PrintersView {
     let mut v = PrintersView {
         error: s(state.error.clone().or(state.read.error.clone()).unwrap_or_default()),
@@ -606,6 +896,7 @@ pub fn view(state: &State) -> PrintersView {
         v.state = s("loading");
         return v;
     }
+    add_view(state, &mut v);
     v.elsewhere = s(read
         .elsewhere
         .as_deref()
@@ -736,12 +1027,14 @@ thread_local! {
     // The rows' models, kept across renders: a row replaced while it's clicked loses the click.
     static PRINTERS: Rc<VecModel<PrinterRow>> = Rc::new(VecModel::default());
     static JOBS: Rc<VecModel<JobRow>> = Rc::new(VecModel::default());
+    static FOUND: Rc<VecModel<FoundRow>> = Rc::new(VecModel::default());
 }
 
 pub fn render(window: &MainWindow, state: &State) {
     let mut v = view(state);
     v.printers = PRINTERS.with(|m| input::kept(m, &v.printers));
     v.jobs = JOBS.with(|m| input::kept(m, &v.jobs));
+    v.add_rows = FOUND.with(|m| input::kept(m, &v.add_rows));
     window.set_printers(v);
 }
 
@@ -881,6 +1174,53 @@ pub(crate) mod tests {
         assert_eq!(view(&state).access, "no-agent");
         state.read.agent = true;
         assert_eq!(view(&state).access, "password");
+    }
+
+    #[test]
+    fn the_add_dialog_lists_what_it_found_once_each() {
+        let mut state = sample();
+        state.add.open = true;
+        state.add.avahi = Some(true);
+        let svc = |name: &str, kind: &str, txt: &[(&str, &str)]| Service {
+            name: name.into(),
+            kind: kind.into(),
+            domain: "local".into(),
+            host: format!("{}.local.", name.split(' ').next().unwrap().to_lowercase()),
+            port: 631,
+            interface: 2,
+            txt: txt.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        state.add.services = vec![
+            svc("Canon TS5300 series", "_ipps._tcp", &[("urf", "V1.4"), ("uuid", "c")]),
+            svc("Canon TS5300 series", "_ipp._tcp", &[("urf", "V1.4"), ("uuid", "c")]),
+            svc("Brother HL-L2350DW", "_ipp._tcp", &[("pdl", "image/pwg-raster")]),
+        ];
+        state.read.snapshot.printers[0].device_uri = "ipp://Brother%20HL-L2350DW._ipp._tcp.local/".into();
+        state.add.usb = vec![(
+            Device {
+                uri: "usb://Samsung/ML-2160".into(),
+                id: "MFG:Samsung;MDL:ML-2160 Series;CMD:SPL;".into(),
+                ..Device::default()
+            },
+            None,
+            Some("splix"),
+        )];
+        let v = view(&state);
+        let rows: Vec<_> = v
+            .add_rows
+            .iter()
+            .map(|r| (r.name.to_string(), r.meta.to_string(), r.action.to_string(), r.primary))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Canon TS5300 series".into(), "Network · driverless, nothing to install".into(), "add".into(), true),
+                ("Brother HL-L2350DW".into(), "Network · already added".into(), "added".into(), false),
+                ("Samsung ML-2160 Series".into(), "USB · needs a driver: splix".into(), "install".into(), false),
+            ]
+        );
+        assert_eq!(v.add_rows.row_data(2).unwrap().note, "Install splix first");
+        assert_eq!(v.driver_link, lituus_print::drivers::OPENPRINTING);
     }
 
     #[test]

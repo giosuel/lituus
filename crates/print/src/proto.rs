@@ -24,7 +24,6 @@ pub(crate) fn name(s: &str) -> IppValue {
         .unwrap_or_else(|_| IppValue::new_name_without_language(cut(s, 255)).expect("cut"))
 }
 
-#[cfg(test)]
 pub(crate) fn text(s: &str) -> IppValue {
     IppValue::new_text_without_language(s)
         .unwrap_or_else(|_| IppValue::new_text_without_language(cut(s, 1023)).expect("cut"))

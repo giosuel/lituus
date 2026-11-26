@@ -4,15 +4,19 @@
 // it. What it shows comes from Rust (src/printers.rs); everything the user does goes back through
 // `act(verb, number, text)`.
 import { Theme, Type, Size } from "theme.slint";
-import { Icon } from "icons.slint";
+import { Icon, Spinner } from "icons.slint";
 import { Button, CardTitle, Notice, Scroll, Focusable, Focus, SectionLabel, Badge } from "controls.slint";
-import { Select, Segmented } from "dialogs.slint";
+import { Select, Segmented, TextField, Modal, DialogTitle } from "dialogs.slint";
 import { Hero, HeroSubject, HeroInfo, Card, ScrollCard, SettingRow, EmptyState, CommandBox } from "shell.slint";
 
 /// tone: "accent" (ready, printing) or "warn" (not found, paused, out of paper).
 export struct PrinterRow { id: string, name: string, meta: string, tone: string, selected: bool }
 /// can-cancel: the user's own job, or they may change printers.
 export struct JobRow { id: int, name: string, meta: string, can-cancel: bool }
+
+/// A printer the Add dialog found. action: "add", "added" (a queue exists) or "install" (it needs a
+/// driver that isn't installed; note says which).
+export struct FoundRow { id: string, name: string, meta: string, action: string, note: string, primary: bool, busy: bool }
 
 /// state: "loading", "list", "empty" (no printers) or "no-cups".
 /// access: "admin" (changes through the socket), "password" (cups-pk-helper asks), "no-agent"
@@ -52,6 +56,18 @@ export struct PrintersView {
     address: string,
     driver: string,
     can-test: bool,
+    /// The Add dialog (S-187): what it found, whether it's still looking, Avahi "on", "off" or ""
+    /// (not known yet), and an error from adding.
+    add-open: bool,
+    add-rows: [FoundRow],
+    add-searching: bool,
+    add-avahi: string,
+    avahi-command: string,
+    add-error: string,
+    add-busy: bool,
+    add-address-busy: bool,
+    /// OpenPrinting's list, when a printer found needs a driver Lituus doesn't know.
+    driver-link: string,
 }
 
 // Space or Enter selects it; the arrow keys move the selection, taking the focus along.
@@ -225,6 +241,133 @@ component DetailsCard inherits ScrollCard {
     }
 }
 
+component FoundLine inherits Rectangle {
+    in property <FoundRow> row;
+    in property <bool> first;
+    in property <bool> busy;
+    callback add();
+    height: 52px;
+    accessible-role: list-item;
+    accessible-label: root.row.name + ", " + root.row.meta;
+    // A colour rather than an `if`: there's one per row.
+    Rectangle { y: 0; height: 1px; background: root.first ? transparent : Theme.border; }
+    HorizontalLayout {
+        spacing: 12px;
+        Icon { name: "printer"; tint: Theme.muted; y: (parent.height - 16px) / 2; width: 20px; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text { text: root.row.name; color: Theme.text; font-size: Type.body; font-weight: 500; overflow: elide; }
+            Text { text: root.row.meta; color: Theme.muted; font-size: Type.note; overflow: elide; }
+        }
+        if root.row.busy: HorizontalLayout {
+            spacing: 6px;
+            horizontal-stretch: 0;
+            Spinner { y: (parent.height - 12px) / 2; }
+            Text { text: "Adding…"; color: Theme.muted; font-size: Type.note; vertical-alignment: center; }
+        }
+        if !root.row.busy && root.row.action == "add": Button {
+            label: "Add";
+            accessible-label: "Add " + root.row.name;
+            kind: root.row.primary ? "primary" : "secondary";
+            focus-key: "found:" + root.row.id;
+            button-height: Size.button-row;
+            horizontal-stretch: 0;
+            enabled: !root.busy;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.add(); }
+        }
+        if root.row.action == "added": Text { text: "Added"; color: Theme.faint; font-size: Type.note; vertical-alignment: center; }
+        if root.row.action == "install": Text { text: root.row.note; color: Theme.warn-text; font-size: Type.note; vertical-alignment: center; }
+    }
+}
+
+// S-187: the printers found on the network (Avahi) and USB, added in one click when they need no
+// driver; or one by its address. It looks for printers for as long as it's open.
+export component AddPrinterDialog inherits Modal {
+    in property <PrintersView> page;
+    callback act(string, int, string);
+    property <string> typed;
+    card-width: 640px;
+    label: "Add a printer";
+    dismissed => { root.act("add-close", 0, ""); }
+    DialogTitle { text: "Add a printer"; }
+    if root.page.add-error != "": Notice { tone: "danger"; text: root.page.add-error; dismissed => { root.act("add-dismiss", 0, ""); } }
+    VerticalLayout {
+        spacing: 4px;
+        SectionLabel { text: "FOUND ON YOUR NETWORK AND USB"; }
+        Scroll {
+            height: min(self.preferred-height, 300px);
+            VerticalLayout {
+                for r[i] in root.page.add-rows: FoundLine { row: r; first: i == 0; busy: root.page.add-busy; add => { root.act("add-found", 0, r.id); } }
+            }
+        }
+        if root.page.add-rows.length == 0 && root.page.add-searching: HorizontalLayout {
+            spacing: 8px;
+            height: 44px;
+            Spinner { y: (parent.height - 12px) / 2; }
+            Text { text: "Looking for printers…"; color: Theme.muted; font-size: Type.body; vertical-alignment: center; }
+        }
+        if root.page.add-rows.length == 0 && !root.page.add-searching && root.page.add-avahi != "off": Text {
+            text: "None found. A printer that's switched on shows up here within a few seconds; or add it by its address.";
+            color: Theme.faint;
+            font-size: Type.body;
+            wrap: word-wrap;
+            height: 44px;
+            vertical-alignment: center;
+        }
+        // D-68: without Avahi, printers on the network can't be found.
+        if root.page.add-avahi == "off": Notice {
+            tone: "warn";
+            title: "Avahi isn't running";
+            text: "Printers on the network are found through Avahi. Start it to see them here:";
+            dismissible: false;
+            CommandBox { command: root.page.avahi-command; copied => { root.act("copied", 0, ""); } }
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SectionLabel { text: "OR BY ITS ADDRESS"; }
+        HorizontalLayout {
+            spacing: 8px;
+            address := TextField {
+                label: "Printer address";
+                placeholder: "ipp://192.168.1.40/ipp/print";
+                mono: true;
+                text <=> root.typed;
+                accepted => { if root.typed != "" { root.act("add-address", 0, root.typed); } }
+            }
+            if root.page.add-address-busy: HorizontalLayout {
+                horizontal-stretch: 0;
+                spacing: 6px;
+                Spinner { y: (parent.height - 12px) / 2; }
+                Text { text: "Adding…"; color: Theme.muted; font-size: Type.note; vertical-alignment: center; }
+            }
+            if !root.page.add-address-busy: Button {
+                label: "Add";
+                accessible-label: "Add the printer at this address";
+                button-height: Size.field;
+                horizontal-stretch: 0;
+                enabled: root.typed != "" && !root.page.add-busy;
+                clicked => { root.act("add-address", 0, root.typed); }
+            }
+        }
+        Text {
+            text: root.page.driver-link != ""
+                ? "Printers that need no driver (IPP Everywhere, AirPrint) are added with nothing installed. Drivers for others: " + root.page.driver-link
+                : "Network printers are found through Avahi (mDNS); a driverless one (IPP Everywhere, AirPrint) needs nothing installed.";
+            color: Theme.faint;
+            font-size: Type.note;
+            wrap: word-wrap;
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        Button { label: "Close"; button-height: Size.button-dialog; horizontal-stretch: 0; clicked => { root.act("add-close", 0, ""); } }
+    }
+}
+
 export component PrintersPage inherits VerticalLayout {
     in property <PrintersView> page;
     in property <bool> compact;
@@ -235,9 +378,22 @@ export component PrintersPage inherits VerticalLayout {
         sub: root.page.sub;
         hero-height: root.compact ? 136px : 206px;
         compact: root.compact;
+        aside: add-button.width + 18px;
         if root.page.state != "loading": HeroSubject {
             compact: root.compact;
             info: root.page.hero;
+        }
+        add-button := Button {
+            x: parent.width - self.width - 18px;
+            y: 18px;
+            width: root.page.state == "list" || root.page.state == "empty" ? self.preferred-width : 0;
+            visible: root.page.state == "list" || root.page.state == "empty";
+            label: "Add a printer…";
+            kind: "primary";
+            focus-key: "printer-add";
+            button-height: Size.button-row;
+            enabled: root.page.can-change;
+            clicked => { root.act("add-open", 0, ""); }
         }
     }
     body := Scroll {
@@ -284,6 +440,8 @@ export component PrintersPage inherits VerticalLayout {
                 icon: "printer";
                 title: "No printers yet";
                 text: "Printers on your network that need no driver, and USB printers, can be added from here.";
+                action: root.page.can-change ? "Add a printer…" : "";
+                action-clicked => { root.act("add-open", 0, ""); }
             }
         }
         if root.page.state == "no-cups": Card {

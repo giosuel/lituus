@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use lituus_print::{Client, Defaults, Driver, Error, JobState, State, ppd};
+use lituus_print::{Client, Defaults, Driver, Error, JobState, NewPrinter, State, ppd};
 
 fn client() -> Option<Client> {
     let Ok(socket) = std::env::var("LITUUS_CUPS_SOCKET") else {
@@ -138,4 +138,33 @@ async fn new_defaults_reach_both_ipp_and_the_ppd() {
 async fn a_raw_queue_has_no_ppd() {
     let Some(c) = client() else { return };
     assert!(c.ppd("Nothing-here").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_driverless_printer_is_added_with_the_local_paper_and_not_shared() {
+    let Some(c) = client() else { return };
+    let new = NewPrinter {
+        name: "Added".into(),
+        uri: "ipp://localhost:8631/ipp/print".into(),
+        ppd: "everywhere".into(),
+        info: "Added printer".into(),
+        location: String::new(),
+    };
+    let got = c.add(&new, "iso_a4_210x297mm").await;
+    if !admin() {
+        assert!(matches!(got, Err(Error::NotAllowed(_))), "{got:?}");
+        return;
+    }
+    got.unwrap();
+    let p = c.printers().await.unwrap().into_iter().find(|p| p.name == "Added").expect("added");
+    assert_eq!((p.title(), &p.driver, p.shared), ("Added printer", &Driver::Driverless, false));
+    assert_eq!(c.options("Added").await.unwrap().media.default, "iso_a4_210x297mm");
+    c.remove("Added").await.unwrap();
+}
+
+#[tokio::test]
+async fn an_address_that_doesnt_answer_is_told_within_seconds() {
+    let started = std::time::Instant::now();
+    assert!(!lituus_print::answers("10.255.255.1", 631).await);
+    assert!(started.elapsed() < Duration::from_secs(7));
 }
